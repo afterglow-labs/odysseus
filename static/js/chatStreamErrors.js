@@ -1,5 +1,7 @@
+import { providerReconnectTarget } from './providerReconnect.js';
+
 /** Build a terminal stream error while preserving provider-supplied text. */
-export function createTerminalStreamError(payload = {}) {
+export function createTerminalStreamError(payload = {}, selectedRoute = {}) {
   const rawError = payload.error;
   const message = (
     payload.text
@@ -10,6 +12,7 @@ export function createTerminalStreamError(payload = {}) {
   error.name = 'TerminalStreamError';
   error.terminalStreamError = true;
   error.status = payload.status;
+  error.providerReconnect = providerReconnectTarget(payload, selectedRoute);
   return error;
 }
 

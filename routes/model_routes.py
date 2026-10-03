@@ -1423,13 +1423,16 @@ def setup_model_routes(model_discovery):
         category = _classify_endpoint(base, kind)
         mode = _endpoint_refresh_mode(ep, kind)
         cached = _cached_model_ids(ep)
-        key = _refresh_key(base, getattr(ep, "api_key", None))
+        auth_id = getattr(ep, "provider_auth_id", None)
+        key = _refresh_key(base, f"auth:{auth_id}" if auth_id else getattr(ep, "api_key", None))
         state = _refresh_state.get(key, {})
 
         info = {
             "id": getattr(ep, "id", ""),
             "base": base,
             "api_key": getattr(ep, "api_key", None),
+            "auth_id": auth_id,
+            "owner": getattr(ep, "owner", None),
             "kind": kind,
             "category": category,
             "mode": mode,
@@ -1488,6 +1491,8 @@ def setup_model_routes(model_discovery):
                         groups.setdefault(info["key"], {
                             "base": info["base"],
                             "api_key": info["api_key"],
+                            "auth_id": info["auth_id"],
+                            "owner": info["owner"],
                             "timeout": info["timeout"],
                             "endpoint_ids": [],
                         })["endpoint_ids"].append(info["id"])
@@ -1499,7 +1504,12 @@ def setup_model_routes(model_discovery):
 
                     def _probe_one(key: str, data: Dict[str, Any]):
                         try:
-                            ids = _probe_endpoint(data["base"], data.get("api_key"), timeout=data.get("timeout") or 2)
+                            base, api_key = data["base"], data.get("api_key")
+                            if data.get("auth_id"):
+                                from src.chatgpt_subscription import resolve_runtime_credentials
+                                creds = resolve_runtime_credentials(data["auth_id"], owner=data.get("owner"))
+                                base, api_key = creds["base_url"], creds["api_key"]
+                            ids = _probe_endpoint(base, api_key, timeout=data.get("timeout") or 2)
                             return key, data["endpoint_ids"], ids, None
                         except Exception as e:
                             return key, data["endpoint_ids"], None, e
@@ -1571,6 +1581,10 @@ def setup_model_routes(model_discovery):
             kind = _effective_endpoint_kind(ep, base)
             category = _classify_endpoint(base, kind)
             model_ids, pinned = _picker_models_for_endpoint(ep, base, kind)
+            capability_fields = {}
+            if provider == "chatgpt-subscription":
+                from src.chatgpt_capabilities import daybreak_snapshot
+                capability_fields = daybreak_snapshot(getattr(ep, "provider_auth_id", None), model_ids)
 
             if model_ids:
                 curated_key = _match_provider_curated(base, None)
@@ -1594,6 +1608,7 @@ def setup_model_routes(model_discovery):
                     "category": category,
                     "endpoint_kind": kind,
                     "model_type": ep_model_type,
+                    **capability_fields,
                 })
             else:
                 # Endpoint unreachable but still show it greyed out
@@ -1611,6 +1626,7 @@ def setup_model_routes(model_discovery):
                     "endpoint_kind": kind,
                     "model_type": ep_model_type,
                     "offline": True,
+                    **capability_fields,
                 })
 
         return {"hosts": [], "items": items}
@@ -1654,10 +1670,14 @@ def setup_model_routes(model_discovery):
         # serve the wrong scoped view from cache.
         _cache_key = (owner, _is_admin)
         cache_entry = _models_cache.get(_cache_key)
-        if not refresh and cache_entry is not None and (now - cache_entry["time"]) < _MODELS_CACHE_TTL:
+        from src.chatgpt_capabilities import capability_generation
+        generation = capability_generation()
+        if (not refresh and cache_entry is not None
+                and cache_entry.get("daybreak_generation") == generation
+                and (now - cache_entry["time"]) < _MODELS_CACHE_TTL):
             return cache_entry["data"]
         result = _fetch_models(owner=owner, is_admin=_is_admin)
-        _models_cache[_cache_key] = {"data": result, "time": now}
+        _models_cache[_cache_key] = {"data": result, "time": now, "daybreak_generation": generation}
         # Kick off background refresh to update caches from live endpoints.
         # Page boot can opt out with background=false so opening Odysseus does
         # not start endpoint probes against slow/offline model servers.
@@ -1960,6 +1980,7 @@ def setup_model_routes(model_discovery):
                     "id": r.id,
                     "name": r.name,
                     "base_url": r.base_url,
+                    "provider": _safe_detect_provider(base),
                     "has_key": bool(r.api_key),
                     "api_key_fingerprint": _api_key_fingerprint(r.api_key),
                     "is_enabled": r.is_enabled,
@@ -2328,7 +2349,9 @@ def setup_model_routes(model_discovery):
                 category = _classify_endpoint(base, kind)
                 timeout = _manual_refresh_timeout(ep, category, refresh_timeout)
                 try:
-                    probed = _probe_endpoint(base, ep.api_key, timeout=timeout)
+                    from src.endpoint_resolver import resolve_endpoint_runtime
+                    runtime_base, runtime_key = resolve_endpoint_runtime(ep, owner=getattr(ep, "owner", None))
+                    probed = _probe_endpoint(runtime_base, runtime_key, timeout=timeout)
                 except Exception as exc:
                     logger.warning("Manual model refresh failed for endpoint %s at %s: %s", ep_id, base, exc)
                     probed = []

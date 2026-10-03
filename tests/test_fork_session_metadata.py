@@ -40,7 +40,7 @@ class _FakeSessionManager:
         return self.sessions[session_id]
 
     def create_session(self, session_id=None, name=None, endpoint_url=None,
-                       model=None, rag=False, owner=None):
+                       model=None, rag=False, owner=None, daybreak_enabled=False):
         self.created = _FakeSession(name=name, owner=owner)
         return self.created
 

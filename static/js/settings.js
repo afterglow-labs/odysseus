@@ -27,10 +27,12 @@ import { providerLogo } from './providers.js';
 import { isAltGrEvent } from './platform.js';
 import { bindMenuDismiss } from './escMenuStack.js';
 import { invalidateSettings } from './appConfig.js';
+import { bindSettingsHelp, dismissSettingsHelp, renderHelpHint } from './settings/helpHints.js';
+import { getTooltipTrigger, loadTooltipTrigger, saveTooltipTrigger } from './settings/behavior.js';
 
 let initialized = false;
 let modalEl = null;
-let _authPolicy = { password_min_length: 8 };
+let refreshBehavior = () => {};
 
 /**
  * POST a settings patch, then drop the shared snapshot in appConfig.js.
@@ -66,6 +68,8 @@ function safeRasterDataUrl(raw) {
 
 /* ── Settings shell coordination ── */
 function onSettingsPanelActivated(tab) {
+  dismissSettingsHelp();
+  if (tab === 'behavior') refreshBehavior();
   // Appearance keeps its existing transparent preview behavior.
   document.body.classList.toggle('settings-appearance-open', tab === 'appearance');
   syncAppearanceOpacity(tab === 'appearance');
@@ -1646,6 +1650,51 @@ function syncPrivacyCheckboxes() {
   });
 }
 
+/* ── Behavior preferences ── */
+function initBehavior() {
+  const select = el('set-tooltip-trigger');
+  const message = el('set-tooltip-trigger-msg');
+  const preview = el('set-tooltip-preview');
+  if (!select || !message) return;
+  if (preview) preview.innerHTML = renderHelpHint(
+    'This is a help tooltip. Move the pointer away, click again, or press Escape to close it.',
+    'Tooltip preview',
+  );
+  let saving = false;
+  const sync = () => { select.value = getTooltipTrigger(); };
+  document.addEventListener('odysseus:tooltip-trigger-change', sync);
+  refreshBehavior = async () => {
+    if (saving) return;
+    select.disabled = true;
+    message.textContent = 'Loading…';
+    try {
+      await loadTooltipTrigger();
+      message.textContent = '';
+    } catch (_) {
+      message.textContent = 'Could not load your preference. Reopen Behavior to retry.';
+    } finally {
+      sync();
+      select.disabled = false;
+    }
+  };
+  select.addEventListener('change', async () => {
+    saving = true;
+    select.disabled = true;
+    message.textContent = 'Saving…';
+    try {
+      await saveTooltipTrigger(select.value);
+      message.textContent = 'Saved';
+    } catch (_) {
+      message.textContent = 'Could not save. Please try again.';
+    } finally {
+      sync();
+      saving = false;
+      select.disabled = false;
+    }
+  });
+  refreshBehavior();
+}
+
 /* ═══════════════════════════════════════════
    SHORTCUTS TAB
    ═══════════════════════════════════════════ */
@@ -1968,16 +2017,6 @@ function initAccount() {
       }
     }).catch(() => {});
 
-  // Update password placeholder and policy from server
-  fetch('/api/auth/policy', { credentials: 'same-origin' })
-    .then(r => r.ok ? r.json() : null)
-    .then(policy => {
-      if (!policy) return;
-      _authPolicy = policy;
-      const pwNew = el('settings-pw-new');
-      if (pwNew) pwNew.placeholder = `New password (min ${policy.password_min_length})`;
-    }).catch(() => {});
-
   // Change password
   const saveBtn = el('settings-pw-save');
   const msgEl = el('settings-pw-msg');
@@ -1988,7 +2027,6 @@ function initAccount() {
       const conf = el('settings-pw-confirm').value;
       msgEl.style.color = '';
       if (!cur || !nw) { msgEl.textContent = 'Fill in all fields'; msgEl.style.color = 'var(--red)'; return; }
-      if (nw.length < _authPolicy.password_min_length) { msgEl.textContent = `Min ${_authPolicy.password_min_length} characters`; msgEl.style.color = 'var(--red)'; return; }
       if (nw !== conf) { msgEl.textContent = 'Passwords don\'t match'; msgEl.style.color = 'var(--red)'; return; }
       saveBtn.disabled = true;
       try {
@@ -2140,6 +2178,7 @@ function initAccount() {
 
 function initAll() {
   modalEl = el('settings-modal');
+  bindSettingsHelp(modalEl);
 
   bindSettingsNavigation(modalEl, {
     openAdminTab: openAdminSettingsTab,
@@ -2187,6 +2226,7 @@ function initAll() {
   initResearchSearchSettings();
   initAgentSettings();
   initAppearance();
+  initBehavior();
   initShortcuts();
   initAccount();
   initIntegrations();
@@ -2755,14 +2795,7 @@ async function initEmailAccountsSettings() {
     const a = existing || {};
     const isEdit = !!existing;
     formEl.style.display = '';
-    // Small `?` indicator next to each label. Hover/focus to read the
-    // hint via the native `title` tooltip. tabindex makes it
-    // keyboard-focusable too.
-    const _hint = (tip) =>
-      `<span class="eaf-hint" title="${esc(tip)}" aria-label="${esc(tip)}" tabindex="0" `
-      + `style="display:inline-block;width:13px;height:13px;border-radius:50%;`
-      + `border:1px solid currentColor;font-size:9px;line-height:11px;text-align:center;`
-      + `opacity:0.45;margin-left:5px;cursor:help;vertical-align:1px;font-weight:600;">?</span>`;
+    const _hint = (tip, label) => renderHelpHint(tip, label, 'eaf-hint');
     // Provider presets — picking one fills host/port/STARTTLS for both
     // IMAP and SMTP. Dovecot is IMAP-only here; the host is intentionally
     // blank because it may live on another machine (DNS, LAN, Tailscale).
@@ -2783,31 +2816,31 @@ async function initEmailAccountsSettings() {
     formEl.innerHTML = `
       <h3 style="font-size:12px;margin:0 0 8px">${isEdit ? 'Edit Account' : 'New Account'}</h3>
       <div class="settings-col">
-        <div class="settings-row"><label class="settings-label">Provider${_hint('Pick a known provider to auto-fill the IMAP and SMTP host/port. Choose Custom to type your own.')}</label><select id="eaf-provider" class="settings-select"><option value="">Custom…</option>${_providerOptions}</select></div>
+        <div class="settings-row"><span class="settings-label settings-label-with-help"><label for="eaf-provider">Provider</label>${_hint('Pick a known provider to auto-fill the IMAP and SMTP host/port. Choose Custom to type your own.', 'Provider')}</span><select id="eaf-provider" class="settings-select"><option value="">Custom…</option>${_providerOptions}</select></div>
         <div id="eaf-provider-note" style="display:none;font-size:11px;line-height:1.5;padding:8px 10px;margin:2px 0 4px;border:1px solid color-mix(in srgb, var(--fg) 15%, transparent);border-left:3px solid var(--accent, var(--red));border-radius:4px;background:color-mix(in srgb, var(--fg) 4%, transparent);"></div>
-        <div class="settings-row"><label class="settings-label">Name${_hint('Optional label for this account (e.g. “Work” or “Personal”). Leave blank to use the email address.')}</label><input id="eaf-name" class="settings-input" placeholder="(optional — leave blank to use email)" value="${esc(a.name || '')}"></div>
-        <div class="settings-row"><label class="settings-label">Email${_hint('Your email address. Used as the From: header on outgoing mail and as the display label when Name is blank.')}</label><input id="eaf-from" class="settings-input" placeholder="you@example.com" value="${esc(a.from_address || '')}"></div>
-        <div class="settings-row"><label class="settings-label">Display Name${_hint('Your name as it appears in the From: field of emails you send, e.g. Jane Smith. Auto-filled from Google during OAuth.')}</label><input id="eaf-display-name" class="settings-input" placeholder="Your Name" value="${esc(a.display_name || '')}"></div>
+        <div class="settings-row"><span class="settings-label settings-label-with-help"><label for="eaf-name">Name</label>${_hint('Optional label for this account (e.g. “Work” or “Personal”). Leave blank to use the email address.', 'Name')}</span><input id="eaf-name" class="settings-input" placeholder="(optional — leave blank to use email)" value="${esc(a.name || '')}"></div>
+        <div class="settings-row"><span class="settings-label settings-label-with-help"><label for="eaf-from">Email</label>${_hint('Your email address. Used as the From: header on outgoing mail and as the display label when Name is blank.', 'Email')}</span><input id="eaf-from" class="settings-input" placeholder="you@example.com" value="${esc(a.from_address || '')}"></div>
+        <div class="settings-row"><span class="settings-label settings-label-with-help"><label for="eaf-display-name">Display Name</label>${_hint('Your name as it appears in the From: field of emails you send, e.g. Jane Smith. Auto-filled from Google during OAuth.', 'Display Name')}</span><input id="eaf-display-name" class="settings-input" placeholder="Your Name" value="${esc(a.display_name || '')}"></div>
         <div id="eaf-oauth-section" style="display:none;margin:8px 0;padding:10px;border:1px solid var(--border);border-radius:6px;background:color-mix(in srgb,var(--accent,#50fa7b) 6%,transparent)">
           <div style="font-size:11px;font-weight:600;margin-bottom:6px">Google OAuth2 — required for Workspace / .edu accounts</div>
           <div id="eaf-oauth-status" style="font-size:11px;opacity:0.7;margin-bottom:6px">${a.oauth_provider === 'google' ? '✓ Connected via Google OAuth' : 'Not connected — click below to authorize'}</div>
           <button type="button" id="eaf-oauth-btn" class="admin-btn-add" style="font-size:11px">${a.oauth_provider === 'google' ? 'Reconnect with Google' : 'Connect with Google'}</button>
         </div>
         <div style="font-size:11px;font-weight:600;opacity:0.6;margin:6px 0 2px">IMAP (Receiving)</div>
-        <div class="settings-row"><label class="settings-label">Host${_hint('Your IMAP server, e.g. imap.gmail.com, imap.migadu.com, a LAN host, or a Tailscale IP for Dovecot.')}</label><input id="eaf-imap-host" class="settings-input" value="${esc(a.imap_host || '')}"></div>
-        <div class="settings-row"><label class="settings-label">Port${_hint('993 for IMAPS (most providers), 143 for plain or STARTTLS. Local servers often use a custom port like 31143.')}</label><input id="eaf-imap-port" class="settings-input" type="number" value="${esc(a.imap_port || 993)}" style="max-width:100px"></div>
-        <div class="settings-row"><label class="settings-label">Username${_hint('Usually your full email address.')}</label><input id="eaf-imap-user" class="settings-input" value="${esc(a.imap_user || '')}"></div>
-        <div class="eaf-password-section"><div class="settings-row"><label class="settings-label">Password${_hint('Your IMAP login password. Use an app-specific password if your provider requires 2FA. Outlook / Office 365 generally requires OAuth and will not work with a normal password here.')}</label><input id="eaf-imap-pass" class="settings-input" type="password" placeholder="${isEdit && a.has_imap_password ? '(unchanged)' : ''}"></div></div>
-        <div class="settings-row"><label class="settings-label">STARTTLS${_hint('Turn ON for port 143/587 to upgrade plain to TLS. Turn OFF for port 993 (IMAPS — already encrypted) or a local server with no TLS configured.')}</label><label class="admin-switch"><input type="checkbox" id="eaf-imap-starttls" ${a.imap_starttls !== false ? 'checked' : ''}><span class="admin-slider"></span></label></div>
+        <div class="settings-row"><span class="settings-label settings-label-with-help"><label for="eaf-imap-host">Host</label>${_hint('Your IMAP server, e.g. imap.gmail.com, imap.migadu.com, a LAN host, or a Tailscale IP for Dovecot.', 'Host')}</span><input id="eaf-imap-host" class="settings-input" value="${esc(a.imap_host || '')}"></div>
+        <div class="settings-row"><span class="settings-label settings-label-with-help"><label for="eaf-imap-port">Port</label>${_hint('993 for IMAPS (most providers), 143 for plain or STARTTLS. Local servers often use a custom port like 31143.', 'Port')}</span><input id="eaf-imap-port" class="settings-input" type="number" value="${esc(a.imap_port || 993)}" style="max-width:100px"></div>
+        <div class="settings-row"><span class="settings-label settings-label-with-help"><label for="eaf-imap-user">Username</label>${_hint('Usually your full email address.', 'Username')}</span><input id="eaf-imap-user" class="settings-input" value="${esc(a.imap_user || '')}"></div>
+        <div class="eaf-password-section"><div class="settings-row"><span class="settings-label settings-label-with-help"><label for="eaf-imap-pass">Password</label>${_hint('Your IMAP login password. Use an app-specific password if your provider requires 2FA. Outlook / Office 365 generally requires OAuth and will not work with a normal password here.', 'Password')}</span><input id="eaf-imap-pass" class="settings-input" type="password" placeholder="${isEdit && a.has_imap_password ? '(unchanged)' : ''}"></div></div>
+        <div class="settings-row"><span class="settings-label settings-label-with-help"><label for="eaf-imap-starttls">STARTTLS</label>${_hint('Turn ON for port 143/587 to upgrade plain to TLS. Turn OFF for port 993 (IMAPS — already encrypted) or a local server with no TLS configured.', 'STARTTLS')}</span><label class="admin-switch"><input type="checkbox" id="eaf-imap-starttls" ${a.imap_starttls !== false ? 'checked' : ''}><span class="admin-slider"></span></label></div>
         <div style="font-size:11px;font-weight:600;opacity:0.6;margin:8px 0 2px">SMTP (Sending) <span style="font-weight:normal;opacity:0.7">— optional, leave blank for read-only</span></div>
-        <div class="settings-row"><label class="settings-label">Host${_hint('Your outgoing-mail server, e.g. smtp.gmail.com, smtp.migadu.com. Leave blank to make this account read-only.')}</label><input id="eaf-smtp-host" class="settings-input" value="${esc(a.smtp_host || '')}"></div>
-        <div class="settings-row"><label class="settings-label">Port${_hint('465 for SSL/SMTPS, 587 for STARTTLS. 25 is usually blocked by ISPs.')}</label><input id="eaf-smtp-port" class="settings-input" type="number" value="${esc(a.smtp_port || 465)}" style="max-width:100px"></div>
-        <div class="settings-row"><label class="settings-label">Security${_hint('SSL for port 465, STARTTLS for port 587, or None for local SMTP bridges such as Proton Mail Bridge.')}</label><select id="eaf-smtp-security" class="settings-select"><option value="ssl">SSL</option><option value="starttls">STARTTLS</option><option value="none">None</option></select></div>
-        <div class="settings-row"><label class="settings-label">Same as IMAP${_hint('Use the IMAP username and password for SMTP too (this is right for almost every provider). Turn off to enter separate SMTP credentials.')}</label><label class="admin-switch"><input type="checkbox" id="eaf-smtp-same" ${(!isEdit || (a.smtp_user && a.imap_user && a.smtp_user === a.imap_user)) ? 'checked' : ''}><span class="admin-slider"></span></label></div>
-        <div class="settings-row eaf-smtp-creds"><label class="settings-label">Username${_hint('Usually the same as your IMAP username (your email address).')}</label><input id="eaf-smtp-user" class="settings-input" value="${esc(a.smtp_user || '')}"></div>
-        <div class="settings-row eaf-smtp-creds"><label class="settings-label">Password${_hint('Your SMTP password — often the same as your IMAP password. Outlook / Office 365 generally requires OAuth and will not work with a normal password here.')}</label><input id="eaf-smtp-pass" class="settings-input" type="password" placeholder="${isEdit && a.has_smtp_password ? '(unchanged)' : ''}"></div>
+        <div class="settings-row"><span class="settings-label settings-label-with-help"><label for="eaf-smtp-host">Host</label>${_hint('Your outgoing-mail server, e.g. smtp.gmail.com, smtp.migadu.com. Leave blank to make this account read-only.', 'Host')}</span><input id="eaf-smtp-host" class="settings-input" value="${esc(a.smtp_host || '')}"></div>
+        <div class="settings-row"><span class="settings-label settings-label-with-help"><label for="eaf-smtp-port">Port</label>${_hint('465 for SSL/SMTPS, 587 for STARTTLS. 25 is usually blocked by ISPs.', 'Port')}</span><input id="eaf-smtp-port" class="settings-input" type="number" value="${esc(a.smtp_port || 465)}" style="max-width:100px"></div>
+        <div class="settings-row"><span class="settings-label settings-label-with-help"><label for="eaf-smtp-security">Security</label>${_hint('SSL for port 465, STARTTLS for port 587, or None for local SMTP bridges such as Proton Mail Bridge.', 'Security')}</span><select id="eaf-smtp-security" class="settings-select"><option value="ssl">SSL</option><option value="starttls">STARTTLS</option><option value="none">None</option></select></div>
+        <div class="settings-row"><span class="settings-label settings-label-with-help"><label for="eaf-smtp-same">Same as IMAP</label>${_hint('Use the IMAP username and password for SMTP too (this is right for almost every provider). Turn off to enter separate SMTP credentials.', 'Same as IMAP')}</span><label class="admin-switch"><input type="checkbox" id="eaf-smtp-same" ${(!isEdit || (a.smtp_user && a.imap_user && a.smtp_user === a.imap_user)) ? 'checked' : ''}><span class="admin-slider"></span></label></div>
+        <div class="settings-row eaf-smtp-creds"><span class="settings-label settings-label-with-help"><label for="eaf-smtp-user">Username</label>${_hint('Usually the same as your IMAP username (your email address).', 'Username')}</span><input id="eaf-smtp-user" class="settings-input" value="${esc(a.smtp_user || '')}"></div>
+        <div class="settings-row eaf-smtp-creds"><span class="settings-label settings-label-with-help"><label for="eaf-smtp-pass">Password</label>${_hint('Your SMTP password — often the same as your IMAP password. Outlook / Office 365 generally requires OAuth and will not work with a normal password here.', 'Password')}</span><input id="eaf-smtp-pass" class="settings-input" type="password" placeholder="${isEdit && a.has_smtp_password ? '(unchanged)' : ''}"></div>
         <div class="settings-row" style="margin-top:10px;align-items:center;">
-          <button class="admin-btn-add" id="eaf-save" style="background:var(--red);border-color:var(--red);color:#fff;display:inline-flex;align-items:center;gap:5px;font-weight:600;">
+          <button class="admin-btn-add" id="eaf-save" style="background:var(--red);border-color:var(--red);color:var(--accent-text, #fff);display:inline-flex;align-items:center;gap:5px;font-weight:600;">
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
             ${isEdit ? 'Save' : 'Create'}
           </button>
@@ -3629,14 +3662,7 @@ async function initUnifiedIntegrations() {
       if (r.ok) { const d = await r.json(); presets = d.presets || {}; }
     } catch (_) {}
     const presetEntries = Object.entries(presets);
-    // Same `?` hint helper as the email form. Native title tooltip,
-    // tabbable for keyboard users. Inline-styled so it doesn't need
-    // a CSS dependency.
-    const _apiHint = (tip) =>
-      `<span class="uf-hint" title="${esc(tip.replace(/<[^>]+>/g, ''))}" aria-label="${esc(tip.replace(/<[^>]+>/g, ''))}" tabindex="0" `
-      + `style="display:inline-block;width:13px;height:13px;border-radius:50%;`
-      + `border:1px solid currentColor;font-size:9px;line-height:11px;text-align:center;`
-      + `opacity:0.45;margin-left:5px;cursor:help;vertical-align:1px;font-weight:600;">?</span>`;
+    const _apiHint = (tip, label) => renderHelpHint(tip.replace(/<[^>]+>/g, ''), label, 'uf-hint');
     // Real <select> instead of <datalist>: datalists are silently
     // suppressed in Firefox when autocomplete="off" is on the input,
     // and they're patchy on mobile browsers. A native select renders
@@ -3685,9 +3711,9 @@ async function initUnifiedIntegrations() {
           <div class="settings-row"><label class="settings-label">Name</label><input id="uf-api-name" class="settings-input" placeholder="My Service"></div>
           <div class="settings-row"><label class="settings-label">Base URL</label><input id="uf-api-url" class="settings-input" placeholder="http://localhost:8080"></div>
           <div id="uf-api-ntfy-hint" style="display:none;font-size:11px;line-height:1.35;opacity:0.68;margin:-2px 0 2px 106px;"></div>
-          <div class="settings-row"><label class="settings-label">Auth${_apiHint('How this service expects the credential to be sent. <b>Bearer</b> = sends "Authorization: Bearer YOUR_KEY" (most modern APIs, ntfy, OpenAI-style). <b>Header</b> = sends YOUR_KEY verbatim under a header name you choose (Miniflux uses X-Auth-Token). <b>Basic</b> = HTTP basic auth (user:pass). <b>None</b> = the API is open / no auth.')}</label><select id="uf-api-auth" class="settings-input"><option value="bearer">Bearer (most common)</option><option value="header">Header</option><option value="basic">Basic</option><option value="none">None</option></select></div>
-          <div class="settings-row" id="uf-api-header-row"><label class="settings-label">Header${_apiHint('The HTTP header name the key goes under (Miniflux: X-Auth-Token; most others: Authorization). Only used when Auth = Header.')}</label><input id="uf-api-header" class="settings-input" placeholder="X-Auth-Token"></div>
-          <div class="settings-row"><label class="settings-label">API Key${_apiHint('The secret token the service issued you (generated in its admin panel / settings). Used to prove your identity on each request. Required for any Auth mode except None.')}</label><input id="uf-api-key" class="settings-input" type="password" placeholder="Token/key"></div>
+          <div class="settings-row"><span class="settings-label settings-label-with-help"><label for="uf-api-auth">Auth</label>${_apiHint('How this service expects the credential to be sent. <b>Bearer</b> = sends "Authorization: Bearer YOUR_KEY" (most modern APIs, ntfy, OpenAI-style). <b>Header</b> = sends YOUR_KEY verbatim under a header name you choose (Miniflux uses X-Auth-Token). <b>Basic</b> = HTTP basic auth (user:pass). <b>None</b> = the API is open / no auth.', 'Auth')}</span><select id="uf-api-auth" class="settings-input"><option value="bearer">Bearer (most common)</option><option value="header">Header</option><option value="basic">Basic</option><option value="none">None</option></select></div>
+          <div class="settings-row" id="uf-api-header-row"><span class="settings-label settings-label-with-help"><label for="uf-api-header">Header</label>${_apiHint('The HTTP header name the key goes under (Miniflux: X-Auth-Token; most others: Authorization). Only used when Auth = Header.', 'Header')}</span><input id="uf-api-header" class="settings-input" placeholder="X-Auth-Token"></div>
+          <div class="settings-row"><span class="settings-label settings-label-with-help"><label for="uf-api-key">API Key</label>${_apiHint('The secret token the service issued you (generated in its admin panel / settings). Used to prove your identity on each request. Required for any Auth mode except None.', 'API Key')}</span><input id="uf-api-key" class="settings-input" type="password" placeholder="Token/key"></div>
           <div class="settings-row" style="margin-top:10px;align-items:center;justify-content:flex-end;gap:6px;">
             <span id="uf-api-msg" style="font-size:11px;flex:1;margin-right:8px"></span>
             <button class="admin-btn-add" id="uf-api-test" style="display:inline-flex;align-items:center;gap:5px;background:transparent;color:var(--accent, var(--red));border-color:color-mix(in srgb, var(--accent, var(--red)) 45%, var(--border));">Test</button>
@@ -4237,12 +4263,7 @@ async function initUnifiedIntegrations() {
       } catch (_) {}
     }
     const placeholderPass = (isEdit && existing) ? '(leave blank to keep current)' : '';
-    // Small `?` indicator next to each label (native title tooltip).
-    const _hint = (tip) =>
-      `<span class="uf-hint" title="${esc(tip)}" aria-label="${esc(tip)}" tabindex="0" `
-      + `style="display:inline-block;width:13px;height:13px;border-radius:50%;`
-      + `border:1px solid currentColor;font-size:9px;line-height:11px;text-align:center;`
-      + `opacity:0.45;margin-left:5px;cursor:help;vertical-align:1px;font-weight:600;">?</span>`;
+    const _hint = (tip, label) => renderHelpHint(tip, label, 'uf-hint');
     // Provider presets — picking one auto-fills IMAP + SMTP host/port.
     // Dovecot is IMAP-only here; the host is intentionally blank because
     // it may be remote (DNS, LAN, Tailscale), not localhost.
@@ -4281,7 +4302,7 @@ async function initUnifiedIntegrations() {
       <div class="admin-card" style="margin-top:8px">
         <h2 style="font-size:13px">${isEdit ? 'Edit' : 'Add'} Email Account</h2>
         <div class="settings-col">
-          <div class="settings-row"><label class="settings-label">Provider${_hint('Pick a known provider to auto-fill the IMAP and SMTP host/port. Choose Custom to type your own.')}</label>
+          <div class="settings-row"><span class="settings-label settings-label-with-help"><label for="uf-email-provider-trigger">Provider</label>${_hint('Pick a known provider to auto-fill the IMAP and SMTP host/port. Choose Custom to type your own.', 'Provider')}</span>
             <div class="ufp-wrap" style="position:relative;flex:1;min-width:0;">
               <select id="uf-email-provider" tabindex="-1" aria-hidden="true" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;"><option value="">Custom…</option>${_providerOptions}</select>
               <button type="button" id="uf-email-provider-trigger" class="settings-select" style="display:flex;align-items:center;gap:8px;cursor:pointer;text-align:left;width:100%;padding-right:24px;position:relative;">
@@ -4293,28 +4314,28 @@ async function initUnifiedIntegrations() {
             </div>
           </div>
           <div id="uf-email-provider-note" style="display:none;font-size:11px;line-height:1.5;padding:8px 10px;margin:2px 0 4px;border:1px solid color-mix(in srgb, var(--fg) 15%, transparent);border-left:3px solid var(--accent, var(--red));border-radius:4px;background:color-mix(in srgb, var(--fg) 4%, transparent);"></div>
-          <div class="settings-row"><label class="settings-label">Name${_hint('Optional label for this account (e.g. “Work” or “Personal”). Leave blank to use the email address.')}</label><input id="uf-email-name" class="settings-input" placeholder="(optional — leave blank to use email)"></div>
-          <div class="settings-row"><label class="settings-label">Email${_hint('Your email address. Used as the From: header on outgoing mail and as the display label when Name is blank.')}</label><input id="uf-email-from" class="settings-input" placeholder="you@example.com"></div>
-          <div class="settings-row"><label class="settings-label">Display Name${_hint('Your name as it appears in the From: field of emails you send, e.g. Jane Smith. Auto-filled from Google during OAuth.')}</label><input id="uf-display-name" class="settings-input" placeholder="Your Name"></div>
+          <div class="settings-row"><span class="settings-label settings-label-with-help"><label for="uf-email-name">Name</label>${_hint('Optional label for this account (e.g. “Work” or “Personal”). Leave blank to use the email address.', 'Name')}</span><input id="uf-email-name" class="settings-input" placeholder="(optional — leave blank to use email)"></div>
+          <div class="settings-row"><span class="settings-label settings-label-with-help"><label for="uf-email-from">Email</label>${_hint('Your email address. Used as the From: header on outgoing mail and as the display label when Name is blank.', 'Email')}</span><input id="uf-email-from" class="settings-input" placeholder="you@example.com"></div>
+          <div class="settings-row"><span class="settings-label settings-label-with-help"><label for="uf-display-name">Display Name</label>${_hint('Your name as it appears in the From: field of emails you send, e.g. Jane Smith. Auto-filled from Google during OAuth.', 'Display Name')}</span><input id="uf-display-name" class="settings-input" placeholder="Your Name"></div>
           <div id="uf-oauth-section" style="display:none;margin:8px 0;padding:10px;border:1px solid var(--border);border-radius:6px;background:color-mix(in srgb,var(--accent,#50fa7b) 6%,transparent)">
             <div style="font-size:11px;font-weight:600;margin-bottom:6px">Google OAuth2 — required for Workspace / .edu accounts</div>
             <div id="uf-oauth-status" style="font-size:11px;opacity:0.7;margin-bottom:6px">${existing && existing.oauth_provider === 'google' ? '✓ Connected via Google OAuth' : 'Not connected — click below to authorize'}</div>
             <button type="button" id="uf-oauth-btn" class="admin-btn-add" style="font-size:11px">${existing && existing.oauth_provider === 'google' ? 'Reconnect with Google' : 'Connect with Google'}</button>
           </div>
           <div style="font-size:11px;font-weight:600;opacity:0.6;margin:4px 0 2px;display:flex;align-items:center;gap:5px;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--accent, var(--red));flex-shrink:0;" aria-hidden="true"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>IMAP (Receiving)</div>
-          <div class="settings-row"><label class="settings-label">Host${_hint('Your IMAP server, e.g. imap.gmail.com, imap.migadu.com, a LAN host, or a Tailscale IP for Dovecot.')}</label><input id="uf-imap-host" class="settings-input" placeholder="imap.example.com"></div>
-          <div class="settings-row"><label class="settings-label">Port${_hint('993 for IMAPS (most providers), 143 for plain or STARTTLS. Local servers often use a custom port like 31143.')}</label><input id="uf-imap-port" class="settings-input" type="number" placeholder="993" style="max-width:100px"></div>
-          <div class="settings-row"><label class="settings-label">Username${_hint('Yes — your full email address goes here too (e.g. you@gmail.com). Same as the Email field above for almost every provider.')}</label><input id="uf-imap-user" class="settings-input" placeholder="you@example.com"></div>
-          <div class="uf-password-section"><div class="settings-row"><label class="settings-label">Password${_hint('For Gmail, iCloud, and Yahoo: paste your App Password (NOT your normal account password). For Migadu and Fastmail, your mailbox password usually works. Outlook / Office 365 generally requires OAuth and will not work with this password form.')}</label><input id="uf-imap-pass" class="settings-input" type="password" placeholder="${placeholderPass}"></div></div>
-          <div class="settings-row"><label class="settings-label">STARTTLS${_hint('Turn ON for port 143/587 to upgrade plain to TLS. Turn OFF for port 993 (IMAPS — already encrypted) or a local server with no TLS configured.')}</label><label class="admin-switch" style="margin-left:0"><input type="checkbox" id="uf-imap-starttls" checked><span class="admin-slider"></span></label></div>
+          <div class="settings-row"><span class="settings-label settings-label-with-help"><label for="uf-imap-host">Host</label>${_hint('Your IMAP server, e.g. imap.gmail.com, imap.migadu.com, a LAN host, or a Tailscale IP for Dovecot.', 'Host')}</span><input id="uf-imap-host" class="settings-input" placeholder="imap.example.com"></div>
+          <div class="settings-row"><span class="settings-label settings-label-with-help"><label for="uf-imap-port">Port</label>${_hint('993 for IMAPS (most providers), 143 for plain or STARTTLS. Local servers often use a custom port like 31143.', 'Port')}</span><input id="uf-imap-port" class="settings-input" type="number" placeholder="993" style="max-width:100px"></div>
+          <div class="settings-row"><span class="settings-label settings-label-with-help"><label for="uf-imap-user">Username</label>${_hint('Yes — your full email address goes here too (e.g. you@gmail.com). Same as the Email field above for almost every provider.', 'Username')}</span><input id="uf-imap-user" class="settings-input" placeholder="you@example.com"></div>
+          <div class="uf-password-section"><div class="settings-row"><span class="settings-label settings-label-with-help"><label for="uf-imap-pass">Password</label>${_hint('For Gmail, iCloud, and Yahoo: paste your App Password (NOT your normal account password). For Migadu and Fastmail, your mailbox password usually works. Outlook / Office 365 generally requires OAuth and will not work with this password form.', 'Password')}</span><input id="uf-imap-pass" class="settings-input" type="password" placeholder="${placeholderPass}"></div></div>
+          <div class="settings-row"><span class="settings-label settings-label-with-help"><label for="uf-imap-starttls">STARTTLS</label>${_hint('Turn ON for port 143/587 to upgrade plain to TLS. Turn OFF for port 993 (IMAPS — already encrypted) or a local server with no TLS configured.', 'STARTTLS')}</span><label class="admin-switch" style="margin-left:0"><input type="checkbox" id="uf-imap-starttls" checked><span class="admin-slider"></span></label></div>
           <div style="font-size:11px;font-weight:600;opacity:0.6;margin:8px 0 2px;display:flex;align-items:center;gap:5px;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--accent, var(--red));flex-shrink:0;" aria-hidden="true"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>SMTP (Sending) <span style="font-weight:normal;opacity:0.7">— optional, leave blank for read-only</span></div>
-          <div class="settings-row"><label class="settings-label">Host${_hint('Your outgoing-mail server, e.g. smtp.gmail.com. Leave blank to make this account read-only.')}</label><input id="uf-smtp-host" class="settings-input" placeholder="smtp.example.com"></div>
-          <div class="settings-row"><label class="settings-label">Port${_hint('465 for SSL/SMTPS, 587 for STARTTLS. 25 is usually blocked by ISPs.')}</label><input id="uf-smtp-port" class="settings-input" type="number" placeholder="465" style="max-width:100px"></div>
-          <div class="settings-row"><label class="settings-label">Security${_hint('SSL for port 465, STARTTLS for port 587, or None for local SMTP bridges such as Proton Mail Bridge.')}</label><select id="uf-smtp-security" class="settings-select"><option value="ssl">SSL</option><option value="starttls">STARTTLS</option><option value="none">None</option></select></div>
-          <div class="settings-row"><label class="settings-label">Same as IMAP${_hint('Use the IMAP username and password for SMTP too (right for almost every provider). Turn off to enter separate SMTP credentials.')}</label><label class="admin-switch" style="margin-left:0"><input type="checkbox" id="uf-smtp-same" checked><span class="admin-slider"></span></label></div>
-          <div class="settings-row uf-smtp-creds"><label class="settings-label">Username${_hint('Usually the same as your IMAP username (your email address).')}</label><input id="uf-smtp-user" class="settings-input"></div>
-          <div class="settings-row uf-smtp-creds"><label class="settings-label">Password${_hint('Your SMTP password — often the same as your IMAP password. Outlook / Office 365 generally requires OAuth and will not work with this password form.')}</label><input id="uf-smtp-pass" class="settings-input" type="password" placeholder="${placeholderPass}"></div>
-          <div class="settings-row" style="margin-top:4px"><label class="settings-label">Default${_hint('Use this account whenever no specific account is chosen.')}</label><label class="admin-switch" style="margin-left:0"><input type="checkbox" id="uf-email-default"><span class="admin-slider"></span></label><span style="font-size:10px;opacity:0.5;margin-left:6px">Used when nothing else is selected</span></div>
+          <div class="settings-row"><span class="settings-label settings-label-with-help"><label for="uf-smtp-host">Host</label>${_hint('Your outgoing-mail server, e.g. smtp.gmail.com. Leave blank to make this account read-only.', 'Host')}</span><input id="uf-smtp-host" class="settings-input" placeholder="smtp.example.com"></div>
+          <div class="settings-row"><span class="settings-label settings-label-with-help"><label for="uf-smtp-port">Port</label>${_hint('465 for SSL/SMTPS, 587 for STARTTLS. 25 is usually blocked by ISPs.', 'Port')}</span><input id="uf-smtp-port" class="settings-input" type="number" placeholder="465" style="max-width:100px"></div>
+          <div class="settings-row"><span class="settings-label settings-label-with-help"><label for="uf-smtp-security">Security</label>${_hint('SSL for port 465, STARTTLS for port 587, or None for local SMTP bridges such as Proton Mail Bridge.', 'Security')}</span><select id="uf-smtp-security" class="settings-select"><option value="ssl">SSL</option><option value="starttls">STARTTLS</option><option value="none">None</option></select></div>
+          <div class="settings-row"><span class="settings-label settings-label-with-help"><label for="uf-smtp-same">Same as IMAP</label>${_hint('Use the IMAP username and password for SMTP too (right for almost every provider). Turn off to enter separate SMTP credentials.', 'Same as IMAP')}</span><label class="admin-switch" style="margin-left:0"><input type="checkbox" id="uf-smtp-same" checked><span class="admin-slider"></span></label></div>
+          <div class="settings-row uf-smtp-creds"><span class="settings-label settings-label-with-help"><label for="uf-smtp-user">Username</label>${_hint('Usually the same as your IMAP username (your email address).', 'Username')}</span><input id="uf-smtp-user" class="settings-input"></div>
+          <div class="settings-row uf-smtp-creds"><span class="settings-label settings-label-with-help"><label for="uf-smtp-pass">Password</label>${_hint('Your SMTP password — often the same as your IMAP password. Outlook / Office 365 generally requires OAuth and will not work with this password form.', 'Password')}</span><input id="uf-smtp-pass" class="settings-input" type="password" placeholder="${placeholderPass}"></div>
+          <div class="settings-row" style="margin-top:4px"><span class="settings-label settings-label-with-help"><label for="uf-email-default">Default</label>${_hint('Use this account whenever no specific account is chosen.', 'Default')}</span><label class="admin-switch" style="margin-left:0"><input type="checkbox" id="uf-email-default"><span class="admin-slider"></span></label><span style="font-size:10px;opacity:0.5;margin-left:6px">Used when nothing else is selected</span></div>
           <div class="settings-row" style="margin-top:10px;align-items:center;justify-content:flex-end;gap:6px;">
             <span id="uf-email-msg" style="font-size:11px;flex:1;margin-right:8px"></span>
             <button class="admin-btn-add" id="uf-email-test" style="display:inline-flex;align-items:center;gap:5px;background:transparent;color:var(--accent, var(--red));border-color:color-mix(in srgb, var(--accent, var(--red)) 45%, var(--border));">
@@ -4419,7 +4440,7 @@ async function initUnifiedIntegrations() {
         <div style="font-weight:600;margin-bottom:3px;">${esc(n.title)}</div>
         <div style="opacity:0.8;margin-bottom:6px;">${esc(n.body)}</div>
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-          <a href="${esc(n.url)}" target="_blank" rel="noopener noreferrer" class="admin-btn-sm" style="background:var(--red);border-color:var(--red);color:#fff;text-decoration:none;display:inline-flex;align-items:center;gap:5px;font-weight:600;">
+          <a href="${esc(n.url)}" target="_blank" rel="noopener noreferrer" class="admin-btn-sm" style="background:var(--red);border-color:var(--red);color:var(--accent-text, #fff);text-decoration:none;display:inline-flex;align-items:center;gap:5px;font-weight:600;">
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
             ${esc(n.linkLabel || 'Generate App Password')}
           </a>
@@ -5609,6 +5630,7 @@ export function open(tab) {
 
 export function close() {
   if (!modalEl) return;
+  dismissSettingsHelp();
 
   // Always clear the Appearance state so the rest of the app does not remain
   // dimmed if Settings is closed while that panel is active.

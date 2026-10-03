@@ -3284,7 +3284,8 @@ def _build_actions_snapshot(tool_events: list, limit: int = 8000) -> str:
 
 async def _run_verifier_subagent(
     instruction: str, actions_snapshot: str,
-    *, endpoint_url: str, model: str, headers: dict,
+    *, endpoint_url: str, model: str, headers: dict, daybreak_enabled: bool = False,
+    reasoning_effort: Optional[str] = None,
 ) -> list:
     """Fresh-context completion verifier. A second model instance with NO
     shared history reads the user's request + a record of what the agent did
@@ -3317,6 +3318,8 @@ async def _run_verifier_subagent(
             url=endpoint_url, model=model,
             messages=[{"role": "user", "content": prompt}],
             headers=headers, temperature=0.0, max_tokens=600, timeout=60,
+            daybreak_enabled=daybreak_enabled,
+            **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
         )
     except Exception as e:
         logger.warning(f"[agent] verifier subagent failed: {e}")
@@ -3449,6 +3452,8 @@ async def stream_agent_loop(
     _is_teacher_run: bool = False,
     history_session=None,
     defer_context_shaping: bool = False,
+    daybreak_enabled: bool = False,
+    reasoning_effort: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop generator.
 
@@ -3701,6 +3706,8 @@ async def stream_agent_loop(
                 fallback_on_empty=fallback_on_empty,
                 candidate_request_factory=_direct_candidate_request,
                 candidate_route_descriptors=route_descriptors,
+                daybreak_enabled=daybreak_enabled,
+                **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
             ):
                 if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
                     try:
@@ -4285,6 +4292,8 @@ async def stream_agent_loop(
                 owner=owner,
                 persist=False,
                 compaction_state=compaction_state,
+                **({"daybreak_enabled": True} if daybreak_enabled else {}),
+                **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
             )
         (
             is_ody,
@@ -4954,6 +4963,8 @@ async def stream_agent_loop(
             fallback_on_empty=fallback_on_empty,
             candidate_request_factory=_candidate_request,
             candidate_route_descriptors=_candidate_route_descriptors,
+            daybreak_enabled=daybreak_enabled,
+            **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
         ):
             if not _round_first_event_logged:
                 _round_first_event_logged = True
@@ -5358,6 +5369,8 @@ async def stream_agent_loop(
                     _raw = await llm_call_async(
                         url=endpoint_url, model=model, messages=_synth_messages,
                         headers=headers, temperature=0.3, max_tokens=max_tokens, timeout=60,
+                        daybreak_enabled=daybreak_enabled,
+                        **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
                     )
                     _raw_text = _raw or ""
                     _synth = _strip_think_blocks(strip_tool_blocks(_raw_text)).strip()
@@ -5451,6 +5464,8 @@ async def stream_agent_loop(
                     _verifier_instruction,
                     _build_actions_snapshot(tool_events),
                     endpoint_url=endpoint_url, model=model, headers=headers,
+                    daybreak_enabled=daybreak_enabled,
+                    **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
                 )
                 if _vfail:
                     _verifier_rounds += 1

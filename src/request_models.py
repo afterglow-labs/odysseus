@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StrictBool, field_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
@@ -13,6 +13,8 @@ class ChatRequest(BaseModel):
     time_filter: Optional[str] = Field(default=None, description="Time filter for search")
     preset_id: Optional[str] = Field(default=None, description="Preset identifier")
     selected_endpoint_id: Optional[str] = Field(default=None, description="Selected model endpoint ID")
+    daybreak_enabled: Optional[StrictBool] = Field(default=None, description="Daybreak preference; omitted uses the saved session setting")
+    reasoning_effort: Optional[str] = Field(default=None, description="Reasoning effort; omitted uses the session choice, empty string selects provider default")
     
     @field_validator('message')
     @classmethod
@@ -32,6 +34,8 @@ class SessionCreateRequest(BaseModel):
     endpoint_url: str = Field(..., description="LLM endpoint URL")
     model: Optional[str] = Field(default="", description="Model ID")
     rag: Optional[bool] = Field(default=False, description="Enable RAG")
+    daybreak_enabled: bool = Field(default=False, description="Request approved Daybreak access")
+    reasoning_effort: Optional[str] = Field(default=None, description="Reasoning effort; empty or omitted selects provider default")
 
 
 class MemoryAddRequest(BaseModel):
@@ -126,6 +130,8 @@ class SessionResponse(BaseModel):
     model: str = Field(..., description="Model being used")
     rag: bool = Field(default=False, description="RAG enabled")
     archived: bool = Field(default=False, description="Whether session is archived")
+    daybreak_enabled: bool = Field(default=False, description="Daybreak selected for this conversation")
+    reasoning_effort: Optional[str] = Field(default=None, description="Selected reasoning effort, or null for provider default")
 
 
 class MemoryResponse(BaseModel):

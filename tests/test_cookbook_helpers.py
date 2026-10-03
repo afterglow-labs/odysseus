@@ -1,7 +1,9 @@
 import json
 import os
+import shlex
 import subprocess
 import sys
+import venv
 from pathlib import Path
 
 import pytest
@@ -460,6 +462,148 @@ def test_pip_install_runner_leaves_plain_commands_unchanged():
     _append_pip_install_runner_lines(lines, "python3 -m pip install --no-cache-dir vllm")
 
     assert lines == ["python3 -m pip install --no-cache-dir vllm"]
+
+
+def test_local_pip_runner_bootstraps_selected_no_pip_venv_offline(tmp_path):
+    env_dir = tmp_path / "selected venv"
+    venv.EnvBuilder(with_pip=False).create(env_dir)
+    python = env_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    sentinel = env_dir / "keep-existing-files"
+    sentinel.write_text("keep", encoding="utf-8")
+    missing = subprocess.run(
+        [str(python), "-m", "pip", "--version"], capture_output=True, timeout=15,
+    )
+    assert missing.returncode != 0
+
+    lines = []
+    _append_pip_install_runner_lines(
+        lines,
+        f"{shlex.quote(python.as_posix())} -m pip install --no-index --no-deps pip",
+        bootstrap_pip=True,
+    )
+    _append_serve_exit_code_lines(lines, keep_shell_open=False, is_pip_install=True)
+    script = "\n".join(lines)
+    env = {**os.environ, "PIP_CONFIG_FILE": os.devnull, "PIP_DISABLE_PIP_VERSION_CHECK": "1"}
+    result = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, timeout=60, env=env,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "bootstrapping" in result.stdout
+    assert "DOWNLOAD_OK" in result.stdout
+    assert "=== Process exited with code 0 ===" in result.stdout
+    installed = subprocess.run(
+        [str(python), "-c", "import pip; print(pip.__file__)"],
+        capture_output=True, text=True, timeout=15, check=True,
+    )
+    assert Path(installed.stdout.strip()).is_relative_to(env_dir)
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+
+    # A subsequent install uses the working pip without bootstrapping again.
+    again = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, timeout=30, env=env,
+    )
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert "bootstrapping" not in again.stdout
+
+
+@pytest.mark.parametrize(
+    "pip_status,bootstrap_status,install_status,expected_status,attempts_install",
+    [(1, 37, 0, 37, False), (17, 0, 0, 17, False), (0, 0, 23, 23, True)],
+)
+def test_local_pip_runner_preserves_failure_and_completion_status(
+    tmp_path, pip_status, bootstrap_status, install_status, expected_status, attempts_install,
+):
+    python = tmp_path / "selected-python"
+    python.write_text(
+        "#!/bin/bash\n"
+        'case "$*" in\n'
+        f'  "-m pip --version") exit {pip_status} ;;\n'
+        f'  "-m ensurepip --upgrade") echo bootstrap-attempt; exit {bootstrap_status} ;;\n'
+        f'  "-m pip install example") echo install-attempt; exit {install_status} ;;\n'
+        "  *) exit 99 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    python.chmod(0o755)
+    lines = []
+    _append_pip_install_runner_lines(
+        lines, f"{shlex.quote(python.as_posix())} -m pip install example", bootstrap_pip=True,
+    )
+    _append_serve_exit_code_lines(lines, keep_shell_open=False, is_pip_install=True)
+    result = subprocess.run(
+        ["bash", "-c", "\n".join(lines)], capture_output=True, text=True, timeout=15,
+    )
+
+    assert result.returncode == expected_status, result.stdout + result.stderr
+    assert f"=== Process exited with code {expected_status} ===" in result.stdout
+    assert "DOWNLOAD_OK" not in result.stdout
+    assert ("install-attempt" in result.stdout) is attempts_install
+    assert ("bootstrap-attempt" in result.stdout) is (pip_status != 0)
+    assert ("Could not bootstrap pip" in result.stderr) is (pip_status != 0)
+
+
+@pytest.mark.parametrize("builder_status,install_status", [(0, 0), (29, 0), (0, 31)])
+@pytest.mark.parametrize("supports_break_flag", [True, False])
+@pytest.mark.parametrize("package", ["realesrgan==0.3.0", "basicsr==1.4.2", "gfpgan>=1.3.8", "facexlib==0.3.0"])
+def test_realesrgan_runner_prepares_same_python_before_install(
+    tmp_path, builder_status, install_status, supports_break_flag, package,
+):
+    python = tmp_path / "selected python"
+    builder = tmp_path / "app scripts" / "build_realesrgan_wheels.py"
+    ready = tmp_path / "pip-ready"
+    python.write_text(
+        "#!/bin/bash\n"
+        'case "$1 $2 $3" in\n'
+        '  "-m pip --version") test -f "$ODYS_TEST_READY" ;;\n'
+        '  "-m ensurepip --upgrade") echo bootstrap; touch "$ODYS_TEST_READY" ;;\n'
+        '  "-m pip install")\n'
+        '    if [ "$4" = "--help" ]; then\n'
+        f'      echo "{"--break-system-packages" if supports_break_flag else "pip install help"}"\n'
+        '    else\n'
+        '      printf "original:%s\\n" "$*"\n'
+        f'      exit {install_status}\n'
+        '    fi ;;\n'
+        '  *) test "$1" = "$ODYS_TEST_BUILDER" || exit 99\n'
+        '     shift; printf "builder:%s\\n" "$*"\n'
+        f'     exit {builder_status} ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    python.chmod(0o755)
+    command = f"{shlex.quote(python.as_posix())} -m pip install -U --user --break-system-packages {shlex.quote(package)}"
+    lines = []
+    _append_pip_install_runner_lines(
+        lines, command, bootstrap_pip=True, realesrgan_builder=builder.as_posix(),
+    )
+    _append_serve_exit_code_lines(lines, keep_shell_open=False, is_pip_install=True)
+    result = subprocess.run(
+        ["bash", "-c", "\n".join(lines)], capture_output=True, text=True, timeout=15,
+        env={**os.environ, "ODYS_TEST_READY": str(ready), "ODYS_TEST_BUILDER": builder.as_posix()},
+    )
+
+    expected_status = builder_status or install_status
+    assert result.returncode == expected_status, result.stdout + result.stderr
+    assert f"=== Process exited with code {expected_status} ===" in result.stdout
+    assert ("DOWNLOAD_OK" in result.stdout) is (expected_status == 0)
+    expected_flags = "--install --user" + (" --break-system-packages" if supports_break_flag else "")
+    assert f"builder:{expected_flags}\n" in result.stdout
+    assert result.stdout.index("bootstrap\n") < result.stdout.index("builder:")
+    assert ("original:" in result.stdout) is (builder_status == 0)
+    if not builder_status:
+        expected_install = "-m pip install -U --user" + (" --break-system-packages" if supports_break_flag else "")
+        assert f"original:{expected_install} {package}\n" in result.stdout
+        assert result.stdout.index("builder:") < result.stdout.index("original:")
+
+
+@pytest.mark.parametrize("package", ["playwright", "sam_mask", "not-realesrgan", "some-realesrgan-helper"])
+def test_realesrgan_preparation_is_scoped_to_the_requested_package(package):
+    lines = []
+    _append_pip_install_runner_lines(
+        lines, f"python3 -m pip install {package}", bootstrap_pip=True,
+        realesrgan_builder="/app/scripts/build_realesrgan_wheels.py",
+    )
+    assert "build_realesrgan_wheels.py" not in "\n".join(lines)
 
 
 def test_pip_install_attempt_wraps_in_status_preserving_subshell():

@@ -22,26 +22,53 @@ logger = logging.getLogger(__name__)
 _DEVICE_FLOW_STORE = PendingDeviceFlowStore()
 
 
-def _provision_endpoint(tokens: Dict, owner: Optional[str]) -> Dict:
+def _reconnect_target(db, endpoint_id: str, owner: Optional[str], expected_auth_id=None):
+    """A reconnect must update only the account selected when it began."""
+    ep = db.query(ModelEndpoint).filter(
+        ModelEndpoint.id == endpoint_id, ModelEndpoint.owner == owner,
+    ).first()
+    if ep is None or not chatgpt_subscription.is_chatgpt_subscription_base(ep.base_url):
+        raise HTTPException(404, "ChatGPT Subscription connection not found")
+    if expected_auth_id is not None and ep.provider_auth_id != expected_auth_id:
+        raise HTTPException(409, "This connection changed. Open its settings and reconnect again.")
+    auth = db.query(ProviderAuthSession).filter(
+        ProviderAuthSession.id == ep.provider_auth_id,
+        ProviderAuthSession.owner == owner,
+        ProviderAuthSession.provider == chatgpt_subscription.CHATGPT_SUBSCRIPTION_PROVIDER,
+    ).first()
+    if auth is None:
+        raise HTTPException(404, "ChatGPT Subscription connection not found")
+    return ep, auth
+
+
+def _provision_endpoint(tokens: Dict, owner: Optional[str], *, endpoint_id=None, expected_auth_id=None) -> Dict:
     access_token = tokens.get("access_token")
     refresh_token = tokens.get("refresh_token")
     if not access_token or not refresh_token:
         raise ValueError("ChatGPT token response was missing access_token or refresh_token")
 
     base = chatgpt_subscription.DEFAULT_CHATGPT_SUBSCRIPTION_BASE_URL
-    models = chatgpt_subscription.fetch_available_models(access_token)
-    if not models:
-        raise ValueError("ChatGPT Subscription connected, but no usable Codex models were discovered for this account.")
     db = SessionLocal()
     try:
-        auth = (
-            db.query(ProviderAuthSession)
-            .filter(
-                ProviderAuthSession.provider == chatgpt_subscription.CHATGPT_SUBSCRIPTION_PROVIDER,
-                ProviderAuthSession.owner == owner,
+        ep = None
+        if endpoint_id:
+            ep, auth = _reconnect_target(db, endpoint_id, owner, expected_auth_id)
+            expected_auth_id = auth.id
+        else:
+            auth = (
+                db.query(ProviderAuthSession)
+                .filter(
+                    ProviderAuthSession.provider == chatgpt_subscription.CHATGPT_SUBSCRIPTION_PROVIDER,
+                    ProviderAuthSession.owner == owner,
+                )
+                .first()
             )
-            .first()
-        )
+        models = chatgpt_subscription.fetch_available_models(access_token)
+        if not models:
+            raise ValueError("ChatGPT Subscription connected, but no usable Codex models were discovered for this account.")
+        if endpoint_id:
+            db.expire_all()
+            ep, auth = _reconnect_target(db, endpoint_id, owner, expected_auth_id)
         if auth is None:
             auth = ProviderAuthSession(
                 id=str(uuid.uuid4())[:8],
@@ -57,16 +84,20 @@ def _provision_endpoint(tokens: Dict, owner: Optional[str]) -> Dict:
         auth.refresh_token = refresh_token
         auth.last_refresh = utcnow_naive()
         auth.auth_mode = "chatgpt"
+        # Reauthentication can switch the upstream account; stale capability
+        # denials must not carry over to the newly authenticated credentials.
+        auth.model_capabilities = None
 
-        ep = (
-            db.query(ModelEndpoint)
-            .filter(
-                ModelEndpoint.base_url == base,
-                ModelEndpoint.provider_auth_id == auth.id,
-                ModelEndpoint.owner == owner,
+        if ep is None:
+            ep = (
+                db.query(ModelEndpoint)
+                .filter(
+                    ModelEndpoint.base_url == base,
+                    ModelEndpoint.provider_auth_id == auth.id,
+                    ModelEndpoint.owner == owner,
+                )
+                .first()
             )
-            .first()
-        )
         if ep is None:
             ep = ModelEndpoint(
                 id=str(uuid.uuid4())[:8],
@@ -77,7 +108,8 @@ def _provision_endpoint(tokens: Dict, owner: Optional[str]) -> Dict:
                 owner=owner,
             )
             db.add(ep)
-        ep.name = "ChatGPT Subscription"
+        if not endpoint_id:
+            ep.name = "ChatGPT Subscription"
         ep.base_url = base
         ep.api_key = None
         ep.provider_auth_id = auth.id
@@ -88,6 +120,8 @@ def _provision_endpoint(tokens: Dict, owner: Optional[str]) -> Dict:
         ep.model_refresh_mode = "manual"
         ep.cached_models = json.dumps(models)
         db.commit()
+        from src.chatgpt_capabilities import bind_account_token
+        bind_account_token(auth.id, access_token)
         result = {
             "id": ep.id,
             "name": ep.name,
@@ -107,6 +141,13 @@ def _provision_endpoint(tokens: Dict, owner: Optional[str]) -> Dict:
 
 
 def _start_device_flow(request: Request, _form) -> DeviceFlowStart:
+    owner = get_current_user(request) or None
+    endpoint_id = str(_form.get("endpoint_id") or "").strip() or None
+    expected_auth_id = None
+    if endpoint_id:
+        with SessionLocal() as db:
+            _ep, auth = _reconnect_target(db, endpoint_id, owner)
+            expected_auth_id = auth.id
     try:
         data = chatgpt_subscription.request_device_code()
     except Exception as exc:
@@ -121,7 +162,9 @@ def _start_device_flow(request: Request, _form) -> DeviceFlowStart:
         pending={
             "device_auth_id": device_auth_id,
             "user_code": user_code,
-            "owner": get_current_user(request) or None,
+            "owner": owner,
+            "endpoint_id": endpoint_id,
+            "expected_auth_id": expected_auth_id,
         },
         response={
             "user_code": user_code,
@@ -133,6 +176,8 @@ def _start_device_flow(request: Request, _form) -> DeviceFlowStart:
 
 
 def _poll_device_flow(_request: Request, pending: Dict) -> DeviceFlowPoll:
+    if (get_current_user(_request) or None) != pending["owner"]:
+        raise HTTPException(403, "This connection belongs to another user")
     try:
         data = chatgpt_subscription.poll_device_auth(pending["device_auth_id"], pending["user_code"])
     except Exception as exc:
@@ -144,7 +189,12 @@ def _poll_device_flow(_request: Request, pending: Dict) -> DeviceFlowPoll:
     if authorization_code and code_verifier:
         try:
             tokens = chatgpt_subscription.exchange_authorization_code(authorization_code, code_verifier)
-            result = _provision_endpoint(tokens, pending["owner"])
+            result = _provision_endpoint(
+                tokens, pending["owner"], endpoint_id=pending.get("endpoint_id"),
+                expected_auth_id=pending.get("expected_auth_id"),
+            )
+        except HTTPException:
+            raise
         except Exception as exc:
             logger.exception("ChatGPT Subscription endpoint provisioning failed")
             raise chatgpt_subscription.to_http_exception(exc)

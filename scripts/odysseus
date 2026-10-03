@@ -72,6 +72,13 @@ def _is_runnable_subcommand(path: Path) -> bool:
     return path.exists() and path.is_file() and os.access(path, os.X_OK)
 
 
+def _subcommand_python() -> str:
+    """Use the same project interpreter for help and command execution."""
+    venv = SCRIPTS_DIR.parent / "venv"
+    python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    return str(python) if python.is_file() else sys.executable
+
+
 def _print_listing() -> None:
     """`odysseus` with no args (or `odysseus help`) — print the table."""
     sys.stdout.write(f"odysseus {VERSION} — every feature, on the shell.\n\n")
@@ -108,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
         if not _is_runnable_subcommand(sub):
             sys.stderr.write(f"odysseus: unknown subcommand {argv[1]!r}\n")
             return 1
-        return subprocess.call([str(sub), "--help"])
+        return subprocess.call([_subcommand_python(), str(sub), "--help"])
 
     # `odysseus foo ...` → exec `odysseus-foo ...` under the project venv.
     name = argv[0]
@@ -123,9 +130,7 @@ def main(argv: list[str] | None = None) -> int:
     # (bcrypt, sqlalchemy, fastapi, ...) resolve. Fall back to whatever
     # `python` is on PATH if no venv is found — useful in container
     # installs that wire the deps system-wide.
-    repo_root = SCRIPTS_DIR.parent
-    venv_python = repo_root / "venv" / "bin" / "python"
-    py = str(venv_python) if venv_python.exists() else sys.executable
+    py = _subcommand_python()
     os.execv(py, [py, str(sub)] + argv[1:])
     return 0  # unreachable
 

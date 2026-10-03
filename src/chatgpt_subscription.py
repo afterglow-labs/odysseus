@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -75,6 +76,65 @@ def is_chatgpt_subscription_base(url: str) -> bool:
     )
 
 
+def daybreak_access_program(model: str, enabled: bool = False) -> str:
+    """Select the documented program without changing model or claiming access."""
+    if not enabled:
+        return "standard"
+    if model in {"gpt-5.6-cyber", "gpt-daybreak-red-latest"}:
+        return "daybreak_red"
+    return "daybreak_blue"
+
+
+def normalize_reasoning_effort(value) -> str | None:
+    """Normalize the optional wire value without a stale hardcoded level list."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("Reasoning effort must be a string or provider default.")
+    value = value.strip().lower()
+    if not value:
+        return None
+    if not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", value):
+        raise ValueError("Invalid reasoning effort value.")
+    return value
+
+
+def daybreak_error(error) -> tuple[str, str] | None:
+    """Distinguish program authorization from expired subscription credentials."""
+    if isinstance(error, (str, bytes)):
+        try:
+            error = json.loads(error)
+        except (ValueError, TypeError):
+            if isinstance(error, bytes):
+                error = error.decode(errors="replace")
+    if isinstance(error, dict):
+        error = error.get("error") or error
+    if isinstance(error, dict):
+        code = error.get("code") or error.get("type")
+        detail = error.get("message") or error.get("detail")
+    elif isinstance(error, str):
+        code, detail = None, error
+    else:
+        return None
+    # Codex can return a plain ``detail`` instead of a structured API code.
+    # Preserve this explicit model/program denial and its terminal semantics.
+    normalized = str(detail or "").lower().replace("\u2019", "'")
+    if "daybreak" in normalized and any(phrase in normalized for phrase in (
+        "isn't available for this model", "is not available for this model",
+        "not supported for this model", "does not support daybreak",
+        "doesn't support daybreak",
+    )):
+        return "unsupported_access_program", str(detail)[:700]
+    hints = {
+        "invalid_access_program": "The selected model rejected this Daybreak program. Choose a compatible model or turn Daybreak off.",
+        "unsupported_access_program": "The selected model does not support Daybreak. Choose a compatible model or turn Daybreak off.",
+        "access_program_not_enabled": "Daybreak access is not enabled for this account or workspace. Check your approved access or turn Daybreak off.",
+    }
+    if code not in hints:
+        return None
+    return code, hints[code] + (f" Upstream: {str(detail)[:700]}" if detail else "")
+
+
 def chatgpt_headers(access_token: Optional[str]) -> Dict[str, str]:
     headers = {
         "Accept": "application/json, text/event-stream",
@@ -101,7 +161,9 @@ def fetch_available_models(access_token: str, timeout: float = 10.0) -> list[str
         data = response.json()
     except Exception:
         return []
-    entries = data.get("models", []) if isinstance(data, dict) else []
+    entries = data.get("models") if isinstance(data, dict) else None
+    if not isinstance(entries, list):
+        return []
     sortable: list[tuple[int, str]] = []
     for item in entries:
         if not isinstance(item, dict):
@@ -122,6 +184,9 @@ def fetch_available_models(access_token: str, timeout: float = 10.0) -> list[str
         if slug not in seen:
             ordered.append(slug)
             seen.add(slug)
+    if ordered:
+        from src.chatgpt_capabilities import record_model_catalog
+        record_model_catalog(access_token, entries)
     return ordered
 
 
@@ -281,6 +346,8 @@ def resolve_runtime_credentials(auth_id: str, owner: Optional[str] = None, *, fo
                     db.refresh(row)
             access_token = row.access_token or ""
 
+        from src.chatgpt_capabilities import bind_account_token
+        bind_account_token(auth_id, access_token)
         return {
             "provider": CHATGPT_SUBSCRIPTION_PROVIDER,
             "base_url": (row.base_url or DEFAULT_CHATGPT_SUBSCRIPTION_BASE_URL).rstrip("/"),
@@ -295,7 +362,12 @@ def to_http_exception(exc: Exception) -> HTTPException:
     if isinstance(exc, ChatGPTSubscriptionRateLimited):
         return HTTPException(429, str(exc))
     if isinstance(exc, (ChatGPTSubscriptionReauthRequired, ChatGPTSubscriptionAuthNotFound)):
-        return HTTPException(401, f"{exc} Reconnect the provider.")
+        return HTTPException(401, {
+            "message": f"{exc} Reconnect the provider.",
+            "authentication_required": True,
+            "provider": CHATGPT_SUBSCRIPTION_PROVIDER,
+            "endpoint_url": DEFAULT_CHATGPT_SUBSCRIPTION_BASE_URL,
+        })
     return HTTPException(502, str(exc))
 
 

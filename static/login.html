@@ -72,6 +72,7 @@
         codeBg:          '--code-bg',
         codeFg:          '--code-fg',
         toggleActive:    '--toggle-active',
+        accentText:      '--accent-text',
       };
       for (var k in ADV) { if (a[k]) s.setProperty(ADV[k], a[k]); }
     }
@@ -348,7 +349,7 @@
 
   let mode = 'login'; // 'login' | 'signup' | 'setup'
   let signupAllowed = false;
-  let policy = { password_min_length: 8, reserved_usernames: [] };
+  let policy = { reserved_usernames: [] };
 
   const rememberToggle = document.getElementById('rememberToggle');
 
@@ -453,8 +454,8 @@
         submitBtn.disabled = false;
         return;
       }
-      if (password.length < policy.password_min_length) {
-        errEl.textContent = `Password must be at least ${policy.password_min_length} characters`;
+      if (!password) {
+        errEl.textContent = 'Password is required';
         errEl.style.display = 'block';
         submitBtn.disabled = false;
         return;

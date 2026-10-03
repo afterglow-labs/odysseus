@@ -1942,6 +1942,64 @@ def test_background_refresh_failure_keeps_existing_cached_models(monkeypatch):
     assert json.loads(ep.cached_models) == ["cached-model"]
 
 
+def test_subscription_capabilities_are_scoped_by_endpoint_account_and_invalidate_cached_list(monkeypatch):
+    from src import chatgpt_capabilities as caps
+    base = "https://chatgpt.com/backend-api/codex"
+    alice = _route_ep("alice-ep", base, cached_models=["gpt-6.1-sol"], refresh_mode="manual")
+    bob = _route_ep("bob-ep", base, cached_models=["gpt-6.1-sol"], refresh_mode="manual")
+    alice.provider_auth_id, bob.provider_auth_id = "alice-auth", "bob-auth"
+    db = _RouteDb([alice, bob])
+    monkeypatch.setattr(model_routes, "ModelEndpoint", _RouteModelEndpoint)
+    monkeypatch.setattr(model_routes, "SessionLocal", lambda: db)
+    monkeypatch.setattr(model_routes, "_auth_disabled", lambda: True)
+    generation = [0]
+    monkeypatch.setattr(caps, "capability_generation", lambda: generation[0])
+    def snapshot(account, models):
+        return {"daybreak_revision": 3, "daybreak_models": {
+            model: {"supported": account == "bob-auth" or generation[0] == 0,
+                    "source": "catalog", "reason": ""} for model in models}}
+    monkeypatch.setattr(caps, "daybreak_snapshot", snapshot)
+    monkeypatch.setattr(model_routes, "_probe_endpoint", lambda *a, **k: pytest.fail("cache-only route probed upstream"))
+    endpoint = _route_endpoint(model_routes.setup_model_routes(None), "/api/models")
+    first = endpoint(_route_request())
+    assert all(item["daybreak_models"]["gpt-6.1-sol"]["supported"] for item in first["items"])
+    generation[0] += 1
+    second = endpoint(_route_request())
+    assert second["items"][0]["endpoint_id"] == "alice-ep"
+    assert second["items"][0]["daybreak_models"]["gpt-6.1-sol"]["supported"] is False
+    assert second["items"][1]["daybreak_models"]["gpt-6.1-sol"]["supported"] is True
+
+
+def test_subscription_refresh_keeps_same_url_accounts_separate_and_resolves_oauth(monkeypatch):
+    from src import chatgpt_subscription as subscription
+    from src import chatgpt_capabilities as caps
+    base = "https://chatgpt.com/backend-api/codex"
+    rows = [_route_ep(account, base, cached_models=["old"], refresh_mode="manual", owner=account)
+            for account in ("alice", "bob")]
+    for row in rows:
+        row.provider_auth_id = row.id + "-auth"
+    db = _RouteDb(rows)
+    monkeypatch.setattr(model_routes, "ModelEndpoint", _RouteModelEndpoint)
+    monkeypatch.setattr(model_routes, "SessionLocal", lambda: db)
+    monkeypatch.setattr(model_routes, "_auth_disabled", lambda: True)
+    monkeypatch.setattr(caps, "daybreak_snapshot", lambda *args: {})
+    resolved, probed = [], []
+    def resolve(account, owner=None):
+        resolved.append((account, owner))
+        return {"base_url": base, "api_key": owner + "-token"}
+    def probe(url, api_key=None, timeout=None):
+        probed.append((url, api_key))
+        return [api_key + "-model"]
+    monkeypatch.setattr(subscription, "resolve_runtime_credentials", resolve)
+    monkeypatch.setattr(model_routes, "_probe_endpoint", probe)
+    _route_endpoint(model_routes.setup_model_routes(None), "/api/models")(_route_request(), refresh=True)
+    assert _wait_for(lambda: db.commits > 0)
+    assert sorted(resolved) == [("alice-auth", "alice"), ("bob-auth", "bob")]
+    assert sorted(probed) == [(base, "alice-token"), (base, "bob-token")]
+    assert json.loads(rows[0].cached_models) == ["alice-token-model"]
+    assert json.loads(rows[1].cached_models) == ["bob-token-model"]
+
+
 def test_api_models_auth_gate_fails_closed_on_unexpected_error(monkeypatch):
     """A non-HTTPException raised while checking auth must yield 500, not a
     silent pass-through that leaks the model list to an unauthenticated caller."""

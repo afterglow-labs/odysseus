@@ -7,6 +7,7 @@ import json
 import os
 import socket
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +17,7 @@ from routes.shell_routes import (
     _find_line_break,
     _host_docker_access_enabled,
     _import_optional_dependency_for_status,
+    _local_sam_dependency_probe,
     _running_in_container,
     _docker_row_status,
     _package_installed_from_probe,
@@ -294,11 +296,11 @@ class TestHostDockerAccess:
     def test_socket_without_explicit_opt_in_is_disabled(
         self,
         monkeypatch,
-        tmp_path,
         flag,
     ):
-        socket_path = tmp_path / "docker.sock"
-        with socket.socket(socket.AF_UNIX) as unix_socket:
+        # Keep the real socket pathname below macOS's AF_UNIX limit.
+        with tempfile.TemporaryDirectory(prefix="ody-") as directory, socket.socket(socket.AF_UNIX) as unix_socket:
+            socket_path = Path(directory) / "docker.sock"
             unix_socket.bind(str(socket_path))
             if flag is None:
                 monkeypatch.delenv("ODYSSEUS_ENABLE_HOST_DOCKER", raising=False)
@@ -310,10 +312,9 @@ class TestHostDockerAccess:
     def test_explicit_opt_in_with_unix_socket_is_enabled(
         self,
         monkeypatch,
-        tmp_path,
     ):
-        socket_path = tmp_path / "docker.sock"
-        with socket.socket(socket.AF_UNIX) as unix_socket:
+        with tempfile.TemporaryDirectory(prefix="ody-") as directory, socket.socket(socket.AF_UNIX) as unix_socket:
+            socket_path = Path(directory) / "docker.sock"
             unix_socket.bind(str(socket_path))
             monkeypatch.setenv("ODYSSEUS_ENABLE_HOST_DOCKER", "true")
 
@@ -413,6 +414,81 @@ class TestPackageProbeStatus:
 
         assert _package_installed_from_probe("diffusers", missing_torch) is False
         assert _package_installed_from_probe("diffusers", ready) is True
+
+    @pytest.mark.parametrize("missing", [None, "torch", "transformers", "SamProcessor", "OwlViTProcessor"])
+    async def test_local_sam_row_checks_real_runtime_imports(self, monkeypatch, missing):
+        import importlib.metadata
+        import routes.shell_routes as shell_routes
+
+        imported = []
+
+        class Model:
+            @classmethod
+            def from_pretrained(cls, *args, **kwargs):
+                raise AssertionError("dependency checks must not download or load models")
+
+        vision = SimpleNamespace(**{
+            name: Model
+            for name in ("SamModel", "SamProcessor", "OwlViTForObjectDetection", "OwlViTProcessor")
+            if name != missing
+        })
+
+        def fake_import(name):
+            imported.append(name)
+            if name == "sam_mask":
+                raise AssertionError("sam_mask is a feature name, not a module")
+            if name == missing or name not in {"torch", "transformers"}:
+                raise ImportError(f"No module named {name}")
+            return vision if name == "transformers" else SimpleNamespace()
+
+        monkeypatch.setattr(shell_routes, "_import_optional_dependency_for_status", fake_import)
+        # This test isolates the runtime-import contract. Metadata dependency
+        # traversal has its own fixtures; do not mix fake versions with the
+        # host machine's real distribution dependency metadata.
+        monkeypatch.setattr(shell_routes, "check_dependency_health", lambda specs: {
+            "installed": True, "issues": [], "versions": {},
+        })
+        monkeypatch.setattr(importlib.metadata, "version", lambda name: {"torch": "2.14.1", "transformers": "5.18.0"}[name])
+        monkeypatch.setattr(shell_routes, "_prepend_user_install_bins_to_path", lambda: None)
+        monkeypatch.setattr("site.getusersitepackages", lambda: "")
+        monkeypatch.setattr(shell_routes, "which_tool", lambda name: None)
+        monkeypatch.setattr(shell_routes.shutil, "which", lambda name: None)
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace()),
+            state=SimpleNamespace(),
+            headers={},
+        )
+        endpoint = next(
+            route.endpoint for route in shell_routes.setup_shell_routes().routes
+            if route.path == "/api/cookbook/packages"
+        )
+
+        result = await endpoint(request)
+
+        row = next(pkg for pkg in result["packages"] if pkg["name"] == "sam_mask")
+        assert "sam_mask" not in imported
+        assert row["target"] == "local"
+        assert row["installed"] is (missing is None)
+        if missing is None:
+            assert row["pip_update_available"] is True
+            assert "transformers 5.18.0" in row["status_note"]
+            assert "torch 2.14.1" in row["status_note"]
+        else:
+            assert missing in row["status_note"]
+
+    @pytest.mark.parametrize("error", [RuntimeError("broken torch vision operator"), SystemExit("unusable backend")])
+    def test_local_sam_probe_reports_broken_imports(self, monkeypatch, error):
+        import routes.shell_routes as shell_routes
+
+        def broken_import(name):
+            raise error
+
+        monkeypatch.setattr(shell_routes, "_import_optional_dependency_for_status", broken_import)
+
+        probe = _local_sam_dependency_probe()
+
+        assert _package_installed_from_probe("sam_mask", probe) is False
+        assert str(error) in probe["error"]
 
     def test_local_user_install_bin_is_added_to_path(self, monkeypatch, tmp_path):
         user_base = tmp_path / "user-base"

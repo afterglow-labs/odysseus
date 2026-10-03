@@ -16,6 +16,34 @@ set -e
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_DIR"
 
+# Keep validation ahead of .env loading, dependency installation, and services.
+PYTHON_VERSION="$(tr -d '\r\n' < "$REPO_DIR/.python-version")"
+RUNTIME_CHECK="$REPO_DIR/src/python_runtime.py"
+VENV_PY="$REPO_DIR/venv/bin/python"
+CHECK_PYTHON_ONLY=false
+if [ "${1:-}" = "--check-python" ]; then CHECK_PYTHON_ONLY=true; fi
+PY=""
+if [ -e "$REPO_DIR/venv" ] || [ -L "$REPO_DIR/venv" ]; then
+    if [ ! -x "$VENV_PY" ] || ! "$VENV_PY" "$RUNTIME_CHECK"; then
+        echo "✗ Existing venv is incomplete or incompatible. Move it aside (for example, mv venv venv.previous) and rerun ./start-macos.sh."
+        exit 1
+    fi
+    PY="$VENV_PY"
+else
+    for cand in "/opt/homebrew/bin/python$PYTHON_VERSION" "python$PYTHON_VERSION" python3 python; do
+        p="$(command -v "$cand" 2>/dev/null)" || continue
+        if "$p" "$RUNTIME_CHECK" >/dev/null 2>&1; then PY="$p"; break; fi
+    done
+fi
+if "$CHECK_PYTHON_ONLY"; then
+    if [ -z "$PY" ]; then
+        echo "✗ Install stable CPython $PYTHON_VERSION (standard GIL build): brew install python@$PYTHON_VERSION"
+        exit 1
+    fi
+    "$PY" "$RUNTIME_CHECK"
+    exit
+fi
+
 # Load .env so APP_PORT and APP_BIND are available without re-typing them on
 # the command line every run — consistent with how app.py reads them via
 # python-dotenv. Variables already set in the shell take priority over .env.
@@ -66,33 +94,12 @@ if ! command -v brew >/dev/null 2>&1; then
     exit 1
 fi
 
-# 2. Find a Python 3.11+ to build the environment with.
-#    On Apple Silicon we require an *arm64* interpreter (Homebrew's, under
-#    /opt/homebrew). A universal2 or x86 Python — e.g. the python.org installer
-#    at /usr/local — produces a venv whose compiled extensions get loaded as the
-#    wrong architecture when launched from the .app bundle (Cookbook then dies
-#    with "incompatible architecture"). So on arm64 we only look under
-#    /opt/homebrew and install Homebrew's python@3.11 if it's missing. On Intel
-#    (or non-mac) we just use whatever Python 3.11+ is on PATH.
-PY=""
-if [ "$(uname -m)" = "arm64" ]; then
-    cands="/opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3.11"
-else
-    cands="python3 python3.13 python3.12 python3.11"
-fi
-for cand in $cands; do
-    p="$(command -v "$cand" 2>/dev/null)" || continue
-    if "$p" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] >= (3, 11) else 1)' 2>/dev/null; then
-        PY="$p"; break
-    fi
-done
-
 # System dependencies (each installed only if missing, so re-runs stay fast and
 # don't re-hit Homebrew over the network):
 #    - tmux      : Cookbook runs model downloads/serves in the background
 #    - llama.cpp : a prebuilt, Metal-enabled llama-server so Cookbook can serve
 #                  GGUF models on the GPU with no compile step
-#    - python@3.11 : installed only if no suitable (arm64) Python was found above
+#    - python     : the supported minor from .python-version, native on Apple Silicon
 #
 # tmux and llama.cpp are needed only by Cookbook (local model serving), not to
 # boot the core app. So if Homebrew can't install one right now we warn and keep
@@ -117,48 +124,50 @@ echo "▶ Checking dependencies (Homebrew)…"
 if [ -n "$PY" ]; then
     echo "  (using $("$PY" --version 2>&1) at $PY)"
 else
-    echo "  installing python@3.11…"
-    brew install python@3.11 || true
-    PY="$(command -v /opt/homebrew/bin/python3.11 || command -v python3.11 || true)"
+    echo "  installing python@$PYTHON_VERSION…"
+    brew install "python@$PYTHON_VERSION" || true
+    PY="$(command -v "/opt/homebrew/bin/python$PYTHON_VERSION" || command -v "python$PYTHON_VERSION" || true)"
 fi
 brew_ensure tmux tmux
 brew_ensure llama-server llama.cpp
 brew_ensure apfel apfel
 
-if [ -z "$PY" ] || [ ! -x "$PY" ]; then
-    echo "✗ Couldn't find a Python 3.11+ to build the environment with."
-    echo "  Check: ls /opt/homebrew/bin/python3*  (or install one: brew install python@3.11)"
+if [ -z "$PY" ] || [ ! -x "$PY" ] || ! "$PY" "$RUNTIME_CHECK"; then
+    echo "✗ Couldn't find native stable CPython $PYTHON_VERSION (standard GIL build)."
+    echo "  Install it with: brew install python@$PYTHON_VERSION"
     exit 1
 fi
 
 # 3. Python environment + dependencies (kept inside the repo, in venv/).
 #    Named `venv` to match the manual steps and build-macos-app.sh, so the
 #    clickable .app reuses this same environment.
-VENV_PY="./venv/bin/python3"
-if [ ! -x "$VENV_PY" ] || ! "$VENV_PY" -m pip --version >/dev/null 2>&1; then
-    [ -d venv ] && { echo "▶ Existing venv is incomplete (no working pip) — rebuilding…"; rm -rf venv; }
+if [ ! -e venv ]; then
     echo "▶ Creating Python environment…"
     "$PY" -m venv venv
 fi
-REQ_HASH="$(md5 -q requirements.txt 2>/dev/null || md5sum requirements.txt | cut -d' ' -f1)"
+"$VENV_PY" "$RUNTIME_CHECK"
+if ! "$VENV_PY" -m pip --version >/dev/null 2>&1; then
+    echo "▶ Bootstrapping pip in the existing supported Python environment…"
+    "$VENV_PY" -m ensurepip --upgrade
+fi
+REQ_HASH="$(md5 -q requirements.lock 2>/dev/null || md5sum requirements.lock | cut -d' ' -f1)"
 REQ_HASH_FILE="venv/.requirements_hash"
-if [ ! -f "$REQ_HASH_FILE" ] || [ "$REQ_HASH" != "$(cat "$REQ_HASH_FILE" 2>/dev/null)" ]; then
+INSTALL_ARGS=()
+# Older environments installed the HTTP-only package, whose files overlap with
+# chromadb. Remove it first, then restore the complete shared lock together.
+if "$VENV_PY" -m pip show chromadb-client >/dev/null 2>&1; then
+    echo "▶ Migrating the old Chroma client package to the shared dependency lock…"
+    "$VENV_PY" -m pip uninstall -y chromadb-client
+    INSTALL_ARGS+=(--force-reinstall)
+fi
+if [ "${#INSTALL_ARGS[@]}" -gt 0 ] || [ ! -f "$REQ_HASH_FILE" ] || [ "$REQ_HASH" != "$(cat "$REQ_HASH_FILE" 2>/dev/null)" ]; then
   echo "▶ Installing Python packages (first run downloads a few — can take a few minutes)…"
   "$VENV_PY" -m pip install --quiet --upgrade pip
   # Not --quiet: this is the slow step, so show progress (and any real errors).
-  "$VENV_PY" -m pip install -r requirements.txt
+  "$VENV_PY" -m pip install "${INSTALL_ARGS[@]}" --require-hashes -r requirements.lock
   echo "$REQ_HASH" > "$REQ_HASH_FILE"
 else
   echo "▶ Python packages up to date — skipping install"
-fi
-
-# chromadb-client (HTTP-only) conflicts with the full chromadb package. If
-# it got installed (e.g., from an older requirements-optional.txt), remove
-# it to prevent ChromaDB from silently failing in HTTP-only mode.
-if "$VENV_PY" -m pip show chromadb-client >/dev/null 2>&1; then
-    echo "▶ Cleaning up conflicting chromadb-client package…"
-    "$VENV_PY" -m pip uninstall -y chromadb-client
-    "$VENV_PY" -m pip install --force-reinstall chromadb
 fi
 
 # 4. First-run setup: creates data dirs and prints an initial admin password

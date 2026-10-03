@@ -113,7 +113,7 @@ Core (`requirements.txt`) and optional (`requirements-optional.txt`):
 | BeautifulSoup4 | MIT |
 | charset-normalizer | MIT |
 | NumPy | BSD-3-Clause |
-| ChromaDB (chromadb-client) | Apache-2.0 |
+| ChromaDB (chromadb) | Apache-2.0 |
 | fastembed | Apache-2.0 |
 | youtube-transcript-api | MIT |
 | markdown | BSD-3-Clause |
@@ -128,6 +128,8 @@ Core (`requirements.txt`) and optional (`requirements-optional.txt`):
 | pytest / pytest-asyncio | MIT / Apache-2.0 |
 | duckduckgo-search (optional) | MIT |
 | markitdown (optional — Office/EPUB text extraction) | MIT |
+| [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (optional — local speech) | Apache-2.0; bundled eSpeak NG is GPL-3.0-or-later |
+| [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) model weights (downloaded on first local speech use) | Apache-2.0 |
 | **PyMuPDF** *(optional — form-filling only)* | **AGPL-3.0** — see note below |
 
 ## Companion services (interoperated with, not bundled)
@@ -165,6 +167,14 @@ concerns from earlier are resolved:
 - **`markitdown`** (Microsoft) is **MIT** and used only as an *optional* dependency for Office/EPUB text
   extraction (`src/markitdown_runtime.py`), lazy-imported with graceful fallback — the MIT core runs without
   it. The cloud `az-doc-intel` extra is deliberately **not** installed, keeping extraction fully local.
+- **Local speech** uses the optional Apache-2.0 **sherpa-onnx** runtime and
+  **Kokoro-82M** weights. Its speech backend includes
+  [eSpeak NG](https://github.com/espeak-ng/espeak-ng/blob/master/COPYING),
+  licensed **GPL-3.0-or-later**; see the
+  [upstream build dependency](https://github.com/k2-fsa/sherpa-onnx/blob/master/cmake/espeak-ng-for-piper.cmake).
+  Keep the corresponding upstream notices and source information when
+  redistributing that optional runtime. The downloaded model bundle retains
+  its upstream `LICENSE` file. No model weights are committed to this repository.
 
 ---
 

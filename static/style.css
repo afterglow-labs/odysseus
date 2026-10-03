@@ -90,6 +90,16 @@
   --select-option-active-bg: color-mix(in srgb, var(--red) 16%, var(--panel));
 }
 
+/* Static sunset glow: violet, coral, and peach without canvas animation. */
+body.bg-pattern-afterglow {
+  background-image:
+    radial-gradient(ellipse at 80% 10%, color-mix(in srgb, var(--bg-effect-color, var(--red)) 24%, transparent), transparent 58%),
+    radial-gradient(ellipse at 92% 92%, rgba(255, 122, 102, 0.38), transparent 64%),
+    radial-gradient(ellipse at 24% 96%, rgba(255, 173, 114, 0.20), transparent 52%),
+    radial-gradient(ellipse at 12% 36%, rgba(119, 60, 194, 0.26), transparent 60%);
+  background-attachment: fixed;
+}
+
 /* ── Reset & Base ── */
 
 * { box-sizing: border-box; }
@@ -1057,7 +1067,7 @@ body.bg-pattern-sparkles {
       width: 88px; height: 88px;
       border-radius: 50%;
       background: var(--accent, var(--red, #e53935));
-      color: #fff;
+      color: var(--accent-text, #fff);
       display: flex; align-items: center; justify-content: center;
       pointer-events: none;
       opacity: 0;
@@ -1134,7 +1144,7 @@ body.bg-pattern-sparkles {
       height: 16px;
       padding: 0 4px;
       background: var(--accent, var(--red));
-      color: #fff;
+      color: var(--accent-text, #fff);
       font-size: 9px;
       font-weight: 700;
       line-height: 16px;
@@ -1151,7 +1161,7 @@ body.bg-pattern-sparkles {
       height: 16px;
       padding: 0 6px;
       background: var(--accent, var(--red));
-      color: #fff;
+      color: var(--accent-text, #fff);
       font-size: 9px;
       font-weight: 700;
       line-height: 16px;
@@ -2819,12 +2829,9 @@ body.bg-pattern-sparkles {
       background: color-mix(in srgb, var(--accent, var(--red)) 12%, transparent);
     }
     .send-btn {
-      /* Prefer the theme accent (--red). A stored custom `--send-btn-bg`
-         override only kicks in if it's set to a non-white value — guards
-         against ChatGPT-style themes where the stored override leaked
-         to white and rendered the send button invisible. */
+      /* Keep the chosen fill, including white, with a contrasting icon. */
       background: var(--send-btn-bg, var(--red));
-      color: #fff;
+      color: var(--accent-text, #fff);
       border: none;
       border-radius: 8px;
       min-width: 32px;
@@ -2900,7 +2907,7 @@ body.bg-pattern-sparkles {
     }
     .send-btn:hover {
       background: var(--send-btn-hover, color-mix(in srgb, var(--red) 80%, white));
-      color: #fff;
+      color: var(--accent-text, #fff);
     }
     .send-btn.mic-mode,
     .send-btn.newchat-mode {
@@ -2915,7 +2922,7 @@ body.bg-pattern-sparkles {
     .send-btn.mic-mode:hover,
     .send-btn.newchat-mode:hover {
       background: color-mix(in srgb, var(--send-btn-hover, var(--send-btn-bg, var(--red))) 85%, var(--panel, #2a2a2a));
-      color: #fff;
+      color: var(--accent-text, #fff);
     }
     /* Hover: just spin the + 90° (no size change). The "New chat" affordance
        is the tooltip (title="New chat") plus the icon rotation.
@@ -2954,7 +2961,7 @@ body.bg-pattern-sparkles {
     }
     .send-btn.recording {
       background: var(--red) !important;
-      color: #fff !important;
+      color: var(--accent-text, #fff) !important;
       border: none !important;
       animation: pulse-recording 1.5s infinite;
     }
@@ -3193,12 +3200,17 @@ body.bg-pattern-sparkles {
     .model-picker-wrap {
       position: relative;
       flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      max-width: 100%;
     }
     .model-picker-btn {
       display: inline-flex;
       align-items: center;
       gap: 4px;
       height: 21px;
+      min-width: 0;
       padding: 0 6px;
       font-size: 11px;
       font-weight: 500;
@@ -3256,6 +3268,40 @@ body.bg-pattern-sparkles {
       animation: picker-roll-down 0.15s ease-in forwards;
     }
     .model-picker-menu.hidden { display: none; }
+    .model-picker-daybreak {
+      border-top: 1px solid var(--border);
+      margin-top: 6px;
+      padding: 8px 6px 4px;
+      font-size: 12px;
+    }
+    .model-picker-daybreak label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+    .model-picker-daybreak input { accent-color: var(--red); margin: 0; }
+    .model-picker-daybreak span, .model-picker-daybreak small {
+      display: block; opacity: 0.65; font-size: 10px; margin-top: 4px; overflow-wrap: anywhere;
+    }
+    .model-picker-reasoning { display: flex; min-width: 0; }
+    .model-picker-reasoning[hidden] { display: none; }
+    .model-picker-reasoning select {
+      field-sizing: content; width: auto; min-width: 60px; max-width: min(150px, 100%);
+      height: 21px; box-sizing: border-box;
+      padding: 0 4px; border-radius: 4px; border: 1px solid transparent;
+      background: transparent; color: color-mix(in srgb, var(--fg) 65%, transparent);
+      font-family: inherit; font-size: 11px; font-weight: 500; cursor: pointer;
+    }
+    .model-picker-reasoning select:hover,
+    .model-picker-reasoning select:focus-visible {
+      border-color: var(--border);
+      background: color-mix(in srgb, var(--fg) 8%, transparent);
+      color: var(--fg);
+    }
+    .model-picker-reasoning option { background: var(--panel); color: var(--fg); }
+    @container chatbar (max-width: 480px) {
+      .chat-input-top > .model-picker-wrap {
+        position: relative; top: auto; right: auto;
+        width: fit-content; margin-left: auto; margin-top: 4px;
+      }
+    }
+    .model-picker-reasoning select:disabled { opacity: 0.55; cursor: not-allowed; }
     .model-picker-search-row {
       display: grid;
       grid-template-columns: minmax(0, 1fr) 30px;
@@ -4310,7 +4356,7 @@ body.bg-pattern-sparkles {
       padding: 2px 8px;
       font-size: 9px; font-weight: 700; letter-spacing: 0.5px;
       background: var(--accent-primary, var(--red));
-      color: #fff;
+      color: var(--accent-text, #fff);
       border-radius: 0 0 4px 0;
       z-index: 2;
       pointer-events: none;
@@ -5915,7 +5961,7 @@ body.bg-pattern-sparkles {
     }
     .confirm-btn-secondary { background:var(--bg); color:var(--fg); }
     .confirm-btn-secondary:hover { background:var(--border); }
-    .confirm-btn-primary { background:var(--accent-primary, var(--red, #4a9eff)); color:#fff; border-color:transparent; }
+    .confirm-btn-primary { background:var(--accent-primary, var(--red, #4a9eff)); color:var(--accent-text, #fff); border-color:transparent; }
     .confirm-btn-primary:hover { filter:brightness(1.15); }
     .confirm-btn-danger { background:var(--color-danger); color:#fff; border-color:transparent; }
     .confirm-btn-danger:hover { background:var(--color-error); }
@@ -7132,7 +7178,7 @@ pre { background: var(--code-bg, var(--hl-bg, #282c34)) !important; }
       border: none;
       border-radius: 50%;
       background: var(--accent, var(--red, #d92534));
-      color: #fff;
+      color: var(--accent-text, #fff);
       cursor: pointer;
       z-index: 2;
       display: flex;
@@ -9054,7 +9100,7 @@ button.hamburger {
   border: 2px solid var(--bg);
   border-radius: 50%;
   background: var(--accent-primary, var(--red));
-  color: #fff;
+  color: var(--accent-text, #fff);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -9160,7 +9206,7 @@ button.hamburger {
 }
 .attach-crop-primary {
   background: var(--accent, var(--red));
-  color: #fff;
+  color: var(--accent-text, #fff);
   border-color: var(--accent, var(--red));
 }
 @media (max-width: 768px) {
@@ -9177,7 +9223,7 @@ button.hamburger {
     border: 2px solid var(--bg);
     border-radius: 50%;
     background: var(--accent-primary, var(--red));
-    color: #fff;
+    color: var(--accent-text, #fff);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -9871,7 +9917,7 @@ body.fullwidth-chat .chat-history {
   border-radius: 6px;
   border: none;
   background: var(--accent, var(--red));
-  color: #fff;
+  color: var(--accent-text, #fff);
   cursor: pointer;
   flex-shrink: 0;
 }
@@ -14318,7 +14364,7 @@ mark.doc-find-mark.current {
 }
 .doc-suggestion-accept {
   background: var(--accent, var(--red));
-  color: #fff;
+  color: var(--accent-text, #fff);
 }
 .doc-suggestion-accept:hover {
   filter: brightness(1.15);
@@ -15539,7 +15585,7 @@ span[id$="-logo"] svg:not([width]) {
   border: none;
   border-radius: 6px;
   background: var(--red);
-  color: #fff;
+  color: var(--accent-text, #fff);
   cursor: pointer;
   font-weight: 600;
   font-size: 11px;
@@ -15770,7 +15816,7 @@ span[id$="-logo"] svg:not([width]) {
   border: none;
   border-radius: 6px;
   background: var(--red);
-  color: #fff;
+  color: var(--accent-text, #fff);
   cursor: pointer;
   font-size: 12px;
   white-space: nowrap;
@@ -16133,7 +16179,7 @@ span[id$="-logo"] svg:not([width]) {
     border: none;
     border-radius: 999px;
     background: var(--accent-primary, var(--red));
-    color: #fff;
+    color: var(--accent-text, #fff);
     font-family: inherit;
     font-size: 15px;
     font-weight: 600;
@@ -18718,7 +18764,7 @@ body.gallery-selecting .gallery-dl-btn,
 .vision-editor-btn:hover { border-color: color-mix(in srgb, var(--fg) 40%, var(--border)); }
 .vision-editor-btn-primary {
   background: var(--accent-primary, var(--red));
-  color: #fff; border-color: transparent;
+  color: var(--accent-text, #fff); border-color: transparent;
 }
 .vision-editor-btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
 
@@ -18829,7 +18875,7 @@ body.gallery-selecting .gallery-dl-btn,
   border: 1px solid var(--red); border-radius: 4px; cursor: pointer;
   font-size: 11px; font-family: inherit;
 }
-.gallery-bulk-delete:hover { background: var(--red); color: #fff; }
+.gallery-bulk-delete:hover { background: var(--red); color: var(--accent-text, #fff); }
 .gallery-bulk-cancel {
   padding: 3px 10px; background: transparent; color: var(--fg);
   border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
@@ -19902,7 +19948,7 @@ body.gallery-selecting .gallery-dl-btn,
 .serve-select-cb:hover { background: color-mix(in srgb, var(--red) 50%, transparent); }
 #hwfit-cache-select.active {
   background: var(--red);
-  color: #fff;
+  color: var(--accent-text, #fff);
   border-color: var(--red);
 }
 .cookbook-serve-dirs {
@@ -20649,7 +20695,7 @@ body.gallery-selecting .gallery-dl-btn,
 }
 .cookbook-dep-install {
   background: var(--accent, var(--red));
-  color: #fff;
+  color: var(--accent-text, #fff);
   border: none;
   cursor: pointer;
   font-family: inherit;
@@ -20659,6 +20705,7 @@ body.gallery-selecting .gallery-dl-btn,
   width: 87.7px;
   min-width: 87.7px;
   padding: 0 10px;
+  transition: background-color 0.15s, color 0.15s, box-shadow 0.15s;
   /* Strip the native button box so it's the same height as the sibling tags
      (Firefox renders <button> taller otherwise); height comes from .cookbook-dep-tag. */
   appearance: none;
@@ -20697,7 +20744,14 @@ body.gallery-selecting .gallery-dl-btn,
   text-align: center;
   padding-left: 0.5px;
 }
-.cookbook-dep-install:hover { opacity: 0.85; }
+.cookbook-dep-install:hover:not(:disabled),
+.cookbook-dep-install:focus-visible:not(:disabled) {
+  /* Preview the action with a themed glow instead of the solid accent fill. */
+  background: var(--panel);
+  color: var(--accent, var(--red));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent, var(--red)) 75%, transparent),
+              0 0 12px color-mix(in srgb, var(--accent, var(--red)) 40%, transparent);
+}
 /* Installed split button: "Installed" label + separator + ▾ caret; clicking it
    opens the actions menu (Update). Replaces the old ⋮ button. */
 .cookbook-dep-installed-btn {
@@ -21288,7 +21342,7 @@ body.gallery-selecting .gallery-dl-btn,
 }
 .hwfit-serve-launch {
   background: var(--accent-primary, var(--red));
-  color: #fff;
+  color: var(--accent-text, #fff);
   border: 1px solid var(--accent-primary, var(--red));
   border-radius: 4px;
   font-weight: 700;
@@ -22485,7 +22539,7 @@ body.gallery-selecting .gallery-dl-btn,
 }
 .cookbook-dl-btn {
   background: var(--accent, var(--red));
-  color: #fff;
+  color: var(--accent-text, #fff);
   border: none;
   border-radius: 4px;
   padding: 0 14px;
@@ -22539,7 +22593,7 @@ body.gallery-selecting .gallery-dl-btn,
   transition: all 0.15s;
 }
 .hwfit-panel-hf-link:hover {
-  color: #fff;
+  color: var(--accent-text, #fff);
   background: var(--red);
   border-color: var(--red);
 }
@@ -22870,7 +22924,7 @@ body.gallery-selecting .gallery-dl-btn,
 .cookbook-server-rm:hover {
   opacity: 1;
   background: var(--red);
-  color: #fff;
+  color: var(--accent-text, #fff);
   border-color: var(--red);
 }
 /* Labelled "Delete server" variant (lives in the Model Directory row) — override
@@ -22990,7 +23044,7 @@ body.gallery-selecting .gallery-dl-btn,
 }
 .hwfit-gpu-btn.active {
   background: var(--accent, var(--red));
-  color: #fff;
+  color: var(--accent-text, #fff);
   border-color: var(--accent, var(--red));
 }
 /* Pool selector for heterogeneous GPU boxes — sits left of the RAM/GPU buttons */
@@ -24766,7 +24820,7 @@ a.chat-link[href^="#research-"] {
 
 .task-btn-primary {
   background: var(--red);
-  color: #fff;
+  color: var(--accent-text, #fff);
   border-color: transparent;
   opacity: 1;
 }
@@ -24957,6 +25011,64 @@ select.task-form-input { text-overflow: ellipsis; }
 .settings-label {
   font-size: 12px;
   min-width: 70px;
+}
+.settings-label-with-help {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.settings-help-hint {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--fg-muted, var(--fg));
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: help;
+}
+.settings-help-hint > span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+}
+.settings-help-hint:hover,
+.settings-help-hint[aria-expanded="true"] {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+}
+.settings-help-hint:focus-visible {
+  outline: 2px solid var(--accent, var(--red));
+  outline-offset: 1px;
+}
+.settings-help-tooltip {
+  position: fixed;
+  width: max-content;
+  box-sizing: border-box;
+  max-width: 320px;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel, var(--bg));
+  color: var(--fg);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .settings-select {
   flex: 1;
@@ -26773,7 +26885,7 @@ details.hwfit-serve-advanced > .hwfit-serve-checks:last-of-type {
   align-items: center;
   justify-content: center;
   border-radius: 50%;
-  color: #fff;
+  color: var(--accent-text, #fff);
   background: var(--red);
   cursor: pointer;
   opacity: 0.95;
@@ -26922,7 +27034,7 @@ details.hwfit-serve-advanced > .hwfit-serve-checks:last-of-type {
   position: relative;
   top: -2px;
   background: var(--send-btn-bg, var(--red));
-  color: #fff;
+  color: var(--accent-text, #fff);
   border: none;
   border-radius: 8px;
   min-width: 32px;
@@ -29097,7 +29209,7 @@ details.hwfit-serve-advanced > .hwfit-serve-checks:last-of-type {
 
 .ge-btn-primary {
   background: var(--red);
-  color: #fff;
+  color: var(--accent-text, #fff);
   border-color: var(--red);
   font-weight: 600;
 }
@@ -29170,7 +29282,7 @@ button .spinner-whirlpool {
   z-index: 10000;
   padding: 5px 10px;
   background: var(--red);
-  color: #fff;
+  color: var(--accent-text, #fff);
   font-size: 13px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -29543,7 +29655,7 @@ button .spinner-whirlpool {
 .ge-crop-apply-btn {
   padding: 4px 10px;
   background: var(--red);
-  color: #fff;
+  color: var(--accent-text, #fff);
   border: none;
   border-radius: 4px;
   font-size: 11px;
@@ -30262,7 +30374,7 @@ button .spinner-whirlpool {
 }
 #group-model-picker .btn-primary {
   background: var(--accent, var(--red));
-  color: #fff;
+  color: var(--accent-text, #fff);
   border: none;
   border-radius: 6px;
   cursor: pointer;
@@ -31984,7 +32096,7 @@ button .spinner-whirlpool {
 }
 .schedule-send-confirm {
   background: var(--accent-primary, var(--red)) !important;
-  color: #fff !important;
+  color: var(--accent-text, #fff) !important;
   border-color: var(--accent-primary, var(--red)) !important;
 }
 .schedule-send-confirm:hover {
@@ -33218,7 +33330,7 @@ body.doc-find-active mark.doc-find-mark.current {
   border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--accent-primary, var(--red)) 45%, var(--border));
   background: var(--accent-primary, var(--red));
-  color: #fff;
+  color: var(--accent-text, #fff);
   font: inherit;
   font-size: 11px;
   cursor: pointer;
@@ -35460,7 +35572,7 @@ body.notes-mobile-mode.notes-drag-mode .note-card-pin.active {
   position: relative;
   top: -2px;
 }
-.note-reminder-tag-x:hover { background: var(--red); color: #fff; }
+.note-reminder-tag-x:hover { background: var(--red); color: var(--accent-text, #fff); }
 
 /* Reminder tag on card */
 .note-card-reminder {
@@ -38614,7 +38726,7 @@ button.cal-view-btn {
 .cal-year-wd { font-size:7px; text-align:center; opacity:0.3; padding:1px 0; }
 .cal-year-cell { font-size:8px; text-align:center; padding:2px 0; min-height:14px; border-radius:2px; transition:transform 0.12s, background 0.12s; }
 .cal-year-day { cursor:pointer; opacity:0.5; }
-.cal-year-day:hover { background:var(--accent, var(--red)); color:#fff; opacity:1; transform:scale(1.15); font-weight:700; z-index:2; position:relative; }
+.cal-year-day:hover { background:var(--accent, var(--red)); color:var(--accent-text, #fff); opacity:1; transform:scale(1.15); font-weight:700; z-index:2; position:relative; }
 .cal-year-today { color:var(--accent, var(--red)); font-weight:700; opacity:1; }
 .cal-year-has { opacity:1; background:color-mix(in srgb, var(--accent) 15%, transparent); }
 .cal-year-has.cal-year-today { background:color-mix(in srgb, var(--accent, var(--red)) 25%, transparent); }
@@ -39326,7 +39438,7 @@ body.research-panel-view #research-divider { display:none; }
   margin-left:auto;
   display:flex; align-items:center; gap:5px;
   padding:6px 16px; border:none; border-radius:6px;
-  background:var(--accent-primary, var(--red)); color:#fff;
+  background:var(--accent-primary, var(--red)); color:var(--accent-text, #fff);
   font-size:12px; font-weight:600; cursor:pointer;
   transition:opacity 0.15s;
 }

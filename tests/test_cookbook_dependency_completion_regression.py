@@ -20,8 +20,8 @@ def test_background_status_poll_reconciles_into_local_tasks():
     source = _read("static/js/cookbookRunning.js")
 
     assert "const statusById = new Map(tasks.map(t => [t.session_id, t]));" in source
-    assert "const completedByOutput = depDone || downloadDone;" in source
-    assert "const nextStatus = completedByOutput" in source
+    assert "const completedByOutput = !failedByExit && (depDone || downloadDone);" in source
+    assert "const nextStatus = failedByExit ? 'error' : completedByOutput" in source
     assert "live.status === 'completed'" in source
     assert "? 'done'" in source
     assert ": (live.status === 'error'" in source
@@ -43,14 +43,13 @@ def test_windows_session_commands_use_shared_powershell_wrapper_and_local_log_di
 
 def test_dep_install_success_recognized_from_exit_sentinel():
     """A pip dependency install reports success via the runner's exit-0
-    sentinel / pip's "Successfully installed" line, not the HuggingFace
-    download markers. The shared helper must key off those, so an install
+    sentinel, not pip's per-package output or HuggingFace download markers.
+    The shared helper must key off that, so an install
     whose tmux pane is gone isn't misread as crashed."""
     source = _read("static/js/cookbookRunning.js")
 
     assert "function _depInstallSucceeded(output) {" in source
     assert "=== Process exited with code" in source
-    assert "Successfully installed" in source
 
 
 def test_session_gone_heuristic_honors_dep_install_success():
@@ -94,6 +93,7 @@ def test_background_poll_recovers_done_for_completed_download():
     normalized = " ".join(source.split())
     assert (
         "const downloadDone = task.type === 'download' "
+        "&& !task.payload?._dep "
         "&& String(combinedOutput || '').includes('DOWNLOAD_OK');"
     ) in normalized
 

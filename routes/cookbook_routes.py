@@ -2172,9 +2172,10 @@ def setup_cookbook_routes() -> APIRouter:
             _append_venv_nvidia_library_path_lines(runner_lines, cmd=req.cmd)
             if "sglang.launch_server" in req.cmd or "mlx_lm.server" in req.cmd or re.search(r"\bvllm\s+serve\b", req.cmd or ""):
                 _append_openai_port_preflight_lines(runner_lines, cmd=req.cmd, expected_model=req.repo_id)
-            # Show whether the HF token reached this server (masked) — a gated
-            # model vLLM has to download will be denied without it.
-            runner_lines.append(_HF_TOKEN_STATUS_SNIPPET)
+            # Model servers may need a token for gated downloads; ordinary pip
+            # dependency installs do not need this model-specific diagnostic.
+            if not is_pip_install:
+                runner_lines.append(_HF_TOKEN_STATUS_SNIPPET)
             handled_ollama_serve = False
             # Auto-install inference engine if missing
             local_windows_llama_cmd = local_windows and ("llama_cpp" in req.cmd or "llama-server" in req.cmd)
@@ -2707,7 +2708,13 @@ def setup_cookbook_routes() -> APIRouter:
                 elif is_pip_install:
                     if not is_windows and (req.platform or "").lower() in {"darwin", "macos"}:
                         req.cmd = _pip_install_command_without_break_system_packages(req.cmd)
-                    _append_pip_install_runner_lines(runner_lines, req.cmd)
+                    _append_pip_install_runner_lines(
+                        runner_lines, req.cmd, bootstrap_pip=not bool(remote),
+                        realesrgan_builder=(
+                            (Path(__file__).resolve().parent.parent / "scripts" / "build_realesrgan_wheels.py").as_posix()
+                            if not remote else None
+                        ),
+                    )
                 else:
                     runner_lines.append(req.cmd)
                 if local_windows:

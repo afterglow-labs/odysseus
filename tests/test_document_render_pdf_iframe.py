@@ -204,7 +204,7 @@ async def test_render_pdf_returns_503_when_pymupdf_missing(monkeypatch, test_db)
 
     assert excinfo.value.status_code == 503
     detail = str(excinfo.value.detail)
-    assert "requirements-optional.txt" in detail
+    assert "--require-hashes -r requirements.lock -r requirements-optional.lock" in detail
     assert "PyMuPDF" in detail
 
 

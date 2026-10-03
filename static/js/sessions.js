@@ -6,6 +6,7 @@ import uiModule, { autoResize, styledPrompt } from './ui.js';
 import chatRenderer from './chatRenderer.js?v=20260815toolapproval4';
 import { providerLogo } from './providers.js';
 import { initModelPicker, updateModelPicker } from './modelPicker.js?v=20260722ctxheader1';
+import { daybreakForSelection, reasoningForSelection, beginChatSelection } from './daybreak.js';
 import themeModule from './theme.js';
 import spinnerModule from './spinner.js';
 
@@ -1990,12 +1991,17 @@ export async function selectSession(id, { keepSidebar = false, showLoading = tru
       // session meta and refresh the picker so the displayed model can
       // never diverge from what's actually sent (the "picker says Minimax
       // but it used the default" bug after a restart / stale cache).
-      if (modelName) {
-        const sMeta = sessions.find(s => s.id === id);
-        if (sMeta && sMeta.model !== modelName) {
-          sMeta.model = modelName;
-          updateModelPicker();
+      const sMeta = sessions.find(s => s.id === id);
+      if (sMeta) {
+        beginChatSelection(sMeta);
+        if (modelName) sMeta.model = modelName;
+        if (typeof data.endpoint_url === 'string' && sMeta.endpoint_url !== data.endpoint_url) {
+          sMeta.endpoint_url = data.endpoint_url;
+          delete sMeta.endpoint_id;
         }
+        if (typeof data.daybreak_enabled === 'boolean') sMeta.daybreak_enabled = data.daybreak_enabled;
+        if (typeof data.reasoning_effort === 'string' || data.reasoning_effort === null) sMeta.reasoning_effort = data.reasoning_effort;
+        updateModelPicker();
       }
     }
 
@@ -2220,7 +2226,15 @@ export function createDirectChat(url, modelId, endpointId, opts = {}) {
   }
 
   // Don't hit the API — just store the model info and prepare the UI
-  _pendingChat = { url, modelId, endpointId, source: incomingSource };
+  _pendingChat = { url, modelId, endpointId, source: incomingSource,
+    daybreak_enabled: daybreakForSelection({ url, modelId, endpointId, daybreak_enabled: opts.daybreak_enabled }) };
+  // Startup can precede model discovery. Leave an omitted choice unresolved so
+  // the per-model preference is restored when capabilities arrive; an explicit
+  // empty string remains the user's choice of Provider default.
+  if (opts.reasoning_effort !== undefined) {
+    _pendingChat.reasoning_effort = reasoningForSelection({ url, modelId, endpointId,
+      reasoning_effort: opts.reasoning_effort });
+  }
   _pendingMaterializePromise = null;
   _skipAutoSelect = true;
   _suppressNextSessionLoading = true;
@@ -2287,6 +2301,8 @@ export async function materializePendingSession() {
     fd.append('name', name);
     fd.append('endpoint_url', pending.url || '');
     fd.append('model', pending.modelId || '');
+    fd.append('daybreak_enabled', String(daybreakForSelection(pending)));
+    fd.append('reasoning_effort', reasoningForSelection(pending, { preserveUnknown: true }));
     if (pending.url && pending.modelId) {
       fd.append('skip_validation', 'true');
     }
@@ -2334,6 +2350,12 @@ export async function materializePendingSession() {
     }
     _pendingChat = null;
     currentSessionId = payload.id;
+    // Keep the selected options available before the background list refresh.
+    if (!sessions.some(session => session.id === payload.id)) sessions.unshift({
+      ...payload, model: pending.modelId, endpoint_url: pending.url, endpoint_id: pending.endpointId,
+      daybreak_enabled: typeof payload.daybreak_enabled === 'boolean' ? payload.daybreak_enabled : daybreakForSelection(pending),
+      reasoning_effort: 'reasoning_effort' in payload ? payload.reasoning_effort : reasoningForSelection(pending, { preserveUnknown: true }),
+    });
     if (!isIncognito) {
       Storage.set('lastSessionId', payload.id);
       history.replaceState(null, '', '#' + payload.id);

@@ -96,6 +96,7 @@ def _chat_stream_endpoint(
     capture_completion=False,
     capture_context=False,
     endpoint_url="https://selected.example/v1",
+    session_override=None,
 ):
     def add_message(message):
         captured.setdefault("added_messages", []).append(message)
@@ -108,9 +109,13 @@ def _chat_stream_endpoint(
         history=[],
         add_message=add_message,
     )
+    if session_override is not None:
+        session = session_override
     session_manager = SimpleNamespace(
         get_session=lambda session_id: session,
         save_sessions=lambda: None,
+        set_daybreak_enabled=lambda session_id, enabled: setattr(session, "daybreak_enabled", enabled),
+        set_reasoning_effort=lambda session_id, value: setattr(session, "reasoning_effort", value),
     )
     context = SimpleNamespace(
         user="alice",
@@ -1108,6 +1113,7 @@ def _chat_endpoint(
     *,
     owner="alice",
     endpoint_url="https://selected.example/v1",
+    session_override=None,
 ):
     saved = []
     session = SimpleNamespace(
@@ -1117,9 +1123,13 @@ def _chat_endpoint(
         history=[],
         add_message=saved.append,
     )
+    if session_override is not None:
+        session = session_override
     session_manager = SimpleNamespace(
         get_session=lambda session_id: session,
         save_sessions=lambda: None,
+        set_daybreak_enabled=lambda session_id, enabled: setattr(session, "daybreak_enabled", enabled),
+        set_reasoning_effort=lambda session_id, value: setattr(session, "reasoning_effort", value),
     )
     context = SimpleNamespace(
         user=owner,
@@ -3647,3 +3657,202 @@ def test_skill_activation_reaches_later_fallback_request_and_pinned_round(monkey
         for message in round_three_requests[0]["messages"]
     )
     assert any('"delta": "pinned backup answer"' in chunk for chunk in chunks)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["chat", "agent"])
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_daybreak_stream_keeps_request_snapshot_when_session_changes_during_context(monkeypatch, mode, enabled):
+    session = SimpleNamespace(
+        id="session-1", endpoint_url="https://chatgpt.com/backend-api/codex",
+        model="gpt-6.1-sol", headers={}, history=[], name="test",
+        add_message=lambda message: None, daybreak_enabled=not enabled,
+    )
+    endpoint = _chat_stream_endpoint(monkeypatch, mode, {}, session_override=session)
+    original_context = chat_routes.build_chat_context
+    captured = []
+
+    async def delayed_context(*args, **kwargs):
+        assert session.daybreak_enabled is enabled  # Explicit choice was saved first.
+        assert kwargs["daybreak_enabled"] is enabled
+        await asyncio.sleep(0)
+        session.daybreak_enabled = not enabled  # Another turn/picker update arrives.
+        return await original_context(*args, **kwargs)
+
+    async def capture_stream(*args, **kwargs):
+        captured.append(kwargs["daybreak_enabled"])
+        yield 'data: {"delta":"answer"}\n\n'
+        yield "data: [DONE]\n\n"
+
+    monkeypatch.setattr(chat_routes, "build_chat_context", delayed_context)
+    monkeypatch.setattr(chat_routes, "stream_llm_with_fallback", capture_stream)
+    monkeypatch.setattr(chat_routes, "stream_agent_loop", capture_stream)
+    request = _RouteRequest(mode)
+    request._form["daybreak_enabled"] = str(enabled).lower()
+    response = await endpoint(request)
+    async for _ in response.body_iterator:
+        pass
+    assert captured == [enabled]
+    assert session.model == "gpt-6.1-sol"
+
+
+@pytest.mark.asyncio
+async def test_daybreak_nonstream_uses_saved_choice_and_snapshots_before_await(monkeypatch):
+    session = SimpleNamespace(
+        id="session-1", endpoint_url="https://chatgpt.com/backend-api/codex",
+        model="gpt-6.1-sol", headers={}, history=[], add_message=lambda message: None,
+        daybreak_enabled=True,
+    )
+    endpoint, _ = _chat_endpoint(monkeypatch, session_override=session)
+    original_context = chat_routes.build_chat_context
+
+    async def delayed_context(*args, **kwargs):
+        assert kwargs["daybreak_enabled"] is True
+        await asyncio.sleep(0)
+        session.daybreak_enabled = False
+        return await original_context(*args, **kwargs)
+
+    async def capture(candidates, messages, **kwargs):
+        assert kwargs["daybreak_enabled"] is True
+        return "answer", candidates[0], candidates[0][1]
+
+    monkeypatch.setattr(chat_routes, "build_chat_context", delayed_context)
+    monkeypatch.setattr(chat_routes, "llm_call_async_with_route_fallback", capture)
+    await endpoint(_RouteRequest("chat"), ChatRequest(message="hello", session="session-1"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [True, False])
+async def test_daybreak_rejects_unsupported_provider_before_context(monkeypatch, streaming):
+    def unexpected(*args, **kwargs):
+        pytest.fail("Unsupported provider reached context construction")
+
+    if streaming:
+        endpoint = _chat_stream_endpoint(monkeypatch, "chat", {})
+        request = _RouteRequest("chat")
+        request._form["daybreak_enabled"] = "true"
+    else:
+        endpoint, _ = _chat_endpoint(monkeypatch)
+        request = _RouteRequest("chat")
+    monkeypatch.setattr(chat_routes, "build_chat_context", unexpected)
+    with pytest.raises(HTTPException, match="ChatGPT Subscription"):
+        if streaming:
+            await endpoint(request)
+        else:
+            await endpoint(request, ChatRequest(message="hello", session="session-1", daybreak_enabled=True))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['chat', 'agent'])
+@pytest.mark.parametrize('effort', ['high', 'ultra', ''])
+async def test_reasoning_stream_keeps_choice_when_session_changes_during_context(monkeypatch, mode, effort):
+    session = SimpleNamespace(
+        id='session-1', endpoint_url='https://chatgpt.com/backend-api/codex',
+        model='gpt-6-sol', headers={}, history=[], name='test',
+        add_message=lambda message: None, reasoning_effort='low',
+    )
+    endpoint = _chat_stream_endpoint(monkeypatch, mode, {}, session_override=session)
+    original_context = chat_routes.build_chat_context
+    captured = []
+    expected = effort or None
+
+    async def delayed_context(*args, **kwargs):
+        assert session.reasoning_effort == expected
+        assert kwargs.get('reasoning_effort') == expected
+        await asyncio.sleep(0)
+        session.reasoning_effort = 'medium'
+        return await original_context(*args, **kwargs)
+
+    async def capture_stream(*args, **kwargs):
+        captured.append(kwargs.get('reasoning_effort'))
+        yield 'data: {"delta":"answer"}\n\n'
+        yield 'data: [DONE]\n\n'
+
+    monkeypatch.setattr(chat_routes, 'build_chat_context', delayed_context)
+    monkeypatch.setattr(chat_routes, 'stream_llm_with_fallback', capture_stream)
+    monkeypatch.setattr(chat_routes, 'stream_agent_loop', capture_stream)
+    request = _RouteRequest(mode)
+    request._form['reasoning_effort'] = effort
+    response = await endpoint(request)
+    async for _ in response.body_iterator:
+        pass
+    assert captured == [expected]
+    assert session.model == 'gpt-6-sol'
+
+
+@pytest.mark.asyncio
+async def test_reasoning_nonstream_uses_saved_effort_before_await(monkeypatch):
+    session = SimpleNamespace(
+        id='session-1', endpoint_url='https://chatgpt.com/backend-api/codex',
+        model='gpt-6-sol', headers={}, history=[], add_message=lambda message: None,
+        reasoning_effort='high',
+    )
+    endpoint, _ = _chat_endpoint(monkeypatch, session_override=session)
+    original_context = chat_routes.build_chat_context
+
+    async def delayed_context(*args, **kwargs):
+        assert kwargs['reasoning_effort'] == 'high'
+        await asyncio.sleep(0)
+        session.reasoning_effort = 'low'
+        return await original_context(*args, **kwargs)
+
+    async def capture(candidates, messages, **kwargs):
+        assert kwargs['reasoning_effort'] == 'high'
+        return 'answer', candidates[0], candidates[0][1]
+
+    monkeypatch.setattr(chat_routes, 'build_chat_context', delayed_context)
+    monkeypatch.setattr(chat_routes, 'llm_call_async_with_route_fallback', capture)
+    await endpoint(_RouteRequest('chat'), ChatRequest(message='hello', session='session-1'))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('streaming', [True, False])
+async def test_reasoning_rejects_other_providers_before_context(monkeypatch, streaming):
+    def unexpected(*args, **kwargs):
+        pytest.fail('Unsupported provider reached context construction')
+    monkeypatch.setattr(chat_routes, 'build_chat_context', unexpected)
+    if streaming:
+        endpoint = _chat_stream_endpoint(monkeypatch, 'chat', {})
+        request = _RouteRequest('chat')
+        request._form['reasoning_effort'] = 'high'
+    else:
+        endpoint, _ = _chat_endpoint(monkeypatch)
+        request = _RouteRequest('chat')
+    monkeypatch.setattr(chat_routes, 'build_chat_context', unexpected)
+    with pytest.raises(HTTPException, match='ChatGPT Subscription'):
+        if streaming:
+            await endpoint(request)
+        else:
+            await endpoint(request, ChatRequest(message='hello', session='session-1', reasoning_effort='high'))
+
+
+def test_reasoning_effort_reaches_each_agent_tool_round(monkeypatch):
+    efforts = []
+    monkeypatch.setattr(agent_loop, 'get_setting', lambda key, default=None: default)
+    monkeypatch.setattr(agent_loop, 'get_mcp_manager', lambda: None)
+    monkeypatch.setattr(agent_loop, 'estimate_tokens', lambda *args, **kwargs: 10)
+    monkeypatch.setattr(agent_loop, 'blocked_tools_for_owner', lambda owner: set())
+    monkeypatch.setattr(agent_loop, '_agent_route_tool_mode', lambda *args, **kwargs: (True, False, False))
+
+    async def fake_stream(candidates, messages, **kwargs):
+        efforts.append(kwargs.get('reasoning_effort'))
+        if len(efforts) == 1:
+            call = {'name': 'bash', 'arguments': json.dumps({'command': 'printf one'})}
+            yield f'data: {json.dumps({"type": "tool_calls", "calls": [call]})}\n\n'
+        else:
+            yield 'data: {"delta":"Completed the requested check."}\n\n'
+        yield 'data: [DONE]\n\n'
+
+    async def fake_execute(*args, **kwargs):
+        return 'bash', {'output': 'ok', 'exit_code': 0}
+
+    monkeypatch.setattr(agent_loop, 'stream_llm_with_fallback', fake_stream)
+    monkeypatch.setattr(agent_loop, 'execute_tool_block', fake_execute)
+    chunks = _collect(agent_loop.stream_agent_loop(
+        'https://chatgpt.com/backend-api/codex', 'gpt-6-sol',
+        [{'role': 'user', 'content': 'Run one tool.'}],
+        reasoning_effort='high', max_rounds=3, relevant_tools={'bash'},
+        fallback_on_empty=False, _is_teacher_run=True,
+    ))
+    assert efforts == ['high', 'high']
+    assert any('Completed the requested check.' in chunk for chunk in chunks)

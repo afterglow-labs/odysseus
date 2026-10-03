@@ -83,6 +83,39 @@ logger = logging.getLogger(__name__)
 _active_streams: Dict[str, dict] = {}
 
 
+def _capture_daybreak_enabled(session_manager, sess, value=None) -> bool:
+    """Validate/persist an explicit choice and snapshot it before async work."""
+    from src.chatgpt_subscription import is_chatgpt_subscription_base
+
+    if value is not None and type(value) is not bool:
+        if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
+            value = value.strip().lower() == "true"
+        else:
+            raise HTTPException(400, "daybreak_enabled must be true or false")
+    enabled = bool(getattr(sess, "daybreak_enabled", False)) if value is None else value
+    if enabled and not is_chatgpt_subscription_base(getattr(sess, "endpoint_url", "")):
+        raise HTTPException(400, "Daybreak is available only for the ChatGPT Subscription provider.")
+    if value is not None and value != bool(getattr(sess, "daybreak_enabled", False)):
+        session_manager.set_daybreak_enabled(sess.id, value)
+    return enabled
+
+
+def _capture_reasoning_effort(session_manager, sess, value=None) -> Optional[str]:
+    """Capture the turn's effort before awaits; an empty choice clears it."""
+    from src.chatgpt_subscription import is_chatgpt_subscription_base, normalize_reasoning_effort
+
+    saved = getattr(sess, "reasoning_effort", None)
+    try:
+        effort = normalize_reasoning_effort(saved if value is None else value)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if effort is not None and not is_chatgpt_subscription_base(getattr(sess, "endpoint_url", "")):
+        raise HTTPException(400, "Reasoning effort is available only for the ChatGPT Subscription provider.")
+    if value is not None and effort != saved:
+        session_manager.set_reasoning_effort(sess.id, effort)
+    return effort
+
+
 def _stream_failure_status(chunk: str) -> Optional[int]:
     """Extract a provider status without retaining provider-supplied detail."""
 
@@ -184,6 +217,8 @@ def _chat_candidate_request_factory(
     *,
     session=None,
     owner: Optional[str] = None,
+    daybreak_enabled: bool = False,
+    reasoning_effort: Optional[str] = None,
 ):
     """Shape one route-neutral Chat prompt for each candidate window."""
 
@@ -206,6 +241,8 @@ def _chat_candidate_request_factory(
             owner=owner,
             persist=False,
             compaction_state=compaction_state,
+            **({"daybreak_enabled": True} if daybreak_enabled else {}),
+            **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
         )
         if not context_length:
             context_length = fallback_context_length
@@ -804,6 +841,8 @@ def setup_chat_routes(
             )
         if not (getattr(sess, "endpoint_url", "") or "").strip():
             raise HTTPException(400, "Selected model endpoint is not configured")
+        daybreak_enabled = _capture_daybreak_enabled(session_manager, sess, chat_request.daybreak_enabled)
+        reasoning_effort = _capture_reasoning_effort(session_manager, sess, chat_request.reasoning_effort)
 
         # Same allowed_models + daily-cap gate as chat_stream (mirror so the
         # non-streaming path can't be used to bypass).
@@ -836,6 +875,8 @@ def setup_chat_routes(
             webhook_manager=webhook_manager,
             allow_tool_preprocessing=allow_tool_preprocessing,
             defer_context_shaping=foreground_policy.enabled,
+            daybreak_enabled=daybreak_enabled,
+            **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
         )
 
         # Research injection
@@ -889,6 +930,8 @@ def setup_chat_routes(
                 selected_context_length,
                 session=sess,
                 owner=owner,
+                daybreak_enabled=daybreak_enabled,
+                **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
             )
         requested_model = sess.model
         reply, actual_candidate, actual_model = await llm_call_async_with_route_fallback(
@@ -900,6 +943,8 @@ def setup_chat_routes(
             max_tokens=ctx.preset.max_tokens,
             prompt_type=preset_id,
             session_id=session,
+            daybreak_enabled=daybreak_enabled,
+            **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
         )
         actual_index = _candidate_index(foreground_candidates, actual_candidate)
         apply_compaction_state(
@@ -1263,6 +1308,16 @@ def setup_chat_routes(
                 )
             if not (getattr(sess, "endpoint_url", "") or "").strip():
                 raise HTTPException(400, "Selected model endpoint is not configured")
+            daybreak_enabled = _capture_daybreak_enabled(
+                session_manager, sess,
+                form_data.get("daybreak_enabled") if "daybreak_enabled" in form_data
+                else (body or {}).get("daybreak_enabled"),
+            )
+            reasoning_effort = _capture_reasoning_effort(
+                session_manager, sess,
+                form_data.get("reasoning_effort") if "reasoning_effort" in form_data
+                else (body or {}).get("reasoning_effort"),
+            )
             if (
                 chat_mode == "chat"
                 and isinstance(message, str)
@@ -1383,6 +1438,8 @@ def setup_chat_routes(
                 else None
             ),
             persist_user_message=not tool_approval_continuation,
+            daybreak_enabled=daybreak_enabled,
+            **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
         )
 
         _research_flags = {"do": do_research}  # Mutable container for generator scope
@@ -1838,6 +1895,8 @@ def setup_chat_routes(
                     _selected_context_length,
                     session=sess,
                     owner=_user,
+                    daybreak_enabled=daybreak_enabled,
+                    **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
                 )
 
             # Send model name early so the frontend can show it during streaming
@@ -1988,6 +2047,8 @@ def setup_chat_routes(
                         fallback_on_empty=_foreground_policy.fallback_on_empty,
                         candidate_request_factory=_chat_request_factory,
                         candidate_route_descriptors=_foreground_route_descriptors,
+                        daybreak_enabled=daybreak_enabled,
+                        **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
                     ):
                         if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
                             try:
@@ -2348,6 +2409,8 @@ def setup_chat_routes(
                         active_email=active_email_ctx,
                         session_id=session,
                         history_session=sess,
+                        daybreak_enabled=daybreak_enabled,
+                        **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
                         disabled_tools=disabled_tools if disabled_tools else None,
                         tool_policy=tool_policy,
                         owner=_user,
@@ -2742,6 +2805,8 @@ def setup_chat_routes(
         except (KeyError, SessionNotFoundError):
             raise HTTPException(404, "Session not found")
 
+        daybreak_enabled = _capture_daybreak_enabled(session_manager, sess, body.get("daybreak_enabled"))
+        reasoning_effort = _capture_reasoning_effort(session_manager, sess, body.get("reasoning_effort"))
         messages = [
             {"role": "system", "content": (
                 "You are rewriting a previous response. Follow the instruction exactly. "
@@ -2769,6 +2834,8 @@ def setup_chat_routes(
                     # on "Rewriting...". Same fix as the chat max_tokens cap.
                     max_tokens=0,
                     tools=None,
+                    daybreak_enabled=daybreak_enabled,
+                    **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
                 ):
                     if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
                         try:

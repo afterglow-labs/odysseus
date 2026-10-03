@@ -47,7 +47,7 @@ ADMIN_PRIVILEGES["allowed_models_restricted"] = False
 # backwards for this sentinel.
 ADMIN_PRIVILEGES["block_all_models"] = False
 
-from src.constants import AUTH_FILE, PASSWORD_MIN_LENGTH
+from src.constants import AUTH_FILE
 from src.owner_identity import RESERVED_AUTH_USERNAMES
 DEFAULT_AUTH_PATH = AUTH_FILE
 TOKEN_TTL = 60 * 60 * 24 * 7  # 7 days
@@ -242,7 +242,7 @@ class AuthManager:
     def policy(self) -> dict:
         """Return public auth policy constants for the frontend."""
         return {
-            "password_min_length": PASSWORD_MIN_LENGTH,
+            "password_required": True,
             "reserved_usernames": sorted(RESERVED_USERNAMES),
             "signup_enabled": self.signup_enabled,
             "session_days": TOKEN_TTL // 86400,
@@ -262,7 +262,7 @@ class AuthManager:
     def create_user(self, username: str, password: str, is_admin: bool = False) -> bool:
         """Create a new user account."""
         username = username.strip().lower()
-        if not username:
+        if not username or not password:
             return False
         if username in RESERVED_USERNAMES:
             logger.warning("Refused to create reserved username '%s'", username)
@@ -467,7 +467,7 @@ class AuthManager:
 
     def change_password(self, username: str, current_password: str, new_password: str) -> bool:
         username = username.strip().lower()
-        if username not in self.users:
+        if not new_password or username not in self.users:
             return False
         if not _verify_password(current_password, self.users[username]["password_hash"]):
             return False

@@ -10,12 +10,15 @@ ProviderAuthSession is allowed to persist.
 
 import types
 
+import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import routes.chat_helpers as chat_helpers
 import src.endpoint_resolver as endpoint_resolver
 from core.database import Base, ModelEndpoint, Session as DbSession
+from src.chatgpt_subscription import ChatGPTSubscriptionAuthNotFound, ChatGPTSubscriptionReauthRequired, to_http_exception
 
 _CODEX_BASE = "https://chatgpt.com/backend-api/codex"
 
@@ -163,3 +166,58 @@ def test_chatgpt_subscription_clears_previously_persisted_bearer(monkeypatch):
         )
     finally:
         db.close()
+
+
+@pytest.mark.parametrize("error", [
+    ChatGPTSubscriptionReauthRequired("Sign-in expired."),
+    ChatGPTSubscriptionAuthNotFound("Saved account is missing."),
+    to_http_exception(ChatGPTSubscriptionReauthRequired("Sign-in expired.")),
+])
+def test_auth_required_reaches_caller_with_the_matched_account(monkeypatch, error):
+    database = _mem_db(monkeypatch)
+    with database() as db:
+        db.add(ModelEndpoint(id="failed-account", name="Account requiring sign-in", base_url=_CODEX_BASE,
+                             provider_auth_id="auth-a", owner="alice", is_enabled=True))
+        db.add(DbSession(id="auth-session", name="chat", endpoint_url=_CODEX_BASE,
+                         model="gpt-test", owner="alice", headers={}))
+        db.commit()
+
+    def reject_auth(_endpoint, owner=None):
+        assert owner == "alice"
+        raise error
+
+    monkeypatch.setattr(endpoint_resolver, "resolve_endpoint_runtime", reject_auth)
+    sess = types.SimpleNamespace(endpoint_url=_CODEX_BASE, headers={}, model="gpt-test")
+    with pytest.raises(HTTPException) as raised:
+        chat_helpers.resolve_session_auth(sess, "auth-session", owner="alice")
+    assert raised.value.status_code == 401
+    assert raised.value.detail["authentication_required"] is True
+    assert raised.value.detail["provider"] == "chatgpt-subscription"
+    assert raised.value.detail["endpoint_id"] == "failed-account"
+    assert raised.value.detail["endpoint_url"] == _CODEX_BASE
+    assert "Reconnect" in raised.value.detail["message"]
+    assert sess.headers == {}
+    with database() as db:
+        assert db.get(DbSession, "auth-session").headers == {}
+
+
+@pytest.mark.parametrize("error", [
+    RuntimeError("Temporary lookup failure"),
+    HTTPException(401, "Unstructured lookup failure"),
+    HTTPException(403, {"authentication_required": False, "code": "access_program_not_enabled"}),
+    HTTPException(429, "Rate limited"),
+])
+def test_ordinary_resolution_failures_preserve_existing_fallback(monkeypatch, error):
+    database = _mem_db(monkeypatch)
+    with database() as db:
+        db.add(ModelEndpoint(id="ep-fallback", name="Subscription", base_url=_CODEX_BASE,
+                             provider_auth_id="auth-a", owner="alice", is_enabled=True))
+        db.commit()
+
+    def fail_lookup(_endpoint, owner=None):
+        raise error
+
+    monkeypatch.setattr(endpoint_resolver, "resolve_endpoint_runtime", fail_lookup)
+    sess = types.SimpleNamespace(endpoint_url=_CODEX_BASE, headers={}, model="gpt-test")
+    assert chat_helpers.resolve_session_auth(sess, "auth-session", owner="alice") is None
+    assert sess.headers == {}

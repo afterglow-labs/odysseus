@@ -1,6 +1,6 @@
 # Testing And Devops
 
-Last updated: dev@e71f8ce | 2026-08-25
+Last updated: dev@e3035826 + Python runtime unification | 2026-10-01
 
 ## Scope
 
@@ -20,6 +20,11 @@ This spec covers development and validation surfaces in:
 - setup/service files such as `setup.py`, `install-service.sh`, and `odysseus-ui.service`.
 
 ## Test Runtime
+
+`.python-version` defines stable CPython 3.14, standard GIL build, across native
+launchers, Docker, and CI. Use the latest available patch in that family.
+`src/python_runtime.py` rejects unsupported interpreters before application
+imports; the platform launchers expose read-only Python checks.
 
 Pytest is configured in `pyproject.toml` with:
 
@@ -57,22 +62,28 @@ Use `node --check static/js/<changed-file>.js` for syntax checks on changed JS f
 
 ## Dependencies
 
-`requirements.txt` owns core runtime and test dependencies, including pytest, pytest-asyncio, MCP, Chroma HTTP client, fastembed, qrcode, and core parsing/search/calendar dependencies.
+`requirements.txt` declares core runtime and test dependencies, including pytest,
+pytest-asyncio, MCP, full Chroma, fastembed, qrcode, and parsing/search/calendar
+dependencies. `requirements.lock` pins transitive versions and hashes through a
+universal Python 3.14 resolution. All install paths consume this checked-in lock.
+`scripts/lock_dependencies.py` regenerates the core, optional, and build locks;
+`--check` verifies freshness and `--upgrade` explicitly refreshes dependency
+versions. Optional/build resolution is constrained by the core lock.
 
 `requirements-optional.txt` owns optional feature dependencies:
 
 - `faster-whisper` for local STT;
-- `kokoro==0.9.4` and `soundfile` for local TTS on Python 3.11-3.12 only; Kokoro is deliberately skipped on Python 3.13+ because its package metadata excludes those runtimes, and a CUDA-capable torch/GPU is still required at runtime;
+- `sherpa-onnx==1.13.8` for Kokoro ONNX local TTS on the shared Python 3.14 runtime, including CPU-only systems;
 - `ddgs` for DDG library support, while provider code can fall back to HTML scraping;
 - `PyMuPDF` for PDF forms/rendering with AGPL implications for a network-served app;
 - `markitdown[docx,pptx,xlsx,xls]` for Office/EPUB extraction, pinned to a release older than 30 days.
 
 Optional dependencies should produce clear degraded behavior when absent unless intentionally promoted to core. MarkItDown and PyMuPDF already have focused degraded-path coverage; local STT missing-`faster-whisper` behavior is a remaining coverage gap. Core runtime requirements include `httpx2` where compatibility tests depend on it. The official Docker image additionally installs `libmagic1` plus `python-magic==0.4.27` for content-based upload MIME sniffing; that pairing is image-owned because `python-magic` needs the system shared library at import time.
 
-Chroma has two compatibility modes:
-
-- Docker uses a separate `chromadb` service and core `chromadb-client`/`fastembed`;
-- native macOS setup removes conflicting `chromadb-client` and installs full `chromadb`.
+All app installations use the same full `chromadb` distribution. Docker connects
+to its separate Chroma service; native macOS can run the locked package's Chroma
+server. Existing native environments with the overlapping `chromadb-client`
+distribution remove it and restore the locked installation before launch.
 
 Vector features should fail fast or degrade to unhealthy/keyword fallback when the service is unavailable.
 
@@ -115,7 +126,7 @@ AMD helper behavior:
 
 Native platform launchers:
 
-- `launch-windows.ps1` requires Python 3.11+, creates `venv`, installs `requirements.txt`, runs `setup.py`, discovers per-user Git Bash installs where possible, warns when Git Bash is missing, and starts uvicorn on port 7000 by default.
+- `launch-windows.ps1` requires the CPython minor in `.python-version`, validates existing venvs, installs `requirements.lock` with hashes, runs `setup.py`, discovers per-user Git Bash where possible, and starts uvicorn on port 7000 by default.
 - `launcher.py`, `Odysseus.spec`, and `build-windows-portable.ps1` own the PyInstaller-style portable Windows launcher path, including app-root/data-dir differences covered by `src.runtime_paths`.
 - `start-macos.sh` reads `.env`, defaults to port 7860 to avoid AirPlay conflicts, prefers Homebrew arm64 Python, installs/tolerates Homebrew Cookbook deps, handles Chroma package conflicts, starts ChromaDB for native runs, runs `setup.py`, and starts uvicorn.
 - `build-macos-app.sh` builds a launcher app around the existing repo venv and logs to `logs/odysseus-app.log`.
@@ -203,12 +214,16 @@ Run the app for user-facing or integration changes. Unit tests and syntax checks
 
 ## Current Gaps
 
-- Fresh install smoke coverage across Linux native, Docker, macOS native/app, Windows native, WSL/Git Bash, missing Node/npm, missing Chroma service, and GPU overlays remains a roadmap item.
+- CI now covers native Linux/macOS/Windows startup and launcher preflight,
+  dependency lock freshness, Compose validation, and a real container build
+  and readiness probe. Native image publication also waits for startup checks.
+  WSL/Git Bash interaction, missing Node/npm, and physical GPU serving still
+  need broader end-to-end coverage.
 - There is no frontend build/type-check/npm test pipeline.
-- CI now covers Python compile, first-party JS syntax, focused-test guidance,
-  and pytest smoke; it does not cover Docker compose validation, launcher smoke
-  tests, browser/module-graph execution, or platform installs.
-- Optional dependency behavior is broad; remaining gaps include local STT missing-`faster-whisper`, Kokoro's Python/GPU degraded matrix, and provider/OAuth combinations not covered by focused tests.
+- CI also covers Python compile, first-party JS syntax, focused-test guidance,
+  and the full Python suite. Browser/module-graph execution remains a gap.
+- Optional dependency behavior is broad; provider/OAuth combinations and
+  hardware-specific serving engines need continued integration coverage.
 - GitHub description-check scripts and `scripts/pr_blocker_audit.py` need continued local fixtures for section parsing, placeholder stripping, label swaps, workflow-safe behavior, and duplicate/hot-file heuristics.
 - Spec bootstrap rules lack meta tests for reading `_readme.md`, spec shape, `.env*` handling, draft/report placement, and shared helper conventions.
 - NVIDIA helper install/`.env` mutation paths and real Docker/GPU startup are not covered by local tests.

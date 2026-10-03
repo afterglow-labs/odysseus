@@ -149,21 +149,23 @@ function _venvRootFromPath(path) {
   return p;
 }
 
-// A pip dependency/driver install (payload._dep) reports success with the
-// runner's "=== Process exited with code 0 ===" sentinel and pip's
-// "Successfully installed" line — never the HuggingFace download markers
-// (DONE / 100% / /snapshots/ / DOWNLOAD_OK) that the download heuristics look
-// for. Without this, a clean install whose tmux pane has already gone away is
-// misread as crashed/stopped even though pip exited 0. Prefer the authoritative
-// exit-code sentinel; fall back to pip's success line when no sentinel was
-// captured (and there's no install error in the same output).
-function _depInstallSucceeded(output) {
+// Only the runner's final exit marker proves the whole install completed.
+// "Requirement already satisfied" appears during dependency resolution, and
+// "Successfully installed" can precede another command in a compound install.
+// Neither may finish a task while pip is still downloading/building packages.
+function _processExitCode(output) {
   const text = String(output || '');
-  if (!text) return false;
-  const exitMatch = text.match(/=== Process exited with code (-?\d+) ===/);
-  if (exitMatch) return Number(exitMatch[1]) === 0;
-  return /\b(?:Successfully installed|Requirement already satisfied)\b/.test(text)
-    && !/\bERROR\b|No matching distribution|Could not find a version|Traceback \(most recent call last\)/.test(text);
+  const exits = [...text.matchAll(/=== Process exited with code\s+(-?\d+)\s*===/gi)];
+  return exits.length ? Number(exits[exits.length - 1][1]) : null;
+}
+
+function _taskExitCode(task) {
+  return _processExitCode(task?.output)
+    ?? (Number.isInteger(task?.exit_code) ? task.exit_code : null);
+}
+
+function _depInstallSucceeded(output) {
+  return _processExitCode(output) === 0;
 }
 
 function _shouldOfferCrashReport(task) {
@@ -753,21 +755,18 @@ function _serveOutputLooksReady(task) {
 
 function _normalizeTaskForDisplay(task) {
   if (!task || typeof task !== 'object') return task;
-  // Pip tasks (Reinstall vLLM / Upgrade torch / etc.) ride on the serve task
-  // type so they get tmux + the Running tab. They are NOT serves — their
-  // "ready" markers are pip's `Successfully installed` / `Requirement already
-  // satisfied`, not "Application startup complete".
+  const exitCode = _taskExitCode(task);
+  if (exitCode !== null && exitCode !== 0) {
+    return { ...task, status: 'error', progress: '' };
+  }
+  // Pip tasks also use the serve runner, but completion comes from its exit
+  // marker rather than a model server's readiness output.
   const _isPipTask = ((task.payload?.repo_id || '').startsWith('pip-'))
     || /python3? -m pip\b/.test(task.payload?._cmd || '');
   if (_isPipTask) {
-    // Override stale status: any pip task whose output carries pip's own
-    // success markers gets displayed as `done` regardless of what's in
-    // localStorage. Old pre-fix runs landed in error/stopped state and
-    // stuck there even after we taught the rest of the flow about pip
-    // tasks — this is the catch-all that flips them to Finished on render.
+    // Recover old stopped/error cards only when the entire command exited 0.
     const out = String(task.output || '');
-    const ranOk = /Successfully installed|Requirement already (?:satisfied|up-to-date)/i.test(out)
-      && !/error:|ERROR:/.test(out.slice(-1024));
+    const ranOk = _depInstallSucceeded(out);
     if (ranOk && task.status !== 'done' && task.status !== 'running') {
       return { ...task, status: 'done' };
     }
@@ -913,7 +912,7 @@ export function _saveTasks(tasks) {
 
 export function _addTask(sessionId, name, type, payload) {
   let tasks = _loadTasks();
-  const remoteHost = (payload && payload.remote_host) || _envState.remoteHost || '';
+  const remoteHost = payload?.remote_host ?? _envState.remoteHost ?? '';
   const remoteServerKey = (payload && payload.remote_server_key) || '';
   const remoteServerName = (payload && payload.remote_server_name) || '';
   const sshPort = (payload && payload.ssh_port) || _getPort(remoteServerKey || remoteHost) || '';
@@ -1475,36 +1474,65 @@ async function _retryTask(el, task) {
       _removeTask(task.sessionId);
       _launchServeTask(task.name, task.payload.repo_id, task.payload._cmd, task.payload._fields, task.remoteHost || '');
     } else {
-      uiModule.showToast('Retrying download — progress may look reset while HuggingFace checks cached files, then it should resume.', 7000);
+      const isDependency = !!task.payload._dep;
+      const retryMessage = isDependency
+        ? 'Retrying dependency install in the original Python environment.'
+        : 'Retrying download. Progress may briefly look like a fresh download while HuggingFace checks cached/incomplete files; cached partial files will be reused when available.';
+      uiModule.showToast(isDependency
+        ? retryMessage
+        : 'Retrying download — progress may look reset while HuggingFace checks cached files, then it should resume.', 7000);
       _updateTask(task.sessionId, {
         status: 'running',
-        output: `${task.output || ''}\n\n[odysseus] Retrying download. Progress may briefly look like a fresh download while HuggingFace checks cached/incomplete files; cached partial files will be reused when available.`.trim(),
+        output: `${task.output || ''}\n\n[odysseus] ${retryMessage}`.trim(),
         _retrying: true,
       });
-      _retryDownload(task.name, task.payload, task.sessionId);
+      const retryPayload = isDependency ? {
+        ...task.payload,
+        remote_host: task.payload.remote_host ?? task.remoteHost ?? '',
+        ssh_port: task.payload.ssh_port || task.sshPort || '',
+        platform: task.payload.platform || task.platform || '',
+      } : task.payload;
+      await _retryDownload(task.name, retryPayload, task.sessionId);
     }
   }
 }
 
 async function _retryDownload(name, payload, replaceSessionId = '') {
+  const isDependency = !!payload?._dep;
+  const failureLabel = isDependency ? 'Install failed: ' : 'Download failed: ';
   try {
-    // A retry means the fast hf_transfer path already failed once — fall back to
-    // the plain, reliable downloader for this and any further attempt (it resumes
-    // from the cached .incomplete files, so no progress is lost).
-    const _payload = { ...(payload || {}), disable_hf_transfer: true };
-    const res = await fetch('/api/model/download', {
+    // Dependency installs share download cards, but their original command
+    // belongs to the serve runner. Only model downloads use HF retry options.
+    const _payload = isDependency
+      ? { ...payload }
+      : { ...(payload || {}), disable_hf_transfer: true };
+    if (isDependency && !_payload._cmd) throw new Error('The original install command is missing. Use Install in Dependencies.');
+    // Older cards did not save activation. An absolute venv Python command
+    // still selects its environment; plain python plus a conda/venv name does not.
+    if (isDependency && _payload.env_path && !_payload.env_prefix) {
+      const pythonToken = _payload._cmd.trim().match(/^(?:"([^"]+)"|'([^']+)'|(\S+))\s+-m\s+pip\b/);
+      const pythonPath = pythonToken && (pythonToken[1] || pythonToken[2] || pythonToken[3]);
+      const pythonRoot = pythonPath?.match(/^(.*)\/bin\/python(?:3(?:\.\d+)?)?$/)?.[1];
+      if (!pythonRoot || pythonRoot !== _venvRootFromPath(_payload.env_path)) {
+        throw new Error('The saved install environment is incomplete. Use Install in Dependencies to select it again.');
+      }
+    }
+    const requestBody = isDependency ? {
+      repo_id: _payload.repo_id,
+      cmd: _payload._cmd,
+      remote_host: _payload.remote_host || undefined,
+      ssh_port: _payload.ssh_port || undefined,
+      env_prefix: _payload.env_prefix || undefined,
+      platform: _payload.platform || undefined,
+    } : _payload;
+    const res = await fetch(isDependency ? '/api/model/serve' : '/api/model/download', {
       method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(_payload),
+      body: JSON.stringify(requestBody),
     });
-    if (!res.ok) {
-      uiModule.showToast('Download failed: HTTP ' + res.status);
-      if (replaceSessionId) _updateTask(replaceSessionId, { status: 'crashed', _retrying: false });
-      return;
-    }
-    const data = await res.json();
-    if (!data.ok) {
-      uiModule.showToast('Download failed: ' + (data.error || ''));
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      uiModule.showToast(failureLabel + String(data.detail || data.error || `HTTP ${res.status}`));
       if (replaceSessionId) _updateTask(replaceSessionId, { status: 'crashed', _retrying: false });
       return;
     }
@@ -1517,8 +1545,18 @@ async function _retryDownload(name, payload, replaceSessionId = '') {
         task.sessionId = data.session_id;
         task.status = 'running';
         task.output = '';
+        task.progress = '';
+        task.exit_code = null;
+        task._backendDiagnosis = null;
+        task._diagnosisDismissed = false;
+        task._doneConfirmAt = null;
         task.ts = Date.now();
         task.payload = _payload;
+        if (isDependency) {
+          task.remoteHost = _payload.remote_host || '';
+          task.sshPort = _payload.ssh_port || '';
+          task.platform = _payload.platform || '';
+        }
         task._retrying = false;
         _saveTasks(tasks);
         _soloExpandTaskId = data.session_id;
@@ -1530,9 +1568,9 @@ async function _retryDownload(name, payload, replaceSessionId = '') {
     } else {
       _addTask(data.session_id, name, 'download', _payload);
     }
-    uiModule.showToast(`Downloading ${name}...`);
+    uiModule.showToast(`${isDependency ? 'Installing' : 'Downloading'} ${name}...`);
   } catch (e) {
-    uiModule.showToast('Download failed: ' + e.message);
+    uiModule.showToast(failureLabel + e.message);
     if (replaceSessionId) _updateTask(replaceSessionId, { status: 'crashed', _retrying: false });
   }
 }
@@ -3113,24 +3151,21 @@ async function _reconnectTask(el, task) {
             && (lastOutput.includes('DONE') || lastOutput.includes('100%') || lastOutput.includes('/snapshots/') || lastOutput.includes('Download complete') || lastOutput.includes('DOWNLOAD_OK'));
           // Pip install / reinstall tasks are launched via _launchServeTask (so
           // they show up in the Running tab + use tmux) but they aren't real
-          // serves — the cmd is `python3 -m pip ...` and the success markers
-          // are pip's own. Without this branch, a successful reinstall ends
+          // serves — the cmd is `python3 -m pip ...` and the runner records
+          // its exit code. Without this branch, a successful reinstall ends
           // with no "Uvicorn running on" line and gets mis-flagged as a crashed
           // serve.
           const _isPipTask = ((task.payload?.repo_id || '').startsWith('pip-'))
             || /python3? -m pip\b/.test(task.payload?._cmd || '');
-          const pipLooksSuccessful = _isPipTask
-            && /Successfully installed|Requirement already (?:satisfied|up-to-date)/i.test(lastOutput)
-            && !/error:|ERROR:/.test(lastOutput.slice(-1024));
+          const pipLooksSuccessful = _isPipTask && _depInstallSucceeded(lastOutput);
           const serveLooksReady = task.type === 'serve' && _serveOutputLooksReady({ ...task, output: lastOutput });
           // Dependency installs are tracked as download tasks but finish with a
           // pip exit-0 sentinel, not HF download markers — check that too.
-          // Standalone pip-* serves finish with pip's own success line, not
-          // HF or "Uvicorn running on".
+          // Standalone pip-* serves use the same exit sentinel.
           const depInstallSucceeded = !!task.payload?._dep && _depInstallSucceeded(lastOutput);
           const looksSuccessful = depInstallSucceeded
             || (task.type === 'download'
-              ? downloadLooksSuccessful
+              ? (task.payload?._dep || _isPipTask ? pipLooksSuccessful : downloadLooksSuccessful)
               : (_isPipTask ? pipLooksSuccessful : serveLooksReady));
           if (!lastOutput.trim() || !looksSuccessful) {
             _updateTask(task.sessionId, { status: 'crashed' });
@@ -3142,7 +3177,7 @@ async function _reconnectTask(el, task) {
               // "Serve stopped before the model became reachable"). Show a
               // pip-tailored message; the user can read pip's own error output
               // directly above.
-              const _ranOk = /Successfully installed|Requirement already (?:satisfied|up-to-date)/i.test(lastOutput);
+              const _ranOk = _depInstallSucceeded(lastOutput);
               if (!_ranOk) {
                 _showDiagnosis(el, {
                   message: 'Pip install did not finish with a success marker. Check the output for the underlying error.',
@@ -3985,6 +4020,9 @@ export async function _selfHealStaleTasks(opts = {}) {
     if (t.type !== 'download') return false;
     if (!['done', 'error', 'crashed', 'stopped'].includes(t.status)) return false;
     if (!t.sessionId || String(t.sessionId).startsWith('queue-')) return false;
+    // The runner keeps an interactive shell open after the command exits.
+    // Shell liveness cannot revive a completed or failed command.
+    if (_taskExitCode(t) !== null) return false;
     // Finished downloads with strong completion markers (DOWNLOAD_OK or HF
     // /snapshots/ resolution) are demonstrably done — do not flip them back
     // to running just because the tmux session is still alive (e.g., a
@@ -4012,7 +4050,7 @@ export async function _selfHealStaleTasks(opts = {}) {
         // Session still alive → the task is actually still running.
         const fresh = _loadTasks();
         const ft = fresh.find(x => x.sessionId === t.sessionId);
-        if (ft && ft.status !== 'running') {
+        if (ft && ft.status !== 'running' && _taskExitCode(ft) === null) {
           ft.status = 'running';
           ft._selfHealed = true;
           ft._lastStatusFlipAt = Date.now();
@@ -4189,6 +4227,8 @@ async function _pollBackgroundStatus() {
         // dead-session check inspects). Recover "done" from the retained output's
         // exit-0 sentinel so a clean install isn't downgraded to crashed.
         const combinedOutput = `${task.output || ''}\n${live.output_tail || ''}`;
+        const exitCode = live.exit_code ?? _processExitCode(combinedOutput) ?? task.exit_code;
+        const failedByExit = Number.isInteger(exitCode) && exitCode !== 0;
         const depDone = !!task.payload?._dep && _depInstallSucceeded(combinedOutput);
         // A finished model download whose tmux pane is gone is also reported
         // "stopped" (the dead-session check can miss the landed snapshot).
@@ -4199,11 +4239,12 @@ async function _pollBackgroundStatus() {
         // off the conclusive exit sentinel only, never the `/snapshots/` path,
         // which can be printed mid-stream for multi-file downloads.
         const downloadDone = task.type === 'download'
+          && !task.payload?._dep
           && String(combinedOutput || '').includes('DOWNLOAD_OK');
         const serveReady = task.type === 'serve'
           && (live.status === 'ready' || _serveOutputLooksReady({ ...task, output: live.output_tail || task.output || '' }));
-        const completedByOutput = depDone || downloadDone;
-        const nextStatus = completedByOutput
+        const completedByOutput = !failedByExit && (depDone || downloadDone);
+        const nextStatus = failedByExit ? 'error' : completedByOutput
           ? 'done'
           : (serveReady
           ? 'ready'
@@ -4214,17 +4255,18 @@ async function _pollBackgroundStatus() {
             : (live.status === 'stopped'
                 ? ((depDone || downloadDone) ? 'done' : (task.type === 'download' ? 'crashed' : 'stopped'))
                 : null))));
-        if (nextStatus && task.status !== nextStatus) {
+        if (nextStatus && (task.status !== nextStatus || failedByExit)) {
           updates.status = nextStatus;
           if (nextStatus === 'done' && task.payload?._dep) completedDeps.push(task);
         }
         if (serveReady && !task._serveReady) {
           updates._serveReady = true;
         }
-        if ((live.status === 'running' || live.status === 'ready') && task.status !== live.status && !serveReady && !completedByOutput) {
+        if ((live.status === 'running' || live.status === 'ready') && task.status !== live.status && !serveReady && !completedByOutput && !failedByExit) {
           updates.status = live.status === 'ready' ? 'ready' : 'running';
         }
-        if (live.progress && live.progress !== task.progress) updates.progress = live.progress;
+        if (failedByExit) updates.progress = '';
+        else if (live.progress && live.progress !== task.progress) updates.progress = live.progress;
         if (live.exit_code != null && live.exit_code !== task.exit_code) updates.exit_code = live.exit_code;
         if (live.output_tail) {
           const previous = String(task.output || '');

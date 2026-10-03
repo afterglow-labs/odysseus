@@ -31,16 +31,28 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-Manual development uses Python 3.11+:
+Manual development uses stable CPython 3.14 (standard GIL build, latest patch).
+The shared runtime target is `.python-version`:
 
 ```bash
-python3 -m venv venv
+python3.14 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+python -m pip install --require-hashes -r requirements.lock
 python -m uvicorn app:app --host 127.0.0.1 --port 7000
 ```
 
-Windows is not actively tested. Docker on Linux or a Linux/macOS manual install is the safer path for now.
+Use `py -3.14` on Windows. Move an older virtual environment aside and create a
+new one; installing newer dependencies does not upgrade its interpreter.
+`requirements.txt` and `requirements-optional.txt` are the dependency inputs.
+After editing them, use `python scripts/lock_dependencies.py` (requires `uv`)
+and commit the generated locks. `requirements-build.txt` and its lock cover
+portable packaging tools. `--upgrade` deliberately refreshes versions;
+`--check` verifies the existing locks without changing them. The optional lock
+is constrained by the core lock so installing extras preserves the tested core.
+
+CI checks native startup on Linux, macOS, and Windows, runs the full Python
+suite on Linux, and builds and starts the Docker image. Hardware-specific
+model serving still needs verification on the relevant hardware.
 
 ## Running Checks
 
@@ -130,4 +142,3 @@ Issues with only "help", "does not work", or a screenshot without context may be
 Do not post secrets, API keys, private logs, personal documents, or public IPs in issues or pull requests.
 
 For security reports, follow [SECURITY.md](SECURITY.md).
-

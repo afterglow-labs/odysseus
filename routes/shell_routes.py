@@ -22,6 +22,11 @@ from src.host_docker_access import (
     running_in_container as _running_in_container,
 )
 from src.optional_deps import prepare_optional_dependency_import
+from src.dependency_catalog import (
+    DISTRIBUTION_ALIASES, IMPORT_ALIASES, dependency_catalog, requirement_specs,
+)
+from src.dependency_health import check_dependency_health
+from src.dependency_index import check_latest_release
 
 # POSIX-only: `pty`/`fcntl` transitively import `termios`, which does NOT exist
 # on Windows, so importing them unconditionally crashed app startup there
@@ -134,6 +139,8 @@ def _pip_dist_name(pkg: dict) -> str:
     derive it from the pip spec (stripping any ``[extras]`` and version markers)
     and fall back to the munged import name only when no pip spec is declared.
     """
+    if pkg.get("name") in DISTRIBUTION_ALIASES:
+        return DISTRIBUTION_ALIASES[pkg["name"]]
     pip = (pkg.get("pip") or "").strip()
     if pip:
         base = re.split(r"[\[<>=!~;\s]", pip, maxsplit=1)[0].strip()
@@ -144,7 +151,114 @@ def _pip_dist_name(pkg: dict) -> str:
 
 def _import_optional_dependency_for_status(name: str):
     prepare_optional_dependency_import(name)
-    return importlib.import_module(name)
+    return importlib.import_module(IMPORT_ALIASES.get(name, name))
+
+
+def _local_sam_dependency_probe() -> dict:
+    """Check the editor's real SAM imports without downloading model weights."""
+    from importlib.metadata import version
+
+    probe = {"dists": {}, "modules": {}}
+    for name, required_exports in (
+        ("torch", ()),
+        ("transformers", ("SamModel", "SamProcessor", "OwlViTForObjectDetection", "OwlViTProcessor")),
+    ):
+        try:
+            module = _import_optional_dependency_for_status(name)
+            # Transformers exposes these lazily. Importing only its top-level
+            # module can succeed while the vision/torch integration is broken.
+            for export in required_exports:
+                getattr(module, export)
+            probe["dists"][name] = version(name)
+            probe["modules"][name] = {"real_module": True}
+        except (Exception, SystemExit) as exc:
+            probe["error"] = f"SAM mask tools unavailable: {name}: {exc}"
+            break
+    return probe
+
+
+def _apply_dependency_health(pkg: dict, health: dict) -> None:
+    """Expose actionable prerequisites without confusing absence with damage."""
+    pkg["dependency_health"] = health
+    pkg["dependency_issues"] = health.get("issues", [])
+    primary = _pip_dist_name(pkg).lower().replace("_", "-")
+    present = primary in health.get("versions", {}) or bool(pkg.get("installed"))
+    runtime_error = pkg.get("probe_error") or (pkg.get("details") or {}).get("error")
+    pkg["needs_repair"] = bool(present and (pkg["dependency_issues"] or runtime_error))
+    if pkg["dependency_issues"]:
+        pkg["installed"] = False
+        # Leave ordinary, intentionally uninstalled optional packages quiet.
+        if present:
+            names = ", ".join(issue["name"] for issue in pkg["dependency_issues"][:5])
+            summary = f"Missing or incompatible requirements: {names}."
+            error = runtime_error
+            pkg["status_note"] = f"{error} {summary}" if error else summary
+
+
+async def _attach_package_index_checks(packages: list[dict], *, host=None, remote_environment=None) -> None:
+    """Explicit, bounded metadata audit; automatic package refresh never calls it."""
+    from packaging.requirements import Requirement
+
+    semaphore = asyncio.Semaphore(4)
+    pending = {}
+
+    def unknown(note):
+        return {"latest_version": None, "install_supported": None, "compatibility_note": note}
+
+    async def check(name, on_remote):
+        if on_remote:
+            environment = remote_environment if isinstance(remote_environment, dict) else {}
+            version = environment.get("python_version")
+            tags = environment.get("supported_tags")
+            if not isinstance(version, str) or not isinstance(tags, list) or not tags:
+                return unknown("Compatibility is unknown: the selected server's Python version and platform tags could not be inspected.")
+            kwargs = {"python_version": version, "supported_tags": tags}
+        else:
+            kwargs = {}
+        async with semaphore:
+            try:
+                result = await asyncio.to_thread(check_latest_release, name, **kwargs)
+                if isinstance(result, dict):
+                    return result
+            except (Exception, SystemExit):
+                logger.warning("Dependency index check failed for %s", name, exc_info=True)
+            return unknown("Could not verify current PyPI compatibility. Retry Check dependencies; existing install choices are unchanged.")
+
+    async def attach(pkg):
+        if not pkg.get("pip") or pkg.get("applicable") is False:
+            return
+        platform_note = pkg.get("install_hint", "") if pkg.get("install_supported") is False else ""
+        try:
+            # PyPI's artifacts cannot prove compatibility of a Git checkout.
+            if any(spec.startswith("git+") for spec in shlex.split(pkg["pip"])):
+                pkg["compatibility_note"] = (platform_note + " This recipe installs from Git; PyPI release artifacts cannot verify that source checkout.").strip()
+                return
+            names = list(dict.fromkeys(Requirement(spec).name for spec in requirement_specs(pkg)))
+        except (TypeError, ValueError):
+            pkg["compatibility_note"] = "Compatibility could not be checked: the install recipe contains an invalid requirement."
+            return
+        on_remote = bool(host and pkg.get("target") == "remote")
+        for name in names:
+            key = (on_remote, name)
+            if key not in pending:
+                pending[key] = asyncio.create_task(check(name, on_remote))
+        checks = [{"name": name, **await pending[(on_remote, name)]} for name in names]
+        pkg["index_checks"] = checks
+        if checks:
+            pkg["latest_version"] = checks[0].get("latest_version")
+            pkg["requires_python"] = checks[0].get("requires_python")
+            compatible = [item.get("has_compatible_artifact") for item in checks]
+            pkg["has_compatible_artifact"] = (
+                False if False in compatible else True if all(value is True for value in compatible) else None
+            )
+        blocked = [item for item in checks if item.get("install_supported") is False]
+        if blocked:
+            pkg["install_supported"] = False
+        notes = [platform_note] if platform_note else []
+        notes.extend(item["compatibility_note"] for item in checks if item.get("compatibility_note"))
+        pkg["compatibility_note"] = " ".join(notes)
+
+    await asyncio.gather(*(attach(pkg) for pkg in packages))
 
 
 def _package_installed_from_probe(name: str, probe: dict) -> bool:
@@ -167,6 +281,8 @@ def _package_installed_from_probe(name: str, probe: dict) -> bool:
         return bool(dists.get("sglang") or modules.get("sglang", {}).get("real_module"))
     if name == "mlx_lm":
         return bool(dists.get("mlx-lm") or modules.get("mlx_lm", {}).get("real_module"))
+    if name == "mlx_vlm":
+        return bool(dists.get("mlx-vlm") or modules.get("mlx_vlm", {}).get("real_module"))
     if name == "mflux":
         return bool(
             dists.get("mflux")
@@ -375,17 +491,24 @@ def _prepend_user_install_bins_to_path() -> None:
         os.environ["PATH"] = os.pathsep.join(parts)
 
 
-def _package_probe_script(names: list[str]) -> str:
+def _package_probe_script(names: list[str], *, include_environment: bool = False) -> str:
     names_lit = ",".join(repr(n) for n in names)
-    return f"""
+    # Run exactly the same metadata checker in the selected remote environment.
+    # Its source is standalone and performs no imports of the optional packages.
+    from src import dependency_health
+    health_source = Path(dependency_health.__file__).read_text(encoding="utf-8")
+    specs = {p["name"]: requirement_specs(p) for p in dependency_catalog() if p["name"] in names}
+    return health_source + f"""
 import importlib.util
 import importlib.metadata as md
 import json
 import os
 import shutil
 import site
+import sys
 
 names=[{names_lit}]
+health_specs={specs!r}
 dist_names={{
     'vllm':['vllm'],
     'llama_cpp':['llama-cpp-python'],
@@ -434,6 +557,7 @@ def add_user_install_bins_to_path():
 add_user_install_bins_to_path()
 
 def mod_status(n):
+    n = {{'krea_diffusers': 'diffusers'}}.get(n, n)
     spec = importlib.util.find_spec(n)
     loader = getattr(spec, 'loader', None) if spec else None
     return {{
@@ -471,9 +595,29 @@ def probe(n):
                     found = p
                     break
             files[key] = found
-    return {{'modules': mods, 'dists': dists, 'binaries': bins, 'files': files}}
+    return {{'modules': mods, 'dists': dists, 'binaries': bins, 'files': files,
+             'health': check_dependency_health(health_specs.get(n, []))}}
 
-print(json.dumps({{n: probe(n) for n in names}}))
+def safe_probe(n):
+    try:
+        return probe(n)
+    except (Exception, SystemExit) as exc:
+        return {{'modules': {{}}, 'dists': {{}}, 'binaries': {{}}, 'files': {{}},
+                'error': 'Cannot inspect ' + n + ': ' + str(exc)[:240]}}
+
+result = {{n: safe_probe(n) for n in names}}
+if {include_environment!r}:
+    environment = {{'python_version': '.'.join(map(str, sys.version_info[:3])), 'supported_tags': []}}
+    try:
+        try:
+            from packaging.tags import sys_tags
+        except ImportError:
+            from pip._vendor.packaging.tags import sys_tags
+        environment['supported_tags'] = [str(tag) for tag in sys_tags()]
+    except (Exception, SystemExit) as exc:
+        environment['error'] = 'Cannot inspect selected platform tags: ' + str(exc)[:160]
+    result['_environment'] = environment
+print(json.dumps(result))
 """
 
 
@@ -1189,6 +1333,7 @@ def setup_shell_routes() -> APIRouter:
         backend: str | None = None,
         platform: str | None = None,
         model_hint: str | None = None,
+        check_index: bool = False,
     ):
         """Check which optional packages are installed.
 
@@ -1236,175 +1381,9 @@ def setup_shell_routes() -> APIRouter:
             _port = str(ssh_port).strip()
             if not _SSH_PORT_RE.match(_port) or not (1 <= int(_port) <= 65535):
                 raise HTTPException(400, "Invalid ssh_port")
-        packages = [
-            # ── System ── OS binaries, not pip packages
-            {
-                "name": "tmux",
-                "pip": "",
-                "desc": "Required for Linux/Termux Cookbook background downloads and serves",
-                "category": "System",
-                "target": "remote",
-                "kind": "system",
-                "install_hint": "Run Cookbook server setup, or install tmux with apt/pacman/dnf/apk/zypper.",
-            },
-            {
-                "name": "docker",
-                "pip": "",
-                "desc": "Required only for Docker-backed launch commands",
-                "category": "System",
-                "target": "remote",
-                "kind": "system",
-                "install_hint": "Install Docker on the selected server and allow this user to run docker.",
-            },
-            # Note: cmake / gcc / git are not separate dependency rows —
-            # they're declared as `system_prereqs` on llama_cpp (and any
-            # other engine that compiles from source) so they appear as
-            # an inline status note on that engine's row instead of
-            # cluttering the panel with raw OS package names that aren't
-            # meaningful product-level dependencies on their own.
-            # ── LLM ── installs on GPU servers for model serving/downloading
-            {
-                "name": "hf_transfer",
-                "pip": "hf_transfer",
-                "desc": "Fast model downloads from HuggingFace",
-                "category": "Tools",
-                "target": "remote",
-            },
-            {
-                "name": "llama_cpp",
-                "pip": "llama-cpp-python[server]",
-                "desc": "Great for single-GPU or CPU inference with GGUF models",
-                "category": "LLM",
-                "target": "remote",
-                # Build-toolchain prereqs. Cookbook's launch bootstrap
-                # compiles llama-server from source when no prebuilt
-                # binary is present; without these the build aborts
-                # with `cmake: command not found`. Surfaced inline on
-                # this row so the user doesn't have to chase three
-                # separate OS-package rows.
-                "system_prereqs": ["cmake", "g++", "git"],
-            },
-            {
-                "name": "sglang",
-                "pip": "sglang[all]",
-                "desc": "Serve HF safetensors models via SGLang",
-                "category": "LLM",
-                "target": "remote",
-            },
-            {
-                "name": "vllm",
-                "pip": "vllm",
-                "desc": "Great for high-throughput multi-GPU inference",
-                "category": "LLM",
-                "target": "remote",
-            },
-            {
-                "name": "mlx_lm",
-                "pip": "mlx-lm",
-                "desc": "Serve MLX-format models on Apple Silicon Macs",
-                "category": "LLM",
-                "target": "remote",
-            },
-            {
-                "name": "APFEL",
-                "pip": "",
-                "desc": "OpenAI-compatible API for Apple Foundational Models on Apple Silicon",
-                "category": "LLM",
-                "target": "local",
-                "kind": "system",
-                "install_cmd": "brew install apfel",
-                "update_cmd": "brew upgrade apfel",
-                "install_hint": "Requires a native Apple Silicon Mac with Apple Foundational Models support. Installable via Homebrew on supported Macs.",
-            },
-            # ── Image ── editor + diffusion model serving
-            {
-                "name": "diffusers",
-                "pip": "diffusers[torch] torchvision accelerate scipy python-multipart",
-                "desc": "Image generation/editing pipelines with PyTorch and Diffusers",
-                "category": "Image",
-                "target": "remote",
-            },
-            {
-                "name": "krea_diffusers",
-                "pip": "git+https://github.com/huggingface/diffusers.git torchvision accelerate scipy python-multipart",
-                "desc": "Latest Diffusers from Git for newly released image pipelines",
-                "category": "Image",
-                "target": "remote",
-            },
-            {
-                "name": "mflux",
-                "pip": "mflux",
-                "desc": "MLX image generation runtime for Apple Silicon models like Qwen Image",
-                "category": "Image",
-                "target": "remote",
-            },
-            {
-                "name": "boogu_image_mlx",
-                "pip": "git+https://github.com/xocialize/boogu-image-mlx.git",
-                "desc": "MLX image generation pipeline for Boogu Image models on Apple Silicon",
-                "category": "Image",
-                "target": "remote",
-            },
-            {
-                "name": "mlx_lama_swift",
-                "pip": "",
-                "desc": "Swift MLX runtime for LaMa / MI-GAN inpainting and object removal",
-                "category": "Image",
-                "target": "remote",
-                "install_hint": "Build an Odysseus-compatible mlx-lama-swift bridge on the selected Apple Silicon Mac and put odysseus-mlx-inpaint or mlx-lama-serve on PATH. Upstream currently ships Swift libraries plus smoke executables, not a stable image-edit CLI.",
-            },
-            {
-                "name": "mlx_ddcolor_swift",
-                "pip": "",
-                "desc": "Swift MLX runtime for DDColor automatic image colorization",
-                "category": "Image",
-                "target": "remote",
-                "install_hint": "Build an Odysseus-compatible mlx-ddcolor-swift bridge on the selected Apple Silicon Mac and put odysseus-mlx-colorize or mlx-ddcolor-serve on PATH. Upstream currently ships Swift libraries plus smoke executables, not a stable colorize CLI.",
-            },
-            {
-                "name": "mlx_vlm",
-                "pip": "mlx-vlm",
-                "desc": "MLX-VLM backbone used by HiDream image models on Apple Silicon",
-                "category": "Image",
-                "target": "remote",
-            },
-            {
-                "name": "transformers",
-                "pip": "transformers",
-                "desc": "Hugging Face model components used by SD/Flux pipelines and image tools",
-                "category": "Image",
-                "target": "remote",
-            },
-            {
-                "name": "sam_mask",
-                "pip": "torch torchvision transformers accelerate pillow",
-                "desc": "Neutral click/box/object segmentation masks for the image editor",
-                "category": "Image",
-                "target": "local",
-            },
-            {
-                "name": "rembg",
-                "pip": "rembg[gpu]",
-                "desc": "AI background removal for image editor",
-                "category": "Image",
-                "target": "local",
-            },
-            {
-                "name": "realesrgan",
-                "pip": "realesrgan",
-                "desc": "AI denoise + upscale (Real-ESRGAN). Used by editor's Denoise and Upscale tools.",
-                "category": "Image",
-                "target": "local",
-            },
-            # ── Tools ──
-            {
-                "name": "playwright",
-                "pip": "playwright",
-                "desc": "Browser automation for web tools",
-                "category": "Tools",
-                "target": "local",
-            },
-        ]
+        packages = dependency_catalog(
+            local_platform=sys.platform, target_platform=platform_l if host else sys.platform,
+        )
 
         # Most packages should not be installed through external means. Hence, set the default of the
         # install_cmd and update_cmd to None, which indicates that the recommended way to install/update is through the Cookbook # server setup or pip. Only system packages, should have explicit install/update commands provided.
@@ -1431,6 +1410,7 @@ def setup_shell_routes() -> APIRouter:
         remote_status: dict = {}
         remote_details: dict = {}
         remote_probe_error = ""
+        remote_environment = None
         remote_names = [
             p["name"]
             for p in packages
@@ -1443,7 +1423,7 @@ def setup_shell_routes() -> APIRouter:
         ]
         if host and remote_names:
             try:
-                py = _package_probe_script(remote_names)
+                py = _package_probe_script(remote_names, include_environment=check_index)
                 # `venv` is validated but left unquoted so leading ~ expands on
                 # the remote; quoting it breaks ~/venv activation.
                 src = _venv_activate_prefix(venv)
@@ -1460,13 +1440,24 @@ def setup_shell_routes() -> APIRouter:
                 for line in reversed(txt.splitlines()):
                     line = line.strip()
                     if line.startswith("{"):
-                        remote_details = _json.loads(line)
-                        remote_status = {
-                            name: _package_installed_from_probe(name, probe)
-                            for name, probe in remote_details.items()
-                            if isinstance(probe, dict)
-                        }
+                        try:
+                            remote_details = _json.loads(line)
+                        except _json.JSONDecodeError:
+                            continue
+                        if not isinstance(remote_details, dict):
+                            continue
+                        remote_environment = remote_details.pop("_environment", None)
+                        for name, probe in remote_details.items():
+                            if not isinstance(probe, dict):
+                                continue
+                            try:
+                                remote_status[name] = _package_installed_from_probe(name, probe)
+                            except (Exception, SystemExit) as exc:
+                                probe["error"] = f"Cannot inspect {name}: {str(exc)[:240]}"
+                                remote_status[name] = False
                         break
+                if not remote_details:
+                    raise RuntimeError("No valid package metadata was returned by the selected server")
             except ValueError as e:
                 raise HTTPException(400, str(e))
             except Exception as e:
@@ -1587,6 +1578,10 @@ def setup_shell_routes() -> APIRouter:
                     note = _package_status_note(pkg["name"], probe)
                     if note:
                         pkg["status_note"] = note
+                    if probe.get("error"):
+                        pkg["installed"] = False
+                        pkg["probe_error"] = probe["error"]
+                        pkg["status_note"] = probe["error"]
             elif pkg.get("kind") == "system":
                 if pkg["name"] == "APFEL":
                     pkg["applicable"] = IS_APPLE_SILICON
@@ -1613,23 +1608,37 @@ def setup_shell_routes() -> APIRouter:
                 if pkg["installed"]:
                     try:
                         _vllm_version = importlib_metadata.version(_pip_dist_name(pkg))
-                    except importlib_metadata.PackageNotFoundError:
+                    except (Exception, SystemExit) as exc:
                         _vllm_version = None
+                        if not isinstance(exc, importlib_metadata.PackageNotFoundError):
+                            pkg["probe_error"] = f"Cannot inspect vllm metadata: {str(exc)[:240]}"
+                            pkg["installed"] = False
                     probe = {
                         "binaries": {"vllm": _vllm_cli},
                         "dists": {"vllm": _vllm_version} if _vllm_version else {},
                     }
                     pkg["status_note"] = _package_status_note("vllm", probe)
+            elif pkg["name"] == "sam_mask":
+                # sam_mask is a feature bundle, not an importable package.
+                # It always runs in the app environment, even when the
+                # Dependencies panel is displaying a remote model server.
+                try:
+                    probe = await asyncio.to_thread(_local_sam_dependency_probe)
+                except (Exception, SystemExit) as exc:
+                    probe = {"error": f"Cannot inspect SAM mask tools: {str(exc)[:240]}"}
+                pkg["installed"] = _package_installed_from_probe("sam_mask", probe)
+                pkg["details"] = probe
+                pkg["status_note"] = probe.get("error") or _package_status_note("sam_mask", probe)
+                if probe.get("error"):
+                    pkg["probe_error"] = probe["error"]
             else:
                 try:
                     _import_optional_dependency_for_status(pkg["name"])
                     importlib_metadata.version(_pip_dist_name(pkg))
                     pkg["installed"] = True
-                except ImportError:
-                    pkg["installed"] = False
                 except importlib_metadata.PackageNotFoundError:
                     pkg["installed"] = False
-                except (Exception, SystemExit):
+                except (Exception, SystemExit) as exc:
                     # Installed but crashes on import — e.g. a CUDA build of
                     # llama-cpp-python raising FileNotFoundError when the CUDA
                     # toolkit dir is absent, or rembg calling sys.exit(1) when no
@@ -1640,6 +1649,30 @@ def setup_shell_routes() -> APIRouter:
                     # broken optional package must not 500 — or hang — the entire
                     # panel; report it as not usable.
                     pkg["installed"] = False
+                    pkg["probe_error"] = f"Cannot load {pkg['name']}: {str(exc)[:240]}"
+                    pkg["status_note"] = pkg["probe_error"]
+
+            # Metadata catches missing sub-dependencies and version conflicts
+            # even when a top-level module happens to import successfully.
+            native_ready = bool(
+                isinstance(probe, dict)
+                and (probe.get("binaries", {}).get("llama-server")
+                     or (pkg["name"] == "vllm" and pkg.get("installed") and not probe.get("dists")))
+            )
+            if pkg.get("pip") and not native_ready:
+                if on_remote:
+                    health = probe.get("health") if isinstance(probe, dict) else None
+                else:
+                    try:
+                        health = await asyncio.to_thread(check_dependency_health, requirement_specs(pkg))
+                    except (Exception, SystemExit) as exc:
+                        health = None
+                        pkg["needs_repair"] = bool(pkg.get("installed"))
+                        pkg["installed"] = None
+                        pkg["probe_error"] = f"Cannot inspect dependency metadata: {str(exc)[:240]}"
+                        pkg["status_note"] = pkg["probe_error"]
+                if isinstance(health, dict):
+                    _apply_dependency_health(pkg, health)
 
             # llama_cpp partial-state probe: when the package is installed
             # but the wheel was built CPU-only AND the target has NVIDIA
@@ -1757,6 +1790,8 @@ def setup_shell_routes() -> APIRouter:
                 )
                 pkg["applicable"] = status.applicable
                 pkg["install_hint"] = status.install_hint
+        if check_index:
+            await _attach_package_index_checks(packages, host=host, remote_environment=remote_environment)
         return {"packages": packages}
 
     @router.post("/api/cookbook/packages/install")
@@ -1771,6 +1806,7 @@ def setup_shell_routes() -> APIRouter:
             return {"ok": False, "error": "No package specified"}
         # Validate against known packages to prevent arbitrary pip install
         known = {
+            "rembg[cpu]",
             "rembg[gpu]",
             "hf_transfer",
             "llama-cpp-python[server]",
@@ -1787,7 +1823,9 @@ def setup_shell_routes() -> APIRouter:
             "faster-whisper",
             "playwright",
             "realesrgan",
+            "basicsr",
             "gfpgan",
+            "facexlib",
             "insightface",
             "onnxruntime-gpu",
             "onnxruntime",
@@ -1797,14 +1835,38 @@ def setup_shell_routes() -> APIRouter:
         }
         if pip_name not in known:
             return {"ok": False, "error": f"Unknown package: {pip_name}"}
-        cmd = [_sys.executable, "-m", "pip", "install", pip_name]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode == 0:
-            return {"ok": True, "output": stdout.decode()[-200:]}
-        return {"ok": False, "error": stderr.decode()[-300:]}
+
+        async def run_python(*args):
+            proc = await asyncio.create_subprocess_exec(
+                _sys.executable, *args,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            return proc.returncode, stdout, stderr
+
+        def install_error(stage, code, stdout, stderr):
+            detail = (stderr or stdout).decode("utf-8", errors="replace")[-300:]
+            return {"ok": False, "error": f"{stage}: {detail or f'exit code {code}'}"}
+
+        # Match the task-runner path: uv environments may lack pip, and native
+        # installs need the same patched wheels as the Docker build.
+        code, stdout, stderr = await run_python("-m", "pip", "--version")
+        if code:
+            code, stdout, stderr = await run_python("-m", "ensurepip", "--upgrade")
+            if code:
+                return install_error("Pip bootstrap failed", code, stdout, stderr)
+            code, stdout, stderr = await run_python("-m", "pip", "--version")
+            if code:
+                return install_error("Pip is still unavailable after bootstrap", code, stdout, stderr)
+        if pip_name in {"realesrgan", "basicsr", "gfpgan", "facexlib"}:
+            builder = Path(__file__).resolve().parent.parent / "scripts" / "build_realesrgan_wheels.py"
+            code, stdout, stderr = await run_python(str(builder), "--install")
+            if code:
+                return install_error("Real-ESRGAN compatibility preparation failed", code, stdout, stderr)
+        code, stdout, stderr = await run_python("-m", "pip", "install", pip_name)
+        if code == 0:
+            return {"ok": True, "output": stdout.decode("utf-8", errors="replace")[-200:]}
+        return {"ok": False, "error": stderr.decode("utf-8", errors="replace")[-300:]}
 
     @router.post("/api/cookbook/install-system-deps")
     async def install_system_deps(request: Request):

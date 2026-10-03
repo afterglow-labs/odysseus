@@ -12,6 +12,7 @@ import spinnerModule from './spinner.js';
 import { modelColor } from './chatRenderer.js';
 import { providerLogo } from './providers.js';
 import { sortModelIds } from './modelSort.js';
+import { updateDaybreakPicker } from './daybreak.js';
 
 let API_BASE = '';
 let _cachedItems = []; // cached /api/models items for model-switch dropdown
@@ -212,6 +213,7 @@ export async function refreshModels(force = false, opts = {}) {
       if (seq < _fetchSeq) return;
       _lastFetchTime = Date.now();
       _cachedItems = data.items || [];
+      updateDaybreakPicker();
     } catch (e) {
       console.error(e);
       if (box) box.textContent = '(scan failed)';

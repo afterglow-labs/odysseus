@@ -13,10 +13,17 @@ import sys
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
+from src.python_runtime import require_supported_python, required_python_version
+
+# Reject an old system Python before importing any installed dependencies.
+if __name__ == "__main__":
+    require_supported_python()
+
+PYTHON_VERSION = ".".join(str(part) for part in required_python_version())
 from src.constants import (
     DATA_DIR, AUTH_FILE, UPLOAD_DIR, PERSONAL_DIR, PERSONAL_UPLOADS_DIR,
     TTS_CACHE_DIR, GENERATED_IMAGES_DIR, DEEP_RESEARCH_DIR, CHROMA_DIR,
-    RAG_DIR, MEMORY_VECTORS_DIR, AGENT_WORKSPACE_DIR, PASSWORD_MIN_LENGTH,
+    RAG_DIR, MEMORY_VECTORS_DIR, AGENT_WORKSPACE_DIR,
 )
 from core.auth import RESERVED_USERNAMES
 
@@ -75,9 +82,6 @@ def _prompt_admin_credentials():
         if not password:
             print("  Password cannot be empty.")
             continue
-        if len(password) < PASSWORD_MIN_LENGTH:
-            print(f"  Password must be at least {PASSWORD_MIN_LENGTH} characters.")
-            continue
         confirm = getpass.getpass("  Confirm password: ")
         if password != confirm:
             print("  Passwords don't match. Try again.")
@@ -100,15 +104,12 @@ def create_default_admin():
 
         # Priority: env vars > interactive prompt > random password
         username = os.getenv("ODYSSEUS_ADMIN_USER", "").strip().lower()
-        password = os.getenv("ODYSSEUS_ADMIN_PASSWORD", "").strip()
+        password = os.getenv("ODYSSEUS_ADMIN_PASSWORD", "")
 
         if username and password:
             # Both provided via env — validate before using
             if username in RESERVED_USERNAMES:
                 print(f"  [error] ODYSSEUS_ADMIN_USER '{username}' is a reserved username")
-                return "failed"
-            if len(password) < PASSWORD_MIN_LENGTH:
-                print(f"  [error] ODYSSEUS_ADMIN_PASSWORD must be at least {PASSWORD_MIN_LENGTH} characters")
                 return "failed"
         elif sys.stdin.isatty() and not os.getenv("ODYSSEUS_SKIP_ADMIN_PROMPT"):
             # Interactive terminal — ask the user
@@ -146,11 +147,11 @@ def create_default_admin():
             # for the rarer case of an x86 wheel inside an arm64 venv.
             print("  [error] bcrypt loaded with the wrong CPU architecture.")
             print("          Rebuild the venv with an arm64 Python:")
-            print("            rm -rf venv && /opt/homebrew/bin/python3.11 -m venv venv")
-            print("            ./venv/bin/pip install -r requirements.txt")
+            print(f"            mv venv venv.previous && /opt/homebrew/bin/python{PYTHON_VERSION} -m venv venv")
+            print("            ./venv/bin/python -m pip install --require-hashes -r requirements.lock")
             return "skipped"
         print("  [warn] bcrypt not installed — skipping admin user creation")
-        print("         Run: pip install bcrypt")
+        print("         Run: python -m pip install --require-hashes -r requirements.lock")
         return "skipped"
 
 
@@ -180,7 +181,7 @@ def check_deps():
             missing.append(mod)
     if missing:
         print(f"\n  [warn] Missing packages: {', '.join(missing)}")
-        print(f"         Run: pip install -r requirements.txt")
+        print("         Run: python -m pip install --require-hashes -r requirements.lock")
     else:
         print("  [ok] All core dependencies installed")
 
@@ -228,16 +229,17 @@ def check_arch():
     print('          load as the wrong architecture and crash with "incompatible')
     print('          architecture" later on.')
     print("\n          Rebuild the environment with Homebrew's arm64 Python:")
-    print("            brew install python@3.11          # if you don't have it yet")
-    print("            rm -rf venv")
-    print("            /opt/homebrew/bin/python3.11 -m venv venv")
-    print("            ./venv/bin/pip install -r requirements.txt")
+    print(f"            brew install python@{PYTHON_VERSION}          # if you don't have it yet")
+    print("            mv venv venv.previous")
+    print(f"            /opt/homebrew/bin/python{PYTHON_VERSION} -m venv venv")
+    print("            ./venv/bin/python -m pip install --require-hashes -r requirements.lock")
     print("            ./venv/bin/python setup.py")
     print("\n          Tip: ./start-macos.sh does all of this with the right Python.\n")
     sys.exit(1)
 
 
 def main():
+    require_supported_python()
     print("\n=== Odysseus Setup ===\n")
 
     # Load .env so pre-seeded ODYSSEUS_ADMIN_USER / ODYSSEUS_ADMIN_PASSWORD (and
@@ -293,7 +295,7 @@ def main():
     elif admin_status == "exists":
         print("Login with your existing admin credentials.\n")
     elif admin_status == "skipped":
-        print("Admin creation did not happen: dependencies are missing.\nRun 'pip install bcrypt' and rerun setup.\n")
+        print("Admin creation did not happen: dependencies are missing.\nRun 'python -m pip install --require-hashes -r requirements.lock' and rerun setup.\n")
     elif admin_status == "failed":
         print("Admin creation did not happen: a system or file error occurred.\nCheck write permissions for the 'data' directory and rerun setup.\n")
     else:  # handling "failed" or any unhandled edge case

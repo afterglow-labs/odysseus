@@ -1,4 +1,6 @@
 import socket
+from pathlib import Path
+import tempfile
 from unittest.mock import AsyncMock
 
 import pytest
@@ -57,11 +59,11 @@ async def test_container_cli_only_is_rejected(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_container_opt_in_with_unix_socket_is_allowed(monkeypatch, tmp_path):
+async def test_container_opt_in_with_unix_socket_is_allowed(monkeypatch):
     monkeypatch.setattr(cookbook_routes.shutil, "which", lambda binary: "/usr/bin/docker")
-    socket_path = tmp_path / "docker.sock"
-
-    with socket.socket(socket.AF_UNIX) as unix_socket:
+    # pytest's descriptive tmp_path can exceed macOS's AF_UNIX pathname limit.
+    with tempfile.TemporaryDirectory(prefix="ody-") as directory, socket.socket(socket.AF_UNIX) as unix_socket:
+        socket_path = Path(directory) / "docker.sock"
         unix_socket.bind(str(socket_path))
         available = await cookbook_routes._binary_available(
             "docker",

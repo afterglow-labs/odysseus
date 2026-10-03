@@ -1,15 +1,22 @@
+# Docker cannot read a file before FROM. This default mirrors .python-version;
+# CI passes the file value explicitly, and the builder checks it before work.
+ARG PYTHON_VERSION=3.14
+
 # ---- builder: patch + build wheels for Real-ESRGAN's broken-on-3.14 deps ----
 # basicsr/gfpgan/facexlib read their version via exec()+locals()['__version__'],
 # which raises KeyError on Python 3.13+ (PEP 667). Build patched wheels here so
 # the final image / Cookbook never has to compile the broken sdists. See
 # docker/build-realesrgan-wheels.sh for the full rationale.
-FROM python:3.14-slim AS realesrgan-wheels
+FROM python:${PYTHON_VERSION}-slim AS realesrgan-wheels
+COPY .python-version /tmp/odysseus-python-version
+RUN python -c 'import pathlib, sys, sysconfig; expected = pathlib.Path("/tmp/odysseus-python-version").read_text().strip(); actual = ".".join(map(str, sys.version_info[:2])); assert actual == expected, (actual, expected); assert not sysconfig.get_config_var("Py_GIL_DISABLED")'
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 COPY docker/build-realesrgan-wheels.sh /usr/local/bin/build-realesrgan-wheels.sh
+COPY scripts/build_realesrgan_wheels.py /usr/local/bin/build_realesrgan_wheels.py
 RUN bash /usr/local/bin/build-realesrgan-wheels.sh /wheels
 
-FROM python:3.14-slim
+FROM python:${PYTHON_VERSION}-slim
 
 # System deps. tmux is required by Cookbook for background downloads/serves.
 # openssh-client is required for Cookbook remote server tests, setup, probes,
@@ -71,12 +78,12 @@ RUN ARCH="$(dpkg --print-architecture)" \
 
 WORKDIR /app
 
-# Install Python deps first (layer cache). Optional extras (PyMuPDF AGPL, etc.)
-# are opt-in so the default image stays MIT-core; see requirements-optional.txt.
+# Install Python deps first (layer cache). Optional feature dependencies are
+# opt-in; see requirements-optional.txt for their features and licenses.
 ARG INSTALL_OPTIONAL=false
-COPY requirements.txt requirements-optional.txt ./
-RUN pip install --no-cache-dir -r requirements.txt \
-    && if [ "$INSTALL_OPTIONAL" = "true" ]; then pip install --no-cache-dir -r requirements-optional.txt; fi
+COPY requirements.lock requirements-optional.lock ./
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock \
+    && if [ "$INSTALL_OPTIONAL" = "true" ]; then pip install --no-cache-dir --require-hashes -r requirements.lock -r requirements-optional.lock; fi
 
 # python-magic powers content-based MIME sniffing in src/upload_handler.py.
 # Image-only (not in requirements.txt) because it needs the libmagic1 system

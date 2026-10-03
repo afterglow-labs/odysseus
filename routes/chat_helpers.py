@@ -483,6 +483,16 @@ def resolve_session_auth(sess, session_id: str, owner: Optional[str] = None):
                 try:
                     base, api_key = resolve_endpoint_runtime(ep, owner=owner)
                 except Exception as e:
+                    from src.chatgpt_subscription import (
+                        ChatGPTSubscriptionAuthNotFound,
+                        ChatGPTSubscriptionReauthRequired,
+                        to_http_exception,
+                    )
+                    if isinstance(e, (ChatGPTSubscriptionAuthNotFound, ChatGPTSubscriptionReauthRequired)):
+                        e = to_http_exception(e)
+                    if isinstance(e, HTTPException) and isinstance(e.detail, dict) and e.detail.get("authentication_required") is True:
+                        e.detail = {**e.detail, "endpoint_id": ep.id, "endpoint_url": target_url}
+                        raise e
                     logger.warning("Failed to resolve provider auth for session %s: %s", session_id, e)
                     return
                 if not api_key:
@@ -514,6 +524,8 @@ def resolve_session_auth(sess, session_id: str, owner: Optional[str] = None):
         finally:
             db.close()
     except Exception as e:
+        if isinstance(e, HTTPException) and isinstance(e.detail, dict) and e.detail.get("authentication_required") is True:
+            raise
         logger.warning(f"Failed to resolve session headers: {e}")
 
 
@@ -626,6 +638,8 @@ async def build_chat_context(
     defer_context_shaping: bool = False,
     continuation_context_message: str | None = None,
     persist_user_message: bool = True,
+    daybreak_enabled: bool = False,
+    reasoning_effort: Optional[str] = None,
 ) -> ChatContext:
     """Build the full context (preface + messages) for an LLM call.
 
@@ -793,6 +807,8 @@ async def build_chat_context(
     else:
         messages, context_length, was_compacted = await maybe_compact(
             sess, sess.endpoint_url, sess.model, messages, sess.headers, owner=user,
+            **({"daybreak_enabled": True} if daybreak_enabled else {}),
+            **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
         )
     _before_trim_messages = len(messages)
     _before_trim_tokens = estimate_tokens(messages)

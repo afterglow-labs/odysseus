@@ -191,6 +191,8 @@ class Session(TimestampMixin, Base):
     # Configuration flags
     rag = Column(Boolean, default=False)
     archived = Column(Boolean, default=False)
+    daybreak_enabled = Column(Boolean, default=False, server_default=text("FALSE"), nullable=False)
+    reasoning_effort = Column(String, nullable=True)
 
     # Organization
     folder = Column(String, nullable=True, default=None)
@@ -239,6 +241,8 @@ class Session(TimestampMixin, Base):
             'endpoint_url': self.endpoint_url,
             'rag': self.rag,
             'archived': self.archived,
+            'daybreak_enabled': bool(self.daybreak_enabled),
+            'reasoning_effort': self.reasoning_effort,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
             'last_accessed': self.last_accessed.isoformat() if self.last_accessed else None,
@@ -566,6 +570,8 @@ class ProviderAuthSession(TimestampMixin, Base):
     refresh_token = Column(EncryptedText, nullable=True)
     last_refresh = Column(DateTime, nullable=True)
     auth_mode = Column(String, nullable=True)
+    # Account-scoped discovery metadata; never contains authentication tokens.
+    model_capabilities = Column(Text, nullable=True)
 
 class McpServer(TimestampMixin, Base):
     """Admin-configured MCP (Model Context Protocol) tool servers."""
@@ -865,6 +871,26 @@ class Memory(Base):
         Index('ix_memories_session', 'session_id', 'timestamp'),  # Composite for session-based queries
     )
 
+def _migrate_add_daybreak_enabled_column():
+    """Existing conversations start with explicit standard model access."""
+    from sqlalchemy import inspect
+
+    with engine.begin() as conn:
+        columns = {column["name"] for column in inspect(conn).get_columns("sessions")}
+        if "daybreak_enabled" not in columns:
+            conn.execute(text("ALTER TABLE sessions ADD COLUMN daybreak_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
+
+
+def _migrate_add_reasoning_effort_column():
+    """Existing conversations retain the provider's default reasoning effort."""
+    from sqlalchemy import inspect
+
+    with engine.begin() as conn:
+        columns = {column["name"] for column in inspect(conn).get_columns("sessions")}
+        if "reasoning_effort" not in columns:
+            conn.execute(text("ALTER TABLE sessions ADD COLUMN reasoning_effort VARCHAR"))
+
+
 def _migrate_add_last_message_at_column():
     """Add last_message_at to sessions + backfill from the latest message
     timestamp per session (fallback to last_accessed / created_at when a
@@ -1059,6 +1085,19 @@ def _migrate_add_provider_auth_id_column():
             conn.close()
         except Exception:
             pass
+
+
+def _migrate_add_provider_model_capabilities_column():
+    """Keep discovered model availability across restarts for each account."""
+    from sqlalchemy import inspect
+
+    with engine.begin() as conn:
+        inspector = inspect(conn)
+        if not inspector.has_table("provider_auth_sessions"):
+            return
+        columns = {column["name"] for column in inspector.get_columns("provider_auth_sessions")}
+        if "model_capabilities" not in columns:
+            conn.execute(text("ALTER TABLE provider_auth_sessions ADD COLUMN model_capabilities TEXT"))
 
 
 def _migrate_add_model_type_column():
@@ -2108,10 +2147,13 @@ def init_db():
     _migrate_add_model_endpoint_refresh_columns()
     _migrate_add_model_endpoint_owner_column()
     _migrate_add_provider_auth_id_column()
+    _migrate_add_provider_model_capabilities_column()
     _migrate_add_supports_tools_column()
     _migrate_add_task_run_model_column()
     _migrate_add_owner_column()
     _migrate_add_document_archived_column()
+    _migrate_add_daybreak_enabled_column()
+    _migrate_add_reasoning_effort_column()
     _migrate_add_last_message_at_column()
     _migrate_add_folder_column()
     _migrate_add_token_columns()

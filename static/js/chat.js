@@ -35,7 +35,9 @@ import {
   inheritModelRouteState,
 } from './chatModelProvenance.js';
 import { createTerminalStreamError, isRecoverableStreamError } from './chatStreamErrors.js';
+import { appendProviderReconnectButton } from './providerReconnect.js';
 import { loadPanel } from './panels.js';
+import { captureChatRoute, appendChatRoute, recordDaybreakRejection } from './daybreak.js';
 
   const RESEARCH_TIMEOUT_MS = 360000;
   const DEFAULT_TIMEOUT_MS = 120000;
@@ -1263,6 +1265,7 @@ import { loadPanel } from './panels.js';
 
     // --- Send-path entry: block re-clicks between submit and stream start ---
     if (_sendInFlight) return;
+    let selectedRouteForSend = captureChatRoute(sessionModule);
     const _sendPerf = _createChatSendPerf();
     _sendInFlight = true;
     const approvalForSend = _pendingToolApproval;
@@ -1328,36 +1331,7 @@ import { loadPanel } from './panels.js';
       await _adoptOpenedSessionBeforeAutoCreate();
     }
 
-    const selectedRouteForSend = (() => {
-      try {
-        const lastPicked = window.__odysseusLastPickedRoute || null;
-        if (lastPicked && lastPicked.model && Date.now() - (lastPicked.picked_at || 0) < 10 * 60 * 1000) {
-          return {
-            model: lastPicked.model || '',
-            endpoint_url: lastPicked.endpoint_url || '',
-            endpoint_id: lastPicked.endpoint_id || '',
-            source: 'last-picked',
-          };
-        }
-        const pending = sessionModule.getPendingChat && sessionModule.getPendingChat();
-        if (pending && pending.modelId) {
-          return {
-            model: pending.modelId || '',
-            endpoint_url: pending.url || '',
-            endpoint_id: pending.endpointId || '',
-            source: pending.source || '',
-          };
-        }
-        return {
-          model: sessionModule.getCurrentModel ? (sessionModule.getCurrentModel() || '') : '',
-          endpoint_url: sessionModule.getCurrentEndpointUrl ? (sessionModule.getCurrentEndpointUrl() || '') : '',
-          endpoint_id: '',
-          source: '',
-        };
-      } catch (_) {
-        return { model: '', endpoint_url: '', endpoint_id: '', source: '' };
-      }
-    })();
+    if (!selectedRouteForSend.model) selectedRouteForSend = captureChatRoute(sessionModule);
 
     // Materialize pending session (deferred from model click) on first message
     if (sessionModule.hasPendingChat && sessionModule.hasPendingChat()) {
@@ -1464,6 +1438,9 @@ import { loadPanel } from './panels.js';
     // able to name its run, so the Stop fires from its own header arrival
     // (see _rememberStreamRunId) even if this replacement dies before fetch.
     const streamSessionId = sessionModule.getCurrentSessionId();
+    // The initial send may have resolved the default model above. Once a
+    // route exists, all options remain captured for this request.
+    if (!selectedRouteForSend.model) selectedRouteForSend = captureChatRoute(sessionModule);
     const streamGeneration = (_streamGenerations.get(streamSessionId) || 0) + 1;
     _streamGenerations.set(streamSessionId, streamGeneration);
     const _sendState = { generation: streamGeneration, abortCtrl: null };
@@ -1840,9 +1817,7 @@ import { loadPanel } from './panels.js';
           _pendingToolApproval = null;
         }
       }
-      if (selectedRouteForSend.model) fd.append('selected_model', selectedRouteForSend.model);
-      if (selectedRouteForSend.endpoint_url) fd.append('selected_endpoint_url', selectedRouteForSend.endpoint_url);
-      if (selectedRouteForSend.endpoint_id) fd.append('selected_endpoint_id', selectedRouteForSend.endpoint_id);
+      appendChatRoute(fd, selectedRouteForSend);
       if (ids.length) fd.append('attachments', JSON.stringify(ids));
       // Auto-save & send active doc ID so the backend sees latest content
       if (documentModule && activeDocIdForSend && shouldSaveActiveDoc) {
@@ -2104,13 +2079,25 @@ import { loadPanel } from './panels.js';
           return;
         }
         let errText = `Error ${res.status}`;
+        let errorPayload = {};
         try {
           const errBody = await res.text();
-          // Parse nested JSON error if present
-          const m = errBody.match(/"message"\s*:\s*"([^"]+)"/);
-          if (m) errText = m[1].replace(/\\"/g, '"');
-          else if (errBody.length < 200) errText = errBody;
+          try {
+            const parsed = JSON.parse(errBody);
+            errorPayload = parsed.detail && typeof parsed.detail === 'object' ? parsed.detail : parsed;
+            errText = errorPayload.text || errorPayload.message || errorPayload.error?.message
+              || (typeof errorPayload.detail === 'string' ? errorPayload.detail : errText);
+          } catch { if (errBody.length < 200) errText = errBody; }
         } catch {}
+        recordDaybreakRejection(selectedRouteForSend, errorPayload);
+        const providerError = createTerminalStreamError({ ...errorPayload, status: res.status, text: errText }, selectedRouteForSend);
+        if (providerError.providerReconnect) {
+          const body = holder.querySelector('.body');
+          body.textContent = errText;
+          appendProviderReconnectButton(body, providerError.providerReconnect);
+          enableResearchBtn();
+          return;
+        }
         // Auto-switch to chat mode for tool-related errors
         if (errText.includes('tool') || errText.includes('auto')) {
           errText = 'This model doesn\'t support agent tools — switched to Chat mode. Try again.';
@@ -2863,7 +2850,8 @@ import { loadPanel } from './panels.js';
               // Handle SSE error events (e.g. HTTP 404 from provider)
               if (_nextIsError || json.status >= 400) {
                 _nextIsError = false;
-                _streamTerminalError = createTerminalStreamError(json);
+                recordDaybreakRejection(selectedRouteForSend, json);
+                _streamTerminalError = createTerminalStreamError(json, selectedRouteForSend);
                 console.error('Stream error:', _streamTerminalError.message);
                 if (spinner && spinner.element) spinner.destroy();
                 break;
@@ -4505,6 +4493,9 @@ import { loadPanel } from './panels.js';
                 setTimeout(async () => {
                   if (sessionModule.getCurrentSessionId() === streamSessionId) {
                     await sessionModule.selectSession(streamSessionId, { showLoading: false });
+                    if (sessionModule.getCurrentSessionId() === streamSessionId) {
+                      appendProviderReconnectButton(document.querySelector('.msg-ai:last-of-type .body'), err.providerReconnect);
+                    }
                   } else {
                     await sessionModule.loadSessions();
                   }
@@ -4519,6 +4510,7 @@ import { loadPanel } from './panels.js';
                   terminalNote.style.cssText = 'color: var(--color-error); font-style: italic; padding: 4px 0;';
                   terminalNote.textContent = `[Error: ${err.message}]`;
                   terminalBody.appendChild(terminalNote);
+                  appendProviderReconnectButton(terminalBody, err.providerReconnect);
                 }
               }
               return;
@@ -5151,6 +5143,7 @@ import { loadPanel } from './panels.js';
       errorDiv.style.cssText = 'color: var(--color-error); font-style: italic; padding: 4px 0;';
       errorDiv.textContent = `[Error: ${replayError.message}]`;
       contentDiv.appendChild(errorDiv);
+      appendProviderReconnectButton(contentDiv, replayError.providerReconnect);
       uiModule.scrollHistory();
       return true;
     }
@@ -5174,7 +5167,12 @@ import { loadPanel } from './panels.js';
     if (metricsData) {
       chatRenderer.recordSessionMetricsCost(metricsData, sessionId);
     }
-    if (onThisSession) sessionModule.selectSession(sessionId);
+    if (onThisSession) {
+      await sessionModule.selectSession(sessionId);
+      if (sessionModule.getCurrentSessionId() === sessionId) {
+        appendProviderReconnectButton(document.querySelector('.msg-ai:last-of-type .body'), replayError?.providerReconnect);
+      }
+    }
     else sessionModule.loadSessions();
     return true;
   }

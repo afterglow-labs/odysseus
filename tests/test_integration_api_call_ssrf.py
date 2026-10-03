@@ -14,6 +14,7 @@ import ipaddress
 import ssl
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import anyio
 import httpcore
 import httpx
 import pytest
@@ -167,6 +168,12 @@ async def test_pin_carries_the_whole_validated_ip_set(monkeypatch):
 class _FakeStream:
     """Stand-in for the connected socket the real backend returns."""
 
+    def __init__(self):
+        self.closed = False
+
+    async def aclose(self):
+        self.closed = True
+
 
 class _RecordingBackend:
     """Fake httpcore backend: connect_tcp fails for the addresses in `dead`
@@ -192,15 +199,17 @@ def _pinned_backend(ips, dead):
 
 
 @pytest.mark.asyncio
-async def test_connect_falls_back_from_dead_first_to_live_second():
+async def test_connect_falls_back_from_dead_first_to_live_second(monkeypatch):
     """first-dead / second-live: the pinned backend must try the next validated
     address when the first refuses, rather than surfacing the failure. It also
     ignores the `host` httpcore passes (the original hostname) and connects to
     the pinned IPs, which is what keeps TLS SNI / Host on the real hostname."""
     ips = [ipaddress.ip_address("203.0.113.10"), ipaddress.ip_address("198.51.100.7")]
     backend = _pinned_backend(ips, dead={"203.0.113.10"})
+    # Refusal must advance immediately, even with a long configured head start.
+    monkeypatch.setattr(integrations, "_PINNED_CONNECT_DELAY", 10.0)
 
-    stream = await backend.connect_tcp("original.hostname.example", 443, timeout=5.0)
+    stream = await asyncio.wait_for(backend.connect_tcp("original.hostname.example", 443, timeout=5.0), timeout=1.0)
 
     assert isinstance(stream, _FakeStream)
     # Tried the dead address first, then the live one — never the hostname.
@@ -217,6 +226,174 @@ async def test_connect_raises_when_every_validated_address_is_dead():
     with pytest.raises(httpcore.ConnectError):
         await backend.connect_tcp("original.hostname.example", 443, timeout=5.0)
     assert [host for host, _ in backend._real.attempts] == ["203.0.113.10", "198.51.100.7"]
+
+
+@pytest.mark.asyncio
+async def test_blackhole_first_address_falls_back_and_cancels_loser(monkeypatch):
+    attempts = []
+    cancelled = asyncio.Event()
+    winner = _FakeStream()
+    monkeypatch.setattr(integrations, "_PINNED_CONNECT_DELAY", 0.01)
+
+    class BlackholeThenConnect:
+        async def connect_tcp(self, host, port, timeout, local_address, socket_options):
+            attempts.append((host, timeout))
+            if host == "203.0.113.10":
+                try:
+                    await anyio.sleep_forever()
+                finally:
+                    cancelled.set()
+            return winner
+
+    backend = _pinned_backend(["203.0.113.10", "198.51.100.7"], dead=set())
+    backend._real = BlackholeThenConnect()
+    stream = await asyncio.wait_for(backend.connect_tcp("original.example", 443, timeout=5.0), timeout=1.0)
+    assert stream is winner
+    assert not stream.closed
+    assert cancelled.is_set()
+    assert [host for host, _ in attempts] == ["203.0.113.10", "198.51.100.7"]
+    assert all(0 < timeout <= 5.0 for _, timeout in attempts)
+
+
+@pytest.mark.asyncio
+async def test_slow_healthy_first_address_keeps_full_budget_when_fallback_refuses(monkeypatch):
+    fallback_started = asyncio.Event()
+    winner = _FakeStream()
+    monkeypatch.setattr(integrations, "_PINNED_CONNECT_DELAY", 0.01)
+
+    class SlowThenRefused:
+        async def connect_tcp(self, host, port, timeout, local_address, socket_options):
+            if host == "203.0.113.10":
+                # A three-second connection fits the original five-second
+                # budget, but would fail under the old 2.5-second split.
+                if timeout < 3.0:
+                    raise httpcore.ConnectTimeout("healthy address needs more than half the budget")
+                await fallback_started.wait()
+                return winner
+            fallback_started.set()
+            raise httpcore.ConnectError("fallback refuses")
+
+    backend = _pinned_backend(["203.0.113.10", "198.51.100.7"], dead=set())
+    backend._real = SlowThenRefused()
+    assert await asyncio.wait_for(backend.connect_tcp("original.example", 443, timeout=5.0), timeout=1.0) is winner
+    assert not winner.closed
+
+
+@pytest.mark.asyncio
+async def test_all_blackholes_obey_one_deadline_and_cancel_every_attempt(monkeypatch):
+    active = set()
+    attempted = []
+    monkeypatch.setattr(integrations, "_PINNED_CONNECT_DELAY", 0.01)
+
+    class Blackholes:
+        async def connect_tcp(self, host, port, timeout, local_address, socket_options):
+            attempted.append(host)
+            active.add(host)
+            try:
+                await anyio.sleep_forever()
+            finally:
+                active.remove(host)
+
+    backend = _pinned_backend(["203.0.113.10", "198.51.100.7"], dead=set())
+    backend._real = Blackholes()
+    with pytest.raises(httpcore.ConnectTimeout):
+        await asyncio.wait_for(backend.connect_tcp("original.example", 443, timeout=0.2), timeout=1.0)
+    assert attempted == ["203.0.113.10", "198.51.100.7"]
+    assert not active
+
+
+@pytest.mark.asyncio
+async def test_caller_cancellation_stops_pending_connection_attempts(monkeypatch):
+    both_started = asyncio.Event()
+    active = set()
+    monkeypatch.setattr(integrations, "_PINNED_CONNECT_DELAY", 0.01)
+
+    class Pending:
+        async def connect_tcp(self, host, port, timeout, local_address, socket_options):
+            active.add(host)
+            if len(active) == 2:
+                both_started.set()
+            try:
+                await anyio.sleep_forever()
+            finally:
+                active.remove(host)
+
+    backend = _pinned_backend(["203.0.113.10", "198.51.100.7"], dead=set())
+    backend._real = Pending()
+    task = asyncio.create_task(backend.connect_tcp("original.example", 443, timeout=5.0))
+    try:
+        await asyncio.wait_for(both_started.wait(), timeout=1.0)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert not active
+
+
+@pytest.mark.asyncio
+async def test_simultaneous_losing_success_is_closed(monkeypatch):
+    second_started = asyncio.Event()
+    winner, loser = _FakeStream(), _FakeStream()
+    monkeypatch.setattr(integrations, "_PINNED_CONNECT_DELAY", 0.01)
+
+    class SimultaneousSuccess:
+        async def connect_tcp(self, host, port, timeout, local_address, socket_options):
+            if host == "203.0.113.10":
+                await second_started.wait()
+                return winner
+            second_started.set()
+            try:
+                await anyio.sleep_forever()
+            except asyncio.CancelledError:
+                # A connection can finish concurrently with winner cancellation.
+                return loser
+
+    backend = _pinned_backend(["203.0.113.10", "198.51.100.7"], dead=set())
+    backend._real = SimultaneousSuccess()
+    assert await asyncio.wait_for(backend.connect_tcp("original.example", 443, timeout=5.0), timeout=1.0) is winner
+    assert not winner.closed
+    assert loser.closed
+
+
+@pytest.mark.asyncio
+async def test_cancellation_before_stream_handoff_closes_winner_and_loser(monkeypatch):
+    second_started = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    winner = _FakeStream()
+    monkeypatch.setattr(integrations, "_PINNED_CONNECT_DELAY", 0.01)
+
+    class ClosingStream(_FakeStream):
+        async def aclose(self):
+            cleanup_started.set()
+            await release_cleanup.wait()
+            await super().aclose()
+
+    loser = ClosingStream()
+
+    class SimultaneousSuccess:
+        async def connect_tcp(self, host, port, timeout, local_address, socket_options):
+            if host == "203.0.113.10":
+                await second_started.wait()
+                return winner
+            second_started.set()
+            try:
+                await anyio.sleep_forever()
+            except asyncio.CancelledError:
+                return loser
+
+    backend = _pinned_backend(["203.0.113.10", "198.51.100.7"], dead=set())
+    backend._real = SimultaneousSuccess()
+    task = asyncio.create_task(backend.connect_tcp("original.example", 443, timeout=5.0))
+    try:
+        await asyncio.wait_for(cleanup_started.wait(), timeout=1.0)
+    finally:
+        task.cancel()
+        release_cleanup.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=1.0)
+    assert winner.closed
+    assert loser.closed
 
 
 @pytest.mark.asyncio

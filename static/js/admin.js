@@ -7,6 +7,7 @@ import { providerLogo, providerLogoFromUrl } from './providers.js';
 import { sortModelObjects } from './modelSort.js';
 import { PROVIDER_DEVICE_FLOWS, formatDeviceFlowError, runProviderDeviceFlow } from './providerDeviceFlow.js';
 import { getSettings, getTools, invalidateSettings, invalidateTools } from './appConfig.js';
+import { providerEndpointKey, resolveReconnectEndpoint } from './providerReconnect.js';
 
 let initialized = false;
 let modalEl = null;
@@ -14,7 +15,9 @@ let modalEl = null;
 // the endpoints list can flash a glow on that row. Cleared once the
 // animation fires.
 let _recentlyAddedEpId = null;
-let _authPolicy = { password_min_length: 8, reserved_usernames: [] };
+let _authPolicy = { reserved_usernames: [] };
+let _prepareProviderReconnect = null;
+let _providerReconnectNavigation = 0;
 
 function el(id) { return document.getElementById(id); }
 function esc(s) { return uiModule.esc(s); }
@@ -374,8 +377,6 @@ function initAddUser() {
     .then(policy => {
       if (!policy) return;
       _authPolicy = policy;
-      const admPw = el('adm-newPassword');
-      if (admPw) admPw.placeholder = `Password (min ${policy.password_min_length})`;
     })
     .catch(() => {});
   el('adm-addBtn').addEventListener('click', async () => {
@@ -385,7 +386,7 @@ function initAddUser() {
     const password = el('adm-newPassword').value;
     const is_admin = el('adm-newIsAdmin').checked;
     if (!username) { msg.textContent = 'Username required'; msg.className = 'admin-error'; return; }
-    if (password.length < _authPolicy.password_min_length) { msg.textContent = `Password must be at least ${_authPolicy.password_min_length} characters`; msg.className = 'admin-error'; return; }
+    if (!password) { msg.textContent = 'Password is required'; msg.className = 'admin-error'; return; }
     if (_authPolicy.reserved_usernames.includes(username.toLowerCase())) { msg.textContent = 'This username is reserved'; msg.className = 'admin-error'; return; }
     el('adm-addBtn').disabled = true;
     try {
@@ -537,6 +538,7 @@ async function loadEndpoints() {
               ${hasModels ? `<span style="font-size:10px;opacity:0.4;${category === 'api' ? 'flex-basis:100%;' : ''}">Click to manage models</span>` : ''}
             </div>
             <div style="display:flex;gap:4px;align-items:center;">
+              ${ep.has_key || PROVIDER_DEVICE_FLOWS[ep.provider] ? `<button type="button" class="admin-btn-sm" data-adm-reconnect-ep="${ep.id}">Reconnect</button>` : ''}
               <button class="admin-btn-sm" data-adm-toggle-ep="${ep.id}">${ep.is_enabled ? 'Disable' : 'Enable'}</button>
               <button class="admin-btn-delete" data-adm-del-ep="${ep.id}" data-adm-ep-online="${ep.online ? '1' : '0'}">Delete</button>
               ${hasModels ? '<svg class="admin-user-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.3;transition:transform 0.2s,opacity 0.2s;"><polyline points="6 9 12 15 18 9"/></svg>' : ''}
@@ -583,6 +585,16 @@ async function loadEndpoints() {
         await fetch(`/api/model-endpoints/${btn.dataset.admToggleEp}`, { method: 'PATCH' });
         await _refreshAfterEndpointChange();
         loadEndpoints();
+      });
+    });
+    queryAll('[data-adm-reconnect-ep]').forEach(btn => {
+      btn.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        const endpoint = data.find(item => String(item.id) === btn.dataset.admReconnectEp);
+        if (!endpoint) return;
+        try {
+          await openProviderReconnect({ endpoint_id: endpoint.id, endpoint_url: endpoint.base_url, provider: endpoint.provider || '' });
+        } catch (error) { uiModule.showError(error.message); }
       });
     });
     queryAll('[data-adm-copy-url]').forEach(btn => {
@@ -812,6 +824,7 @@ function initEndpointForm() {
   const pickerCurrent = picker ? picker.querySelector('.adm-provider-current') : null;
   const DEVICE_AUTH_PROVIDER_VALUES = new Set(Object.keys(PROVIDER_DEVICE_FLOWS));
   let deviceAuthPolling = false;
+  let reconnectEndpoint = null;
   function _selectedProviderOption() {
     return provider && provider.selectedOptions ? provider.selectedOptions[0] : null;
   }
@@ -850,8 +863,8 @@ function initEndpointForm() {
       }
       if (addBtn) {
         addBtn.disabled = false;
-        addBtn.textContent = 'Add';
-        addBtn.style.width = '55px';
+        addBtn.textContent = reconnectEndpoint ? 'Reconnect' : 'Add';
+        addBtn.style.width = reconnectEndpoint ? 'auto' : '55px';
         addBtn.style.display = '';
       }
       if (kindSel) kindSel.value = 'api';
@@ -873,8 +886,8 @@ function initEndpointForm() {
       }
       if (addBtn) {
         addBtn.disabled = false;
-        addBtn.textContent = 'Add';
-        addBtn.style.width = '55px';
+        addBtn.textContent = reconnectEndpoint ? 'Save key' : 'Add';
+        addBtn.style.width = reconnectEndpoint ? 'auto' : '55px';
         addBtn.style.display = '';
       }
       if (msg) {
@@ -933,6 +946,7 @@ function initEndpointForm() {
   }
 
   provider.addEventListener('change', () => {
+    reconnectEndpoint = null;
     if (_isDeviceAuthSelected()) {
       _setApiFormForProvider();
       _renderPickerMenu();
@@ -945,6 +959,8 @@ function initEndpointForm() {
     _setApiFormForProvider();
   });
   urlInput.addEventListener('input', () => {
+    reconnectEndpoint = null;
+    _setApiFormForProvider();
     if (provider.value && urlInput.value.trim() !== provider.value) {
       provider.value = '';
       if (kindSel) kindSel.value = 'api';
@@ -953,6 +969,43 @@ function initEndpointForm() {
     }
   });
   if (kindSel) kindSel.value = kindSel.value || 'api';
+  _prepareProviderReconnect = (endpoint, target) => {
+    if (deviceAuthPolling) throw new Error('Finish the current provider sign-in before reconnecting another account.');
+    const options = Array.from(provider.options);
+    const option = options.find(item => item.dataset.authFlow === target.provider || item.value === target.provider)
+      || options.find(item => providerEndpointKey(item.value) === providerEndpointKey(endpoint.base_url));
+    provider.value = option ? option.value : '';
+    provider.dispatchEvent(new Event('change', { bubbles: true }));
+    reconnectEndpoint = endpoint;
+    _setApiFormForProvider();
+    _renderPickerMenu();
+    _syncPickerCurrent();
+    if (!_isDeviceAuthSelected()) {
+      urlInput.value = endpoint.base_url;
+      urlInput.readOnly = true;
+      if (kindSel) kindSel.value = endpoint.endpoint_kind || 'api';
+    }
+    const key = el('adm-epApiKey');
+    if (key) key.value = '';
+    const message = _endpointMsg('api');
+    if (message) {
+      message.textContent = `Reconnect ${endpoint.name || 'this connection'}. `;
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.className = 'admin-btn-sm';
+      cancel.textContent = 'Cancel';
+      cancel.addEventListener('click', () => {
+        provider.value = '';
+        provider.dispatchEvent(new Event('change', { bubbles: true }));
+        _renderPickerMenu();
+        _syncPickerCurrent();
+      });
+      message.appendChild(cancel);
+    }
+    const focus = _isDeviceAuthSelected() ? el('adm-epAddBtn') : key;
+    focus?.closest('.admin-card')?.scrollIntoView({ block: 'center' });
+    focus?.focus();
+  };
   function _apiEndpointKind() {
     return (kindSel && kindSel.value) ? kindSel.value : 'api';
   }
@@ -1099,6 +1152,29 @@ function initEndpointForm() {
     msg.textContent = ''; msg.className = '';
     const rawUrl = (urlInput.value || provider.value).trim();
     const apiKey = el('adm-epApiKey').value.trim();
+    if (reconnectEndpoint) {
+      if (!apiKey) { msg.textContent = 'Enter a new API key for this connection.'; msg.className = 'admin-error'; return; }
+      const target = reconnectEndpoint;
+      const btn = el('adm-epAddBtn');
+      btn.disabled = true; btn.textContent = 'Saving...';
+      try {
+        const response = await fetch(`/api/model-endpoints/${encodeURIComponent(target.id)}`, {
+          method: 'PATCH', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ api_key: apiKey }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || 'Could not update this connection.');
+        if (reconnectEndpoint === target) {
+          el('adm-epApiKey').value = '';
+          msg.textContent = `Updated ${target.name || 'provider'} credentials. Retry your message when ready.`;
+          msg.className = 'admin-success';
+        }
+        await _refreshAfterEndpointChange();
+        await loadEndpoints();
+      } catch (error) { msg.textContent = error.message; msg.className = 'admin-error'; }
+      finally { btn.disabled = false; btn.textContent = reconnectEndpoint ? 'Save key' : 'Add'; }
+      return;
+    }
     if (!rawUrl) { msg.textContent = 'Select a provider or enter a base URL'; msg.className = 'admin-error'; return; }
     if (provider.value && !apiKey) { msg.textContent = 'API key is required for cloud providers'; msg.className = 'admin-error'; return; }
     // Normalize URL (fix typos, add /v1, strip wrong paths)
@@ -1187,7 +1263,10 @@ function initEndpointForm() {
     status.textContent = `Starting ${config.label} sign-in...`;
 
     try {
+      const formData = new FormData();
+      if (reconnectEndpoint) formData.append('endpoint_id', reconnectEndpoint.id);
       const result = await runProviderDeviceFlow(providerKey, {
+        formData,
         openWindow: () => {},
         onStart: ({ start, authUrl }) => {
           if (triggerEl) triggerEl.textContent = 'Waiting...';
@@ -2083,7 +2162,7 @@ async function loadMcpServers() {
             ${hasTools ? `<span style="font-size:10px;opacity:0.4;">Click to manage tools</span>` : ''}
           </div>
           <div style="display:flex;gap:4px;align-items:center;">
-            ${s.needs_oauth ? `<a href="/api/mcp/oauth/authorize/${s.id}" target="_blank" class="admin-btn-sm" style="background:var(--red);color:#fff;text-decoration:none;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:600;">Authorize</a>` : ''}
+            ${s.needs_oauth ? `<a href="/api/mcp/oauth/authorize/${s.id}" target="_blank" class="admin-btn-sm" style="background:var(--red);color:var(--accent-text,#fff);text-decoration:none;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:600;">Authorize</a>` : ''}
             <button class="admin-btn-sm" data-adm-mcp-reconnect="${s.id}">Reconnect</button>
             <button class="admin-btn-delete" style="border-color:${s.is_enabled ? 'color-mix(in srgb, var(--red) 30%, transparent)' : 'color-mix(in srgb, var(--fg) 30%, transparent)'};color:${s.is_enabled ? 'var(--red)' : 'var(--fg)'};" data-adm-mcp-toggle="${s.id}" data-adm-mcp-enable="${!s.is_enabled}">${s.is_enabled ? 'Disable' : 'Enable'}</button>
             <button class="admin-btn-delete" data-adm-mcp-delete="${s.id}">Delete</button>
@@ -3188,10 +3267,31 @@ export function open(tab) {
   settingsModule.open(tab || 'services');
 }
 
+export async function openProviderReconnect(target) {
+  const navigation = ++_providerReconnectNavigation;
+  const response = await fetch('/api/model-endpoints', { credentials: 'same-origin' });
+  if (navigation !== _providerReconnectNavigation) return;
+  if (!response.ok) throw new Error('Your administrator needs to reconnect this provider in Settings.');
+  const endpoints = await response.json();
+  if (navigation !== _providerReconnectNavigation) return;
+  if (!Array.isArray(endpoints)) throw new Error('Could not load configured providers.');
+  let endpoint;
+  try {
+    endpoint = resolveReconnectEndpoint(target, endpoints);
+    if (target.provider === 'copilot' && endpoints.filter(item =>
+      providerEndpointKey(item.base_url) === providerEndpointKey(endpoint.base_url)).length > 1) {
+      throw new Error('Reconnecting an individual Copilot account is not supported when multiple Copilot connections are configured.');
+    }
+  } catch (error) { open('added-models'); throw error; }
+  open('services');
+  if (!_prepareProviderReconnect) throw new Error('Provider settings are not ready. Reopen Settings and try again.');
+  _prepareProviderReconnect(endpoint, { ...target, provider: endpoint.provider || target.provider || '' });
+}
+
 export function close() {
   stopLogsPolling();
   settingsModule.close();
 }
 
-const adminModule = { open, close, _initData, get _initialized() { return initialized; } };
+const adminModule = { open, close, openProviderReconnect, _initData, get _initialized() { return initialized; } };
 export default adminModule;

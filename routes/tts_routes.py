@@ -19,7 +19,7 @@ def setup_tts_routes(tts_service):
     router = APIRouter(prefix="/api/tts", tags=["tts"])
 
     @router.get("/stats")
-    async def get_tts_stats():
+    def get_tts_stats():
         """Get TTS service statistics"""
         try:
             return tts_service.get_stats()
@@ -28,7 +28,7 @@ def setup_tts_routes(tts_service):
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post("/synthesize")
-    async def synthesize_speech(request: TTSRequest):
+    def synthesize_speech(request: TTSRequest):
         """Synthesize speech from text"""
         try:
             if not tts_service.available:
@@ -75,7 +75,7 @@ def setup_tts_routes(tts_service):
             )
 
     @router.post("/clear-cache")
-    async def clear_tts_cache():
+    def clear_tts_cache():
         """Clear TTS cache"""
         try:
             tts_service.clear_cache()

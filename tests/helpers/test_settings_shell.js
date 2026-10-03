@@ -263,6 +263,7 @@ function buildFixture(document) {
     'email',
     'reminders',
     'appearance',
+    'behavior',
     'shortcuts',
     'account',
     'tools',
@@ -382,6 +383,7 @@ function moduleSource(relativePath) {
       'email',
       'reminders',
       'appearance',
+      'behavior',
       'shortcuts',
       'account',
       'tools',
@@ -405,7 +407,7 @@ function moduleSource(relativePath) {
     'Settings registry keeps services, models, integrations and admin panels on the existing admin controller',
     ['services', 'added-models', 'integrations', 'tools', 'users', 'system']
       .every(id => context.isAdminManagedSettingsTab(id))
-      && ['ai', 'search', 'email', 'reminders', 'appearance', 'shortcuts', 'account']
+      && ['ai', 'search', 'email', 'reminders', 'appearance', 'behavior', 'shortcuts', 'account']
         .every(id => !context.isAdminManagedSettingsTab(id)),
   );
 
@@ -419,6 +421,7 @@ function moduleSource(relativePath) {
   check(
     'Settings registry provides search metadata without owning search UI',
     context.getSettingsPanelSearchText('appearance').includes('theme')
+      && context.getSettingsPanelSearchText('behavior').includes('tooltip')
       && context.getSettingsPanelSearchText('email').includes('smtp')
       && context.getSettingsPanelSearchText('missing') === '',
   );
@@ -427,7 +430,10 @@ function moduleSource(relativePath) {
     'Settings registry exposes group membership in sidebar order',
     context.getSettingsPanelsForGroup('communications')
       .map(panel => panel.id)
-      .join(',') === 'integrations,email,reminders',
+      .join(',') === 'integrations,email,reminders'
+      && context.getSettingsPanelsForGroup('experience')
+        .map(panel => panel.id)
+        .join(',') === 'appearance,behavior,shortcuts',
   );
 
   check(

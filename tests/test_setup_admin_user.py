@@ -3,6 +3,9 @@ import json
 import os
 from pathlib import Path
 
+import bcrypt
+import pytest
+
 
 def _load_setup_module():
     spec = importlib.util.spec_from_file_location("odysseus_setup_under_test", Path("setup.py"))
@@ -24,6 +27,36 @@ def test_create_default_admin_normalizes_env_username(tmp_path, monkeypatch):
     data = json.loads(auth_path.read_text(encoding="utf-8"))
     assert "adminuser" in data["users"]
     assert "AdminUser" not in data["users"]
+
+
+@pytest.mark.parametrize("password", ["a", "sixsix"])
+def test_create_default_admin_accepts_short_env_passwords(tmp_path, monkeypatch, password):
+    setup_module = _load_setup_module()
+    auth_path = tmp_path / "auth.json"
+    monkeypatch.setattr(setup_module, "AUTH_FILE", str(auth_path))
+    monkeypatch.setenv("ODYSSEUS_ADMIN_USER", "admin")
+    monkeypatch.setenv("ODYSSEUS_ADMIN_PASSWORD", password)
+
+    assert setup_module.create_default_admin() == "created"
+
+    data = json.loads(auth_path.read_text(encoding="utf-8"))
+    stored = data["users"]["admin"]["password_hash"].encode()
+    assert bcrypt.checkpw(password.encode(), stored)
+    assert not bcrypt.checkpw(b"", stored)
+
+
+@pytest.mark.parametrize("password", ["a", "sixsix"])
+def test_admin_prompt_requires_nonempty_matching_password(monkeypatch, capsys, password):
+    setup_module = _load_setup_module()
+    monkeypatch.setattr("builtins.input", lambda prompt: "admin")
+    entries = iter(["", password, "mismatch", password, password])
+    monkeypatch.setattr("getpass.getpass", lambda prompt: next(entries))
+
+    assert setup_module._prompt_admin_credentials() == ("admin", password)
+
+    output = capsys.readouterr().out
+    assert "Password cannot be empty." in output
+    assert "Passwords don't match." in output
 
 
 def test_main_loads_admin_password_from_env_file(tmp_path, monkeypatch):

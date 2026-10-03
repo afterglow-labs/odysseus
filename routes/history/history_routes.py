@@ -181,6 +181,8 @@ def setup_history_routes(session_manager, upload_handler=None) -> APIRouter:
                 return {
                     "history": history_dict,
                     "model": db_session.model,
+                    "daybreak_enabled": bool(getattr(db_session, "daybreak_enabled", False)),
+                    "reasoning_effort": getattr(db_session, "reasoning_effort", None),
                     "endpoint_url": db_session.endpoint_url,
                     "name": db_session.name,
                     "offset": page_offset,
@@ -244,6 +246,8 @@ def setup_history_routes(session_manager, upload_handler=None) -> APIRouter:
         return {
             "history": history_dict,
             "model": session.model,
+            "daybreak_enabled": bool(getattr(session, "daybreak_enabled", False)),
+            "reasoning_effort": getattr(session, "reasoning_effort", None),
             "endpoint_url": session.endpoint_url,
             "name": session.name,
         }
@@ -622,6 +626,8 @@ def setup_history_routes(session_manager, upload_handler=None) -> APIRouter:
                 model=source.model,
                 rag=False,
                 owner=getattr(source, 'owner', None),
+                daybreak_enabled=bool(getattr(source, 'daybreak_enabled', False)),
+                **({"reasoning_effort": source.reasoning_effort} if getattr(source, 'reasoning_effort', None) is not None else {}),
             )
 
             # Copy messages up to keep_count

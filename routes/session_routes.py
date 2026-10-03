@@ -131,6 +131,33 @@ def _verify_session_owner(request: Request, session_id: str, session_manager=Non
 
 logger = logging.getLogger(__name__)
 
+async def _reasoning_effort_was_submitted(request: Request) -> bool:
+    # FastAPI replaces an empty optional Form string with its None default.
+    # Keep presence separately so selecting "Provider default" clears a choice.
+    return "reasoning_effort" in await request.form()
+
+
+def _validated_session_effort(value, model, endpoint_url, *, db, owner=None, account_id=None, headers=None):
+    from src.chatgpt_subscription import is_chatgpt_subscription_base, normalize_reasoning_effort
+    from src.chatgpt_capabilities import validate_reasoning_effort
+    value = normalize_reasoning_effort(value)
+    if value is None:
+        return None
+    if not is_chatgpt_subscription_base(endpoint_url):
+        raise ValueError("Reasoning effort is available through a ChatGPT subscription endpoint.")
+    if not account_id:
+        from core.database import ModelEndpoint
+        from src.endpoint_resolver import normalize_base
+        candidates = owner_filter(db.query(ModelEndpoint.base_url, ModelEndpoint.provider_auth_id).filter(
+            ModelEndpoint.is_enabled == True,
+        ), ModelEndpoint, owner).all()
+        accounts = {row.provider_auth_id for row in candidates
+                    if row.provider_auth_id and normalize_base(row.base_url) == normalize_base(endpoint_url)}
+        if len(accounts) == 1:
+            account_id = next(iter(accounts))
+    return validate_reasoning_effort(value, model, account_id=account_id, headers=headers)
+
+
 router = APIRouter(
     prefix="/api",
     tags=["sessions"],
@@ -339,6 +366,8 @@ def setup_session_routes(
 
         sessions = [{"id": s.id, "name": s.name, "model": _public_model(s.name, s.model),
                      "endpoint_url": s.endpoint_url, "rag": s.rag,
+                     "daybreak_enabled": bool(getattr(s, "daybreak_enabled", False)),
+                     "reasoning_effort": getattr(s, "reasoning_effort", None),
                      "archived": s.archived, "folder": folder_map.get(s.id),
                      "total_tokens": token_map.get(s.id, 0),
                      "is_important": important_map.get(s.id, False),
@@ -366,6 +395,8 @@ def setup_session_routes(
         skip_validation: str = Form(None),
         api_key: str = Form(""),
         endpoint_id: str = Form(""),
+        daybreak_enabled: bool = Form(False),
+        reasoning_effort: str | None = Form(None),
     ):
         skip_val = str(skip_validation).lower() == "true"
         user = effective_user(request)
@@ -376,6 +407,7 @@ def setup_session_routes(
         )
         endpoint_api_key = ""
         endpoint_base_url = ""
+        endpoint_auth_id = None
         _reject_raw_endpoint_url_for_non_admin(request, user, endpoint_id, endpoint_url)
         if endpoint_id and endpoint_id.strip():
             from core.database import ModelEndpoint
@@ -394,12 +426,18 @@ def setup_session_routes(
                     raise HTTPException(400, "Model endpoint no longer exists")
                 endpoint_base_url = endpoint_row.base_url or ""
                 endpoint_api_key = endpoint_row.api_key or ""
+                endpoint_auth_id = endpoint_row.provider_auth_id
                 endpoint_url = build_chat_url(normalize_base(endpoint_base_url))
             finally:
                 _db.close()
 
         if not endpoint_url and not skip_val:
             raise HTTPException(400, "endpoint_url is required (choose from /api/models)")
+
+        from src.chatgpt_subscription import is_chatgpt_subscription_base
+        daybreak_enabled = daybreak_enabled is True
+        if daybreak_enabled and not is_chatgpt_subscription_base(endpoint_url):
+            raise HTTPException(400, "Daybreak is available through a ChatGPT subscription endpoint.")
 
         model_to_use = model
         request_api_key = api_key.strip() if api_key else ""
@@ -457,6 +495,15 @@ def setup_session_routes(
                                         f"Model not found at server. Available: {', '.join(avail)}")
                 model_to_use = found
         
+        with SessionLocal() as db:
+            try:
+                selected_effort = _validated_session_effort(
+                    reasoning_effort if isinstance(reasoning_effort, str) else None,
+                    model_to_use, endpoint_url, db=db, owner=user,
+                    account_id=endpoint_auth_id, headers=validation_headers,
+                )
+            except ValueError as error:
+                raise HTTPException(400, str(error)) from error
         sid = str(uuid.uuid4())
         user = effective_user(request)
         session = session_manager.create_session(
@@ -466,6 +513,8 @@ def setup_session_routes(
             model=model_to_use,
             rag=str(rag).lower() == "true" if rag else False,
             owner=user,
+            daybreak_enabled=daybreak_enabled,
+            **({"reasoning_effort": selected_effort} if selected_effort is not None else {}),
         )
         # Set auth headers for custom API-key endpoints
         resolved_key = request_api_key
@@ -490,7 +539,9 @@ def setup_session_routes(
             name=session.name,
             model=model_to_use,
             rag=str(rag).lower() == "true" if rag else False,
-            archived=False
+            archived=False,
+            daybreak_enabled=daybreak_enabled,
+            reasoning_effort=selected_effort,
         )    
     @router.patch("/session/{sid}")
     def rename_session(
@@ -498,6 +549,9 @@ def setup_session_routes(
         name: str = Form(None), folder: str = Form(None),
         model: str = Form(None), endpoint_url: str = Form(None),
         endpoint_id: str = Form(None),
+        daybreak_enabled: bool | None = Form(None),
+        reasoning_effort: str | None = Form(None),
+        reasoning_effort_submitted: bool = Depends(_reasoning_effort_was_submitted),
     ):
         _verify_session_owner(request, sid)
         try:
@@ -505,21 +559,15 @@ def setup_session_routes(
         except KeyError:
             raise HTTPException(404, f"Session {sid} not found")
         result = {"id": sid}
+        changes = {}
+        requested_daybreak = daybreak_enabled if isinstance(daybreak_enabled, bool) else None
+        effort_submitted = reasoning_effort_submitted is True or isinstance(reasoning_effort, str)
+        endpoint_auth_id = None
+        from src.chatgpt_subscription import is_chatgpt_subscription_base
         if name is not None:
-            session_manager.update_session_name(sid, name)
-            result["name"] = name
-        # Update folder assignment
+            changes["name"] = name
         if folder is not None:
-            db = SessionLocal()
-            try:
-                db_session = db.query(DbSession).filter(DbSession.id == sid).first()
-                if db_session:
-                    db_session.folder = folder if folder else None
-                    db_session.updated_at = utcnow_naive()
-                    db.commit()
-                    result["folder"] = folder if folder else None
-            finally:
-                db.close()
+            changes["folder"] = folder if folder else None
         # Switch model/endpoint mid-session
         if model is not None and endpoint_url is not None:
             user = effective_user(request)
@@ -543,31 +591,69 @@ def setup_session_routes(
                         raise HTTPException(400, "Model endpoint no longer exists")
                     endpoint_base_url = ep.base_url or ""
                     endpoint_api_key = ep.api_key or ""
+                    endpoint_auth_id = ep.provider_auth_id
                     endpoint_url = build_chat_url(normalize_base(endpoint_base_url))
                 finally:
                     _db.close()
-            session.model = model
-            session.endpoint_url = endpoint_url
+            if requested_daybreak is True and not is_chatgpt_subscription_base(endpoint_url):
+                raise HTTPException(400, "Daybreak is available through a ChatGPT subscription endpoint.")
+            next_daybreak = requested_daybreak if requested_daybreak is not None else bool(getattr(session, "daybreak_enabled", False))
+            if not is_chatgpt_subscription_base(endpoint_url):
+                next_daybreak = False
             # Update auth headers from the endpoint's stored API key
             if endpoint_api_key:
                 from src.endpoint_resolver import build_headers
-                session.headers = build_headers(endpoint_api_key, endpoint_base_url)
+                headers = build_headers(endpoint_api_key, endpoint_base_url)
             else:
-                session.headers = {}
-            # Persist to DB
-            db = SessionLocal()
-            try:
+                headers = {}
+            changes.update(model=model, endpoint_url=endpoint_url, headers=headers, daybreak_enabled=next_daybreak)
+        elif requested_daybreak is not None:
+            changes["daybreak_enabled"] = requested_daybreak
+        if effort_submitted:
+            changes["reasoning_effort"] = reasoning_effort if isinstance(reasoning_effort, str) else None
+        if changes:
+            # Validate the whole request before writing anything. Publish cached
+            # provider/preferences only after the transaction succeeds.
+            with SessionLocal() as db:
                 db_session = db.query(DbSession).filter(DbSession.id == sid).first()
-                if db_session:
-                    db_session.model = model
-                    db_session.endpoint_url = endpoint_url
-                    db_session.headers = session.headers or {}
+                if db_session is None:
+                    raise HTTPException(404, f"Session {sid} not found")
+                current_endpoint = changes.get("endpoint_url", db_session.endpoint_url)
+                current_model = changes.get("model", db_session.model)
+                if effort_submitted or "endpoint_url" in changes:
+                    try:
+                        changes["reasoning_effort"] = _validated_session_effort(
+                            changes.get("reasoning_effort", db_session.reasoning_effort),
+                            current_model, current_endpoint, db=db, owner=effective_user(request),
+                            account_id=endpoint_auth_id, headers=changes.get("headers", db_session.headers),
+                        )
+                    except ValueError as error:
+                        if effort_submitted:
+                            raise HTTPException(400, str(error)) from error
+                        changes["reasoning_effort"] = None
+                if "endpoint_url" in changes and requested_daybreak is None:
+                    changes["daybreak_enabled"] = bool(db_session.daybreak_enabled) and is_chatgpt_subscription_base(current_endpoint)
+                if changes.get("daybreak_enabled") and not is_chatgpt_subscription_base(current_endpoint):
+                    raise HTTPException(400, "Daybreak is available through a ChatGPT subscription endpoint.")
+                if (changes.get("daybreak_enabled") or changes.get("reasoning_effort")) and "endpoint_url" not in changes:
+                    # A different worker can change the route after validation.
+                    # Do not apply an old model's options to its replacement.
+                    updated = db.query(DbSession).filter(
+                        DbSession.id == sid, DbSession.endpoint_url == current_endpoint,
+                        DbSession.model == current_model,
+                    ).update({**changes, "updated_at": utcnow_naive()}, synchronize_session=False)
+                    if not updated:
+                        raise HTTPException(409, "The session model or provider changed. Reload the conversation and try again.")
+                else:
+                    for field, value in changes.items():
+                        setattr(db_session, field, value)
                     db_session.updated_at = utcnow_naive()
-                    db.commit()
-            finally:
-                db.close()
-            result["model"] = model
-            result["endpoint_url"] = endpoint_url
+                db.commit()
+            for field, value in changes.items():
+                if field != "folder":
+                    setattr(session, field, value)
+                if field != "headers":
+                    result[field] = value
         return result
     
     @router.post("/session/{sid}/inject_messages")

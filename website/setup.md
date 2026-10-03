@@ -61,13 +61,15 @@ only when you intentionally want LAN/reverse-proxy access.
 ```bash
 git clone https://github.com/odysseus-dev/odysseus.git
 cd odysseus
-python3 -m venv venv
+python3.14 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+python -m pip install --require-hashes -r requirements.lock
 python setup.py
 python -m uvicorn app:app --host 127.0.0.1 --port 7000
 ```
-Requirements: Python 3.11+. Cookbook also needs `tmux` for background model
+Requirements: stable CPython 3.14, standard GIL build, latest patch release.
+`.python-version` is the shared target for native launchers, Docker, and CI.
+Cookbook also needs `tmux` for background model
 downloads and serves. The app itself is lightweight; local model serving is the
 heavy part and depends on the model, runtime, GPU, and VRAM, so small hosts can
 connect to API or remote model servers instead. Use `--host 0.0.0.0` only when you intentionally want LAN/reverse-proxy access.
@@ -389,15 +391,16 @@ Or do it by hand:
 ```powershell
 git clone https://github.com/odysseus-dev/odysseus.git
 cd odysseus
-py -3.11 -m venv venv
+py -3.14 -m venv venv
 venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+python -m pip install --require-hashes -r requirements.lock
 python setup.py
 python -m uvicorn app:app --host 127.0.0.1 --port 7000
 ```
 
-If `python` points at an older interpreter, use `py -3.12` (or another installed
-3.11+ version) for the venv step.
+Use `py -3.14` explicitly even when `python` points at a different version.
+For an existing older venv, move it aside and recreate it with Python 3.14;
+the launchers reject an incompatible environment before installing packages.
 
 **Exposing on a LAN/Tailscale (Windows):** the launcher binds to `127.0.0.1` and
 does **not** read `APP_BIND` / `ODYSSEUS_HOST` from `.env`, so editing `.env`
@@ -412,7 +415,7 @@ The manual `uvicorn` command takes the same address as `--host 0.0.0.0`. Bind
 outside loopback only for a trusted LAN/VPN such as Tailscale: keep
 `AUTH_ENABLED=true` and do not expose the port directly to the public internet.
 
-**Requirements:** Python 3.11+. The core app (chat, agent, memory, documents,
+**Requirements:** stable CPython 3.14, standard GIL build. The core app (chat, agent, memory, documents,
 email, calendar, deep research) runs fully native. For full **Cookbook** background
 model downloads and the agent shell tool, also install
 [Git for Windows](https://git-scm.com/download/win) (provides `bash.exe`).
@@ -428,10 +431,11 @@ and configure everything else inside **Settings**.
 ### `chromadb-client` conflicts with embedded ChromaDB
 If `chromadb-client` (the lightweight HTTP-only package) is installed alongside the full `chromadb` package, Odysseus starts but ChromaDB silently falls back to HTTP-only mode and fails.
 
-**Fix:** uninstall `chromadb-client` and force-reinstall the full package:
+Current installs use one locked full `chromadb` distribution. Native launchers
+repair this older overlapping installation automatically. For a manual repair:
 ```bash
-./venv/bin/pip uninstall chromadb-client -y
-./venv/bin/pip install --force-reinstall chromadb
+./venv/bin/python -m pip uninstall chromadb-client -y
+./venv/bin/python -m pip install --force-reinstall --require-hashes -r requirements.lock
 ```
 
 ### HTTPS + LAN/Tailscale exposure
@@ -464,7 +468,7 @@ A grab-bag of small gotchas that otherwise turn into long debugging sessions.
 | Package | Feature unlocked |
 |---------|-----------------|
 | `faster-whisper` | Local speech-to-text (microphone -> text) via the "local" STT provider. |
-| `kokoro`, `soundfile` | Local Kokoro-82M text-to-speech on a CUDA GPU. The pinned Kokoro release supports Odysseus installs on Python 3.11-3.12; these packages are intentionally skipped on Python 3.13+ (including the Python 3.14 container image). |
+| `sherpa-onnx` | Local Kokoro-82M text-to-speech on Python 3.14, including CPU-only systems. The model downloads on first use and is cached locally. |
 | `ddgs` | DuckDuckGo as a search provider option. |
 | `PyMuPDF` | PDF page rendering in the side viewer panel and form-filling. (Note: AGPL-3.0) |
 | `markitdown` | Office/EPUB document text extraction (converts .docx/.xlsx/.pptx/.xls/.epub to Markdown). |
@@ -472,29 +476,43 @@ A grab-bag of small gotchas that otherwise turn into long debugging sessions.
 Install the optional set only when you need these features:
 
 ```bash
-pip install -r requirements-optional.txt
+python -m pip install --require-hashes -r requirements.lock -r requirements-optional.lock
 ```
 
-The default Docker image currently uses Python 3.14, while Kokoro 0.9.4 declares Python `>=3.10,<3.13`. Odysseus itself continues to support Python 3.11+, but this pinned optional local-TTS feature requires a native Python 3.11 or 3.12 environment. Kokoro declares `torch`, but the local provider only activates when that torch build has CUDA and a GPU is visible; install the CUDA build appropriate for your host. Browser and configured endpoint TTS remain available on Python 3.13+ and in the container image.
+Local TTS uses the Kokoro ONNX model through `sherpa-onnx`, which supports the
+same Python 3.14 runtime as the app and runs on CPU. It does not require an
+older Python environment or CUDA. Browser and configured endpoint TTS remain
+available without the local extras. Optional packages add features; they do
+not replace the core dependency versions.
 
 ### Faster, reproducible installs with uv (optional)
-[uv](https://docs.astral.sh/uv/) works as a drop-in replacement for the
-venv + pip steps in the native install guides, no project changes are needed but this change results in faster installs along with a lockfile for reproducible environments. After [installing `uv`](https://docs.astral.sh/uv/getting-started/installation/), use:
+[uv](https://docs.astral.sh/uv/) can install the same checked-in dependency lock
+as pip. After [installing uv](https://docs.astral.sh/uv/getting-started/installation/), use:
 
 ```bash
-uv venv venv --python 3.13
-uv pip install -r requirements.txt
+uv venv venv --python 3.14
+uv pip sync --python venv/bin/python --require-hashes requirements.lock
 # then continue as usual: python setup.py, uvicorn, ...
 ```
 
-`requirements.txt` is intentionally unpinned, so two installs at different times can produce different package versions. If you want a reproducible environment (e.g. across your own machines, or to roll back after a bad upgrade), snapshot and restore exact versions with:
+On Windows, use `venv\Scripts\python.exe` for the `--python` argument.
+`requirements.txt` and `requirements-optional.txt` declare dependency inputs;
+the committed locks pin their transitive versions and distribution hashes
+across supported Python 3.14 platforms. Maintainers update them with:
 
 ```bash
-uv pip compile requirements.txt -o requirements.lock   # snapshot current resolution
-uv pip sync requirements.lock                          # reproduce it exactly later
+python scripts/lock_dependencies.py            # preserve existing compatible pins
+python scripts/lock_dependencies.py --upgrade  # deliberately take dependency updates
+python scripts/lock_dependencies.py --check    # verify without modifying locks
 ```
 
-`requirements.lock` is gitignored and platform-specific (compile it on the OS you deploy to). Regenerate it deliberately when you want to take upgrades. The plain `uv pip install -r requirements.txt` keeps following the unpinned requirements like pip does.
+Commit the generated locks after a dependency change. Native launchers, Docker, and CI
+all install `requirements.lock`; optional packages use
+`requirements-optional.lock`, and packaging uses `requirements-build.lock`,
+both constrained by the core lock. This keeps updates
+explicit and testable without delaying the supported Python release family.
+Cookbook can also control external model servers; their hardware-specific
+environments remain separate from the application environment.
 
 ### Outlook / Office 365 email
 Odysseus email accounts currently use IMAP/SMTP username-password auth. Outlook

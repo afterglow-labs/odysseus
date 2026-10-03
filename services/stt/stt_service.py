@@ -60,7 +60,8 @@ class STTService:
             try:
                 from faster_whisper import WhisperModel
             except ImportError:
-                logger.warning("faster-whisper not installed. Install with: pip install faster-whisper")
+                logger.warning("faster-whisper not installed. Install with: python -m pip install "
+                               "--require-hashes -r requirements.lock -r requirements-optional.lock")
                 return None
             try:
                 settings = self._load_settings()

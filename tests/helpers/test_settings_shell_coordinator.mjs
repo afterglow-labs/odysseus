@@ -20,6 +20,9 @@ const REAL_MODULES = new Set([
   path.join(JS, 'settings/sidebar.js'),
   path.join(JS, 'settings/navigation.js'),
   path.join(JS, 'settings/lifecycle.js'),
+  path.join(JS, 'settings/helpHints.js'),
+  path.join(JS, 'settings/behavior.js'),
+  path.join(JS, 'escMenuStack.js'),
 ]);
 
 const realModulesLoaded = new Set();
@@ -809,12 +812,6 @@ const STUBS = new Map([
       isAltGrEvent() {
         return false;
       },
-    },
-  ],
-  [
-    path.join(JS, 'escMenuStack.js'),
-    {
-      bindMenuDismiss() {},
     },
   ],
   [

@@ -330,6 +330,8 @@ async def maybe_compact(
     *,
     persist: bool = True,
     compaction_state: Optional[Dict[str, Any]] = None,
+    daybreak_enabled: bool = False,
+    reasoning_effort: Optional[str] = None,
 ) -> tuple:
     """Check context usage and compact if above threshold.
 
@@ -400,6 +402,8 @@ async def maybe_compact(
             max_tokens=SUMMARY_MAX_TOKENS,
             headers=compact_headers,
             timeout=30,
+            **({"daybreak_enabled": True} if daybreak_enabled and not util_url else {}),
+            **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None and not util_url else {}),
         )
     except Exception as e:
         logger.error(f"Compaction summary failed: {e}")

@@ -163,6 +163,28 @@ class _FallbackIneligibleHTTPException(HTTPException):
     fallback_eligible = False
 
 
+class _AccessProgramHTTPException(_FallbackIneligibleHTTPException):
+    """A user-selected program must not be bypassed by a fallback route."""
+    fallback_forbidden = True
+
+
+class _ReasoningEffortHTTPException(_FallbackIneligibleHTTPException):
+    """An explicit model option cannot be removed or changed by fallback."""
+    fallback_forbidden = True
+
+
+def _validate_request_reasoning(provider, model, headers, value):
+    from src.chatgpt_subscription import normalize_reasoning_effort
+    from src.chatgpt_capabilities import validate_reasoning_effort
+    try:
+        effort = normalize_reasoning_effort(value)
+        if effort and provider != "chatgpt-subscription":
+            raise ValueError("Reasoning effort is available only for the ChatGPT Subscription provider.")
+        return validate_reasoning_effort(effort, model, headers=headers)
+    except ValueError as exc:
+        raise _ReasoningEffortHTTPException(400, str(exc)) from exc
+
+
 def _call_timeout(read_timeout) -> httpx.Timeout:
     """Per-request timeout for non-streaming LLM calls (connect from config)."""
     return httpx.Timeout(connect=LLMConfig.CONNECT_TIMEOUT, read=float(read_timeout), write=10.0, pool=5.0)
@@ -194,7 +216,8 @@ def _cache_header_identity(headers) -> str:
 
 
 def _get_cache_key(url: str, model: str, messages: List[Dict],
-                   temperature: float, max_tokens: int, headers=None) -> str:
+                   temperature: float, max_tokens: int, headers=None,
+                   daybreak_enabled: bool = False, reasoning_effort: Optional[str] = None) -> str:
     """Generate a cache key partitioned by endpoint and credential identity."""
     hashable_messages = []
     for msg in messages:
@@ -207,6 +230,8 @@ def _get_cache_key(url: str, model: str, messages: List[Dict],
         'messages': hashable_messages,
         'temp': temperature,
         'max_tokens': max_tokens,
+        'daybreak_enabled': bool(daybreak_enabled),
+        'reasoning_effort': reasoning_effort or None,
         # Never put credentials in a cache key or loggable cache payload.  The
         # digest only prevents responses from one configured account/route
         # being returned under another route with the same URL and model.
@@ -1280,8 +1305,10 @@ def _build_chatgpt_responses_payload(
     max_tokens: int,
     *,
     stream: bool = False,
+    daybreak_enabled: bool = False,
+    reasoning_effort: Optional[str] = None,
 ) -> Dict:
-    from src.chatgpt_subscription import build_responses_input
+    from src.chatgpt_subscription import build_responses_input, daybreak_access_program, normalize_reasoning_effort
 
     conversation = [msg for msg in (messages or []) if (msg.get("role") or "") != "system"]
     payload: Dict = {
@@ -1290,21 +1317,151 @@ def _build_chatgpt_responses_payload(
         "input": build_responses_input(conversation),
         "stream": stream,
         "store": False,
+        # Omission can enable an approved program upstream. OFF must be
+        # explicit, and the program never changes the user's selected model.
+        "access_programs": {"cyber": daybreak_access_program(model, daybreak_enabled)},
     }
-    if not _restricts_temperature(model):
-        payload["temperature"] = temperature
-    # ChatGPT Subscription Codex API does not support max_output_tokens —
-    # passing it returns HTTP 400 "Unsupported parameter: max_output_tokens".
-    # Do not include it in the payload.
+    effort = normalize_reasoning_effort(reasoning_effort)
+    if effort is not None:
+        payload["reasoning"] = {"effort": effort}
+    # The subscription transport rejects temperature and max_output_tokens,
+    # regardless of the selected model. Keep both out of every Responses body.
     return payload
 
 
+def _provider_error_details(text):
+    code, detail = "", ""
+    try:
+        error = json.loads(text) if isinstance(text, (str, bytes)) else text
+    except (ValueError, TypeError):
+        error = text
+    if isinstance(error, dict):
+        error = error.get("error") or error
+    if isinstance(error, dict):
+        code = str(error.get("code") or error.get("type") or "")
+        detail = str(error.get("message") or error.get("detail") or "")
+    elif isinstance(error, str):
+        detail = error
+    return code, detail
+
+
+def _provider_auth_error_fields(status_code, error, endpoint_url, provider):
+    from src.chatgpt_subscription import daybreak_error
+    if status_code == 429 or daybreak_error(error):
+        return {}
+    code, _ = _provider_error_details(error)
+    if status_code == 401 or code.lower() in {
+        "invalid_token", "token_expired", "expired_token", "invalid_api_key",
+        "authentication_error", "invalid_authentication", "unauthenticated",
+    }:
+        return {"authentication_required": True, "provider": provider, "endpoint_url": endpoint_url}
+    return {}
+
+
+def _subscription_program_error_fields(program_error, headers, model, enabled):
+    if not program_error:
+        return {}
+    fields = {"code": program_error[0], "fallback_eligible": False, "fallback_forbidden": True}
+    if enabled and program_error[0] == "unsupported_access_program":
+        from src.chatgpt_capabilities import record_request_denial
+        record_request_denial(headers, model, program_error)
+        fields.update(daybreak_supported=False, model=model)
+    return fields
+
+
+def _reasoning_error_fields(status, error, effort):
+    """An explicit effort rejected upstream is terminal, never downgraded."""
+    if effort is None or status not in (400, 422):
+        return {}
+    code, detail = _provider_error_details(error)
+    try:
+        structured = json.loads(error) if isinstance(error, (str, bytes)) else error
+        if isinstance(structured, dict):
+            structured = structured.get("error") or structured
+        parameter = structured.get("param") if isinstance(structured, dict) else None
+    except (ValueError, TypeError):
+        parameter = None
+    message = detail.lower()
+    if parameter in ("reasoning", "reasoning.effort") or code in {"unsupported_reasoning_effort", "invalid_reasoning_effort"} or (
+        ("reasoning.effort" in message or "reasoning effort" in message)
+        and any(word in message for word in ("unsupported", "not supported", "invalid", "must be", "only supports"))
+    ):
+        return {"code": "unsupported_reasoning_effort", "fallback_eligible": False, "fallback_forbidden": True}
+    return {}
+
+
 def _format_chatgpt_subscription_error(status_code: int, text: str) -> str:
-    if status_code in (401, 403):
+    from src.chatgpt_subscription import daybreak_error
+    if program_error := daybreak_error(text):
+        return program_error[1]
+    code, detail = _provider_error_details(text)
+    if _provider_auth_error_fields(status_code, text, "", "chatgpt-subscription"):
         return "ChatGPT Subscription credentials expired or were rejected. Reconnect the provider."
+    if status_code == 403:
+        message = "ChatGPT Subscription denied access (HTTP 403)"
+        if code:
+            message += f" [{code[:100]}]"
+        return message + (f": {detail[:700]}" if detail else ".")
     if status_code == 429:
         return "ChatGPT Subscription quota or rate limit was reached. Retry after the upstream limit resets."
     return _format_upstream_error(status_code, text, "https://chatgpt.com/backend-api/codex")
+
+
+def _chatgpt_subscription_sync_call(
+    url, model, messages, temperature, max_tokens, headers, timeout,
+    *, daybreak_enabled=False, reasoning_effort=None,
+) -> str:
+    """The subscription backend requires Responses SSE even for sync callers."""
+    from src.chatgpt_subscription import daybreak_error
+
+    target_url = _normalize_chatgpt_subscription_url(url)
+    payload = _build_chatgpt_responses_payload(
+        model, messages, temperature, max_tokens,
+        stream=True, daybreak_enabled=daybreak_enabled, reasoning_effort=reasoning_effort,
+    )
+    parts = []
+    event_name = ""
+    try:
+        note_model_activity(target_url, model)
+        with httpx.stream("POST", target_url, json=payload, headers=headers, timeout=timeout) as response:
+            if response.status_code != 200:
+                raw = response.read().decode(errors="replace")
+                program_error = daybreak_error(raw)
+                _subscription_program_error_fields(program_error, headers, model, daybreak_enabled)
+                error_type = (_AccessProgramHTTPException if program_error else
+                              _ReasoningEffortHTTPException if _reasoning_error_fields(response.status_code, raw, reasoning_effort)
+                              else HTTPException)
+                raise error_type(response.status_code, _format_chatgpt_subscription_error(response.status_code, raw))
+            for line in response.iter_lines():
+                if line.startswith("event:"):
+                    event_name = line[6:].strip()
+                if not line.startswith("data:"):
+                    continue
+                try:
+                    data = json.loads(line[5:].strip())
+                except json.JSONDecodeError:
+                    continue
+                event = data.get("type") or event_name
+                if event == "response.output_text.delta":
+                    parts.append(data.get("delta") or "")
+                elif event == "response.completed":
+                    return "".join(parts)
+                elif event in {"response.failed", "error"}:
+                    error = data.get("error") or (data.get("response") or {}).get("error") or data
+                    program_error = daybreak_error(error)
+                    status = _provider_stream_error_status(error, default=400)
+                    if program_error:
+                        _subscription_program_error_fields(program_error, headers, model, daybreak_enabled)
+                        status = 403 if program_error[0] == "access_program_not_enabled" else 400
+                        raise _AccessProgramHTTPException(status, program_error[1])
+                    detail = error.get("message") if isinstance(error, dict) else str(error)
+                    error_type = _ReasoningEffortHTTPException if _reasoning_error_fields(status, error, reasoning_effort) else HTTPException
+                    raise error_type(status, detail or "ChatGPT Subscription request failed")
+    except HTTPException:
+        raise
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"ChatGPT Subscription request failed: {exc}") from exc
+    raise _FallbackIneligibleHTTPException(502, "ChatGPT Subscription response ended before completion.")
 
 
 def _format_upstream_error(status: int, body: bytes | str, url: str) -> str:
@@ -1968,7 +2125,8 @@ def normalize_model_id(
 
 def llm_call(url: str, model: str, messages: List[Dict], temperature: float = LLMConfig.DEFAULT_TEMPERATURE,
              max_tokens: int = LLMConfig.DEFAULT_MAX_TOKENS, headers: Optional[Dict] = None,
-             timeout: int = LLMConfig.DEFAULT_TIMEOUT, prompt_type: Optional[str] = None) -> str:
+             timeout: int = LLMConfig.DEFAULT_TIMEOUT, prompt_type: Optional[str] = None,
+             daybreak_enabled: bool = False, reasoning_effort: Optional[str] = None) -> str:
     """Synchronous LLM call with optional prompt type enhancement."""
     h = _provider_headers(_detect_provider(url))
     # Tolerate headers that arrive as a JSON string (some sessions stored them
@@ -1998,13 +2156,27 @@ def llm_call(url: str, model: str, messages: List[Dict], temperature: float = LL
         messages_copy = non_sys
 
     provider = _detect_provider(url)
+    if daybreak_enabled and provider != "chatgpt-subscription":
+        raise _AccessProgramHTTPException(400, "Daybreak is available only for the ChatGPT Subscription provider.")
+    reasoning_effort = _validate_request_reasoning(provider, model, h, reasoning_effort)
     cache_key = _get_cache_key(
         url, model, messages_copy, temperature, max_tokens, headers=headers,
+        daybreak_enabled=daybreak_enabled,
+        reasoning_effort=reasoning_effort,
     )
     cached_response = _get_cached_response(cache_key)
     if cached_response:
         logger.debug(f"Returning cached response for key: {cache_key}")
         return cached_response
+
+    if provider == "chatgpt-subscription":
+        response = _chatgpt_subscription_sync_call(
+            url, model, messages_copy, temperature, max_tokens, h, timeout,
+            daybreak_enabled=daybreak_enabled,
+            reasoning_effort=reasoning_effort,
+        )
+        _set_cached_response(cache_key, response)
+        return response
 
     if provider == "anthropic":
         target_url = _normalize_anthropic_url(url)
@@ -2148,6 +2320,8 @@ def llm_call_with_fallback(candidates, messages, **kwargs) -> str:
         try:
             return llm_call(url, model, messages, headers=headers, **kwargs)
         except Exception as e:
+            if getattr(e, "fallback_forbidden", False):
+                raise
             last_err = e
             tag = "primary" if i == 0 else "candidate"
             logger.warning(f"[fallback] {tag} {model} failed ({type(e).__name__}); trying next")
@@ -2165,6 +2339,8 @@ async def llm_call_async_with_fallback(candidates, messages, **kwargs) -> str:
         try:
             return await llm_call_async(url, model, messages, headers=headers, **kwargs)
         except Exception as e:
+            if getattr(e, "fallback_forbidden", False):
+                raise
             last_err = e
             tag = "primary" if i == 0 else "candidate"
             logger.warning(f"[fallback] {tag} {model} failed ({type(e).__name__}); trying next")
@@ -2273,9 +2449,14 @@ async def llm_call_async(
     workload: str = "foreground",
     availability_only_transport: bool = False,
     return_model_metadata: bool = False,
+    daybreak_enabled: bool = False,
+    reasoning_effort: Optional[str] = None,
 ) -> str | tuple[str, str]:
     """Asynchronous LLM call using httpx with connection pooling, timeout, retry logic, and performance logging."""
     provider = _detect_provider(url)
+    if daybreak_enabled and provider != "chatgpt-subscription":
+        raise _AccessProgramHTTPException(400, "Daybreak is available only for the ChatGPT Subscription provider.")
+    reasoning_effort = _validate_request_reasoning(provider, model, headers, reasoning_effort)
     messages_copy = _sanitize_llm_messages(messages)
 
     # Consolidate multiple system messages into one at the start.
@@ -2293,6 +2474,8 @@ async def llm_call_async(
 
     cache_key = _get_cache_key(
         url, model, messages_copy, temperature, max_tokens, headers=headers,
+        daybreak_enabled=daybreak_enabled,
+        reasoning_effort=reasoning_effort,
     )
     cached_response = _get_cached_response(cache_key)
     if cached_response:
@@ -2316,6 +2499,8 @@ async def llm_call_async(
             headers=headers,
             timeout=timeout,
             workload=workload,
+            daybreak_enabled=daybreak_enabled,
+            reasoning_effort=reasoning_effort,
         ):
             event_is_error = False
             for line in str(chunk).splitlines():
@@ -2347,7 +2532,9 @@ async def llm_call_async(
                     status = int(data.get("status") or 502)
                     text = data.get("text") or data.get("error") or "ChatGPT Subscription request failed"
                     error_type = (
-                        _FallbackIneligibleHTTPException
+                        _AccessProgramHTTPException
+                        if data.get("fallback_forbidden") is True
+                        else _FallbackIneligibleHTTPException
                         if data.get("fallback_eligible") is False
                         else HTTPException
                     )
@@ -2560,7 +2747,8 @@ async def stream_llm(url: str, model: str, messages: List[Dict], temperature: fl
                      max_tokens: int = LLMConfig.DEFAULT_MAX_TOKENS, headers: Optional[Dict] = None,
                      timeout: int = LLMConfig.STREAM_TIMEOUT, prompt_type: Optional[str] = None,
                      tools: Optional[List[Dict]] = None, session_id: Optional[str] = None,
-                     tool_choice_none: bool = False, workload: str = "foreground"):
+                     tool_choice_none: bool = False, workload: str = "foreground",
+                     daybreak_enabled: bool = False, reasoning_effort: Optional[str] = None):
     target_url = _stream_target_url(url)
     async with _local_model_slot(target_url, model, workload):
         async for chunk in _stream_llm_inner(
@@ -2575,6 +2763,8 @@ async def stream_llm(url: str, model: str, messages: List[Dict], temperature: fl
             tools=tools,
             session_id=session_id,
             tool_choice_none=tool_choice_none,
+            daybreak_enabled=daybreak_enabled,
+            reasoning_effort=reasoning_effort,
         ):
             yield chunk
 
@@ -2583,7 +2773,8 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
                             max_tokens: int = LLMConfig.DEFAULT_MAX_TOKENS, headers: Optional[Dict] = None,
                             timeout: int = LLMConfig.STREAM_TIMEOUT, prompt_type: Optional[str] = None,
                             tools: Optional[List[Dict]] = None, session_id: Optional[str] = None,
-                            tool_choice_none: bool = False):
+                            tool_choice_none: bool = False, daybreak_enabled: bool = False,
+                            reasoning_effort: Optional[str] = None):
     """Stream LLM responses with improved error handling.
 
     Yields SSE chunks:
@@ -2593,6 +2784,22 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
       - data: [DONE]                       — end of stream
     """
     provider = _detect_provider(url)
+    try:
+        reasoning_effort = _validate_request_reasoning(provider, model, headers, reasoning_effort)
+    except _ReasoningEffortHTTPException as exc:
+        yield 'event: error\ndata: ' + json.dumps({
+            "status": 400, "text": exc.detail, "code": "unsupported_reasoning_effort",
+            "fallback_eligible": False, "fallback_forbidden": True,
+        }) + '\n\n'
+        return
+    if daybreak_enabled and provider != "chatgpt-subscription":
+        yield 'event: error\ndata: ' + json.dumps({
+            "status": 400,
+            "text": "Daybreak is available only for the ChatGPT Subscription provider.",
+            "fallback_eligible": False,
+            "fallback_forbidden": True,
+        }) + '\n\n'
+        return
     messages_copy = _sanitize_llm_messages(messages)
 
     # Consolidate multiple system messages into one at the start.
@@ -2625,7 +2832,10 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
     elif provider == "chatgpt-subscription":
         target_url = _normalize_chatgpt_subscription_url(url)
         h = _provider_headers(provider, headers)
-        payload = _build_chatgpt_responses_payload(model, messages_copy, temperature, max_tokens, stream=True)
+        payload = _build_chatgpt_responses_payload(
+            model, messages_copy, temperature, max_tokens,
+            stream=True, daybreak_enabled=daybreak_enabled, reasoning_effort=reasoning_effort,
+        )
     else:
         target_url = _normalize_openai_chat_url(url)
         payload = {
@@ -2679,6 +2889,7 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
 
     # ── ChatGPT Subscription / Codex Responses streaming ──
     if provider == "chatgpt-subscription":
+        from src.chatgpt_subscription import daybreak_error
         event_name = ""
         input_tokens = 0
         output_tokens = 0
@@ -2691,7 +2902,12 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
                 if r.status_code != 200:
                     raw = (await r.aread()).decode(errors="replace")
                     friendly = _format_chatgpt_subscription_error(r.status_code, raw)
-                    yield f'event: error\ndata: {json.dumps({"status": r.status_code, "text": friendly, "raw": raw[:500]})}\n\n'
+                    error_data = {"status": r.status_code, "text": friendly, "raw": raw[:500]}
+                    error_data.update(_provider_auth_error_fields(r.status_code, raw, target_url, provider))
+                    error_data.update(_reasoning_error_fields(r.status_code, raw, reasoning_effort))
+                    if program_error := daybreak_error(raw):
+                        error_data.update(_subscription_program_error_fields(program_error, h, model, daybreak_enabled))
+                    yield f'event: error\ndata: {json.dumps(error_data)}\n\n'
                     return
                 async for line in r.aiter_lines():
                     if not line:
@@ -2776,7 +2992,18 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
                             }
                         text = err.get("message") if isinstance(err, dict) else str(err or "ChatGPT Subscription request failed")
                         status = _provider_stream_error_status(err, default=400)
-                        yield f'event: error\ndata: {json.dumps({"status": status, "text": text})}\n\n'
+                        error_data = {"status": status, "text": text}
+                        error_data.update(_reasoning_error_fields(status, err, reasoning_effort))
+                        auth_fields = _provider_auth_error_fields(status, err, target_url, provider)
+                        if auth_fields:
+                            error_data.update(auth_fields, text=_format_chatgpt_subscription_error(status, err))
+                        if program_error := daybreak_error(err):
+                            error_data.update(
+                                status=403 if program_error[0] == "access_program_not_enabled" else 400,
+                                text=program_error[1],
+                                **_subscription_program_error_fields(program_error, h, model, daybreak_enabled),
+                            )
+                        yield f'event: error\ndata: {json.dumps(error_data)}\n\n'
                         return
                 yield "data: [DONE]\n\n"
         except (httpx.ConnectError, httpx.ConnectTimeout) as e:
@@ -2812,7 +3039,9 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
                 if r.status_code != 200:
                     raw = (await r.aread()).decode(errors="replace")
                     friendly = _format_upstream_error(r.status_code, raw, target_url)
-                    yield f'event: error\ndata: {json.dumps({"status": r.status_code, "text": friendly, "raw": raw[:500]})}\n\n'
+                    error_data = {"status": r.status_code, "text": friendly, "raw": raw[:500]}
+                    error_data.update(_provider_auth_error_fields(r.status_code, raw, target_url, provider))
+                    yield f'event: error\ndata: {json.dumps(error_data)}\n\n'
                     return
                 async for line in r.aiter_lines():
                     if not line:
@@ -2911,7 +3140,9 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
                 if r.status_code != 200:
                     raw = (await r.aread()).decode(errors="replace")
                     friendly = _format_upstream_error(r.status_code, raw, target_url)
-                    yield f'event: error\ndata: {json.dumps({"status": r.status_code, "text": friendly, "raw": raw[:500]})}\n\n'
+                    error_data = {"status": r.status_code, "text": friendly, "raw": raw[:500]}
+                    error_data.update(_provider_auth_error_fields(r.status_code, raw, target_url, provider))
+                    yield f'event: error\ndata: {json.dumps(error_data)}\n\n'
                     return
                 async for line in r.aiter_lines():
                     # SSE allows "data:value" with no space after the colon
@@ -3092,7 +3323,9 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
             if r.status_code != 200:
                 raw = (await r.aread()).decode(errors="replace")
                 friendly = _format_upstream_error(r.status_code, raw, target_url)
-                yield f'event: error\ndata: {json.dumps({"status": r.status_code, "text": friendly, "raw": raw[:500]})}\n\n'
+                error_data = {"status": r.status_code, "text": friendly, "raw": raw[:500]}
+                error_data.update(_provider_auth_error_fields(r.status_code, raw, target_url, provider))
+                yield f'event: error\ndata: {json.dumps(error_data)}\n\n'
                 return
 
             async for line in r.aiter_lines():
@@ -3412,6 +3645,16 @@ def _stream_error_fallback_override(err_chunk: Optional[str]) -> Optional[bool]:
     return None
 
 
+def _stream_error_forbids_fallback(err_chunk: str) -> bool:
+    try:
+        return any(
+            json.loads(line[6:]).get("fallback_forbidden") is True
+            for line in err_chunk.splitlines() if line.startswith("data: ")
+        )
+    except (TypeError, ValueError):
+        return False
+
+
 def _request_factory_error_chunk(error: Exception, status: Optional[int]) -> str:
     """Convert route-request preparation failures into a safe SSE error."""
 
@@ -3508,6 +3751,24 @@ def _provider_stream_error_status(error, *, default: int = 400) -> int:
     return default
 
 
+def _annotate_actionable_error_route(chunk, route, candidate_index, url, model):
+    """Bind UI actions to the failing account, including same-URL fallbacks."""
+    try:
+        data_line = next(line[5:].strip() for line in chunk.splitlines() if line.startswith("data:"))
+        data = json.loads(data_line)
+        if not isinstance(data, dict) or not (
+            data.get("authentication_required") is True or data.get("daybreak_supported") is False
+        ):
+            return chunk
+        data.update(candidate_index=candidate_index, model=model)
+        data.setdefault("endpoint_url", url)
+        if route.get("endpoint_id"):
+            data["endpoint_id"] = route["endpoint_id"]
+        return f'event: error\ndata: {json.dumps(data)}\n\n'
+    except (ValueError, TypeError, StopIteration):
+        return chunk
+
+
 async def stream_llm_with_fallback(candidates, messages, **kwargs):
     """Wrap stream_llm with an ordered fallback chain.
 
@@ -3560,13 +3821,9 @@ async def stream_llm_with_fallback(candidates, messages, **kwargs):
             except Exception as error:
                 status = _nonstream_error_status(error)
                 eligibility_override = getattr(error, "fallback_eligible", None)
-                eligible = (
-                    True
-                    if eligible_statuses is None
-                    else (
-                        eligibility_override
-                        if isinstance(eligibility_override, bool)
-                        else status in eligible_statuses
+                eligible = not getattr(error, "fallback_forbidden", False) and (
+                    True if eligible_statuses is None else (
+                        eligibility_override if isinstance(eligibility_override, bool) else status in eligible_statuses
                     )
                 )
                 error_chunk = _request_factory_error_chunk(error, status)
@@ -3599,15 +3856,12 @@ async def stream_llm_with_fallback(candidates, messages, **kwargs):
         try:
             async for chunk in candidate_stream:
                 if chunk.startswith("event: error"):
+                    chunk = _annotate_actionable_error_route(chunk, route_descriptors[i], i, url, model)
                     status = _stream_error_status(chunk)
                     eligibility_override = _stream_error_fallback_override(chunk)
-                    eligible = (
-                        True
-                        if eligible_statuses is None
-                        else (
-                            eligibility_override
-                            if eligibility_override is not None
-                            else status in eligible_statuses
+                    eligible = not _stream_error_forbids_fallback(chunk) and (
+                        True if eligible_statuses is None else (
+                            eligibility_override if eligibility_override is not None else status in eligible_statuses
                         )
                     )
                     if not emitted and not is_last and eligible:

@@ -9,6 +9,7 @@ import { providerLogo } from './providers.js';
 import { makeWindowDraggable } from './windowDrag.js';
 import { _diagnose, _showDiagnosis, _clearDiagnosis, _runQuickCmd, ERROR_PATTERNS } from './cookbook-diagnosis.js';
 import { RECIPE_BACKENDS, recipesForBackend, pickRecipe, recipeCommands, RECIPE_DEFAULT_VARIANT } from './cookbook-deps-recipes.js';
+import { dependencyIssues, showDependencyIssues } from './cookbookDependencyHealth.js';
 import { _hwfitCache, _hwfitDebounce, _hwfitFetch, _hwfitInit, _hwfitRenderList, _hwfitRenderHw, _renderGpuToggles, _expandModelRow, _fitColors, _hwfitColumns, _cachedModelIds, _gpuToggleTotal, _resetGpuToggleState } from './cookbook-hwfit.js';
 
 // Sub-modules
@@ -1068,9 +1069,15 @@ export function _persistEnvState() {
 
 // Category colors removed — using theme CSS classes instead
 
-async function _fetchDependencies() {
+let _dependencyCheckSeq = 0;
+async function _fetchDependencies({ showIssues = false } = {}) {
   const list = document.getElementById('cookbook-deps-list');
   if (!list) return;
+  const checkSeq = ++_dependencyCheckSeq;
+  const checkButton = document.getElementById('cookbook-check-dependencies');
+  const checkStatus = document.getElementById('cookbook-deps-check-status');
+  if (checkButton) { checkButton.disabled = true; checkButton.textContent = 'Checking…'; }
+  if (checkStatus) checkStatus.textContent = 'Checking installed packages and their dependencies…';
   // Use the shared whirlpool spinner so the user sees the request is in
   // flight (the package list takes a few seconds to enumerate on slow links).
   list.innerHTML = '';
@@ -1097,10 +1104,17 @@ async function _fetchDependencies() {
     const _depSrv = _dsel && _dsel.value !== 'local' ? _serverByVal(_dsel.value) : null;
     if (_depSrv) {
       _depHost = _depSrv.host || ''; _depPort = _depSrv.port || ''; _depVenv = _depSrv.envPath || ''; _depPlatform = _depSrv.platform || '';
-    } else if (_envState.remoteHost) {
+    } else if (_dsel?.value !== 'local' && _envState.remoteHost) {
       _depHost = _envState.remoteHost; _depPort = _getPort(_envState.remoteHost) || ''; _depVenv = _envState.envPath || ''; _depPlatform = _envState.platform || '';
     }
+    const checkedTarget = {
+      host: _depHost, sshPort: _depPort, envPath: _depVenv,
+      env: _depSrv?.env || (_depHost ? _envState.env : 'none'),
+      platform: _depPlatform || (_depHost ? '' : _envState.hostPlatform),
+    };
+    const checkedLocalPlatform = _envState.hostPlatform || '';
     const _pkgParams = new URLSearchParams();
+    if (showIssues) _pkgParams.set('check_index', 'true');
     if (_depHost) {
       _pkgParams.set('host', _depHost);
       if (_depPort) _pkgParams.set('ssh_port', _depPort);
@@ -1124,13 +1138,27 @@ async function _fetchDependencies() {
     }
     const resp = await fetch('/api/cookbook/packages' + (_pkgParams.toString() ? '?' + _pkgParams.toString() : ''));
     const data = await resp.json();
+    if (checkSeq !== _dependencyCheckSeq) return;
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
     const pkgs = data.packages || [];
+    const _recipeTarget = {
+      host: _depHost,
+      platform: _depPlatform || (_depHost ? '' : _envState.hostPlatform),
+      hardware: _hwfitCache,
+    };
     if (!pkgs.length) { list.innerHTML = '<div class="hwfit-loading">No packages found</div>'; return; }
-    const _winUnsupported = new Set(['hf_transfer', 'vllm', 'rembg', 'gfpgan']);
     const _systemInstallable = new Set(['tmux']);
 
-    const _statusTag = (pkg, isLocal, isSystemDep, winBlocked) => {
-      if (winBlocked) return `<span class="cookbook-dep-tag cookbook-dep-na">N/A</span>`;
+    const _statusTag = (pkg, isLocal, isSystemDep) => {
+      if (pkg.install_supported === false && !pkg.installed) {
+        return `<span class="cookbook-dep-tag cookbook-dep-na" title="${esc(pkg.install_hint || 'Not supported on this target.')}">Unavailable</span>`;
+      }
+      if (pkg.needs_repair && pkg.installed && pkg.install_supported !== false) {
+        return `<button type="button" class="cookbook-dep-tag cookbook-dep-install cookbook-dep-issues" data-dep-issues="${esc(pkg.name)}" title="Review missing or incompatible dependencies">Repair</button>`;
+      }
+      if (pkg.installed && pkg.install_supported === false) {
+        return `<span class="cookbook-dep-tag cookbook-dep-installed" title="${esc(pkg.install_hint || 'Installed on this target.')}">Installed</span>`;
+      }
       if (pkg.installed && isSystemDep) return `<span class="cookbook-dep-tag cookbook-dep-installed" title="Found on selected server">Installed</span>`;
       if (pkg.installed && pkg.pip_update_available === false && pkg.name !== 'llama_cpp') {
         const tip = esc(pkg.update_note || pkg.status_note || 'Found externally; update outside Odysseus.');
@@ -1173,8 +1201,9 @@ async function _fetchDependencies() {
     const _depRow = (pkg) => {
       const isLocal = pkg.target === 'local';
       const isSystemDep = pkg.kind === 'system';
-      const winBlocked = !isLocal && _isWindows() && _winUnsupported.has(pkg.name);
-      const note = pkg.status_note ? `<div class="memory-item-meta" style="font-size:10px;opacity:0.65;margin-top:3px;">${esc(pkg.status_note)}</div>` : '';
+      const noteText = [pkg.status_note, pkg.compatibility_note, pkg.install_supported === false ? pkg.install_hint : ''].filter(Boolean).filter((value, index, values) => values.indexOf(value) === index).join(' ');
+      const note = noteText ? `<div class="memory-item-meta" style="font-size:10px;opacity:0.65;margin-top:3px;">${esc(noteText)}</div>` : '';
+      const releaseNote = pkg.latest_version ? `<div class="memory-item-meta" style="font-size:10px;opacity:0.55;margin-top:3px;">Latest release: ${esc(pkg.latest_version)}${pkg.requires_python ? ` · Requires Python ${esc(pkg.requires_python)}` : ''}</div>` : '';
       const updateNote = pkg.installed && pkg.pip_update_available === false && pkg.update_note ? `<div class="memory-item-meta" style="font-size:10px;opacity:0.55;margin-top:3px;">${esc(pkg.update_note)}</div>` : '';
       // Inline rebuild/reinstall tag. Styled as a .cookbook-dep-tag so it
       // matches the LLM category tag's pill look, and lives to the LEFT of the
@@ -1219,17 +1248,18 @@ async function _fetchDependencies() {
           + `<button type="button" class="cookbook-dep-tag cookbook-dep-cmd-copy" data-dep-cmd-copy="${esc(_gpuWheelCmd)}" title="Copy command to clipboard">Copy command</button>`
           + `</div>`
         : '';
-      return `<div class="cookbook-dep-row${winBlocked ? ' cookbook-dep-blocked' : ''}" data-pkg-name="${esc(pkg.name)}" data-dep-pip="${esc(pkg.pip || '')}" data-dep-target="${isLocal ? 'local' : 'remote'}" data-dep-kind="${esc(pkg.kind || 'python')}">`
+      return `<div class="cookbook-dep-row${pkg.install_supported === false && !pkg.installed ? ' cookbook-dep-blocked' : ''}" data-pkg-name="${esc(pkg.name)}" data-dep-pip="${esc(pkg.pip || '')}" data-dep-target="${isLocal ? 'local' : 'remote'}" data-dep-kind="${esc(pkg.kind || 'python')}">`
         + `<div class="cookbook-dep-info">`
         + `<div class="memory-item-title">${_depGlyphHtml(pkg.name)}${esc(pkg.name)}</div>`
         + `<div class="memory-item-meta" style="font-size:10px;opacity:0.5;margin-top:2px;">${esc(pkg.desc)}</div>`
         + note
+        + releaseNote
         + updateNote
         + `</div>`
         + _rebuildBtn
         + _buildDepsBtn
         + `<span class="cookbook-dep-tag cookbook-dep-cat">${esc(pkg.category)}</span>`
-        + _statusTag(pkg, isLocal, isSystemDep, winBlocked)
+        + _statusTag(pkg, isLocal, isSystemDep)
         + recipeCaret
         + `</div>`
         + recipePanel;
@@ -1276,7 +1306,7 @@ async function _fetchDependencies() {
       // Initial recipe: the generic fallback (matches first time, no model id).
       const initial = pickRecipe(backend, '') || candidates[0];
       const initialVariant = RECIPE_DEFAULT_VARIANT;
-      const initialCmds = recipeCommands(initial, initialVariant);
+      const initialCmds = recipeCommands(initial, initialVariant, _recipeTarget);
       const initialRuntimeCmds = _recipeRuntimeCommands(initialCmds, initialVariant);
       const rightActive = initialVariant === 'docker' ? ' mode-right' : '';
       return `<div class="cookbook-dep-recipe-panel" data-dep-recipe-panel="${esc(backend)}" data-dep-recipe-active-variant="${esc(initialVariant)}" style="display:none;margin:-4px 0 8px;padding:8px 12px 10px;background:rgba(0,0,0,0.04);border:1px solid var(--border);border-top:none;border-radius:0 0 6px 6px;">
@@ -1384,7 +1414,7 @@ async function _fetchDependencies() {
     };
 
     const _viewingRemote = !!(_dsel && _dsel.value && _dsel.value !== 'local');
-    const _visibleDep = (p) => p.applicable !== false || p.installed || (p.kind === 'system' && p.name !== 'APFEL');
+    const _visibleDep = (p) => p.install_supported === false || p.applicable !== false || p.installed || (p.kind === 'system' && p.name !== 'APFEL');
     const _appDeps = pkgs.filter(p => p.target === 'local' && _visibleDep(p));
     const _serverDeps = pkgs.filter(p => p.target !== 'local' && _visibleDep(p));
 
@@ -1396,9 +1426,12 @@ async function _fetchDependencies() {
     // Shared install/update routine — used by the Install button and the
     // "Update" item in an installed package's ⋮ menu. `upgrade` adds pip -U;
     // `statusEl`, when given, shows "Installing…/Updating…" and is disabled.
-    async function _installDep(pipName, pkgName, isLocalOnly, upgrade, statusEl) {
+    async function _installDep(pipName, pkgName, isLocalOnly, upgrade, statusEl, checkedOverride = null, atomicRequirement = false) {
       let targetServer = null;
-      if (isLocalOnly) {
+      if (checkedOverride) {
+        // A findings popup may outlive a server-selector change. Keep its
+        // actions on the exact target/environment that produced the findings.
+      } else if (isLocalOnly) {
         _envState.remoteHost = '';
         _envState.env = 'none';
         _envState.envPath = '';
@@ -1409,14 +1442,14 @@ async function _fetchDependencies() {
           _applyServerSelection(depsServerSel.value);
         }
       }
-      const targetHost = isLocalOnly ? 'this server' : ((targetServer?.host || _envState.remoteHost) || 'local');
-      let targetEnv = isLocalOnly ? 'none' : (targetServer?.env || _envState.env || 'none');
-      const targetEnvPath = isLocalOnly ? '' : (targetServer?.envPath || _envState.envPath || '');
+      const targetHost = checkedOverride ? (checkedOverride.host || 'this server') : (isLocalOnly ? 'this server' : ((targetServer?.host || _envState.remoteHost) || 'local'));
+      let targetEnv = checkedOverride?.env ?? (isLocalOnly ? 'none' : (targetServer?.env || _envState.env || 'none'));
+      const targetEnvPath = checkedOverride?.envPath ?? (isLocalOnly ? '' : (targetServer?.envPath || _envState.envPath || ''));
       if (!isLocalOnly && targetEnvPath && (!targetEnv || targetEnv === 'none')) {
         targetEnv = /(?:^|\/)(?:\.?venv|env)(?:\/|$)|\/bin\/activate$/i.test(targetEnvPath) ? 'venv' : targetEnv;
       }
-      const targetPlatform = isLocalOnly ? (_envState.hostPlatform || _envState.platform || '') : (targetServer?.platform || _envState.platform || '');
-      const targetRemoteHost = isLocalOnly ? '' : (targetServer?.host || _envState.remoteHost || '');
+      const targetPlatform = checkedOverride?.platform ?? (isLocalOnly ? (_envState.hostPlatform || _envState.platform || '') : (targetServer?.platform || _envState.platform || ''));
+      const targetRemoteHost = checkedOverride?.host ?? (isLocalOnly ? '' : (targetServer?.host || _envState.remoteHost || ''));
       // Always go through `python -m pip` so the leading token is `python`
       // — matches the /api/model/serve allow-list (bare `pip` is blocked).
       // Inside a venv/conda env, `--user` is invalid (pip refuses), so we
@@ -1424,30 +1457,31 @@ async function _fetchDependencies() {
       // for PEP-668-locked system pythons (Arch, newer Debian).
       const _inEnv = targetEnv === 'venv' || targetEnv === 'conda';
       const _platform = String(targetPlatform || '').toLowerCase();
+      const _targetWindows = _platform === 'windows';
       const _isAppleTarget = _platform === 'darwin' || _platform === 'macos' || _platform.includes('mac os');
-      const _pipFlags = (!_isWindows() && !_inEnv) ? (_isAppleTarget ? ' --user' : ' --user --break-system-packages') : '';
+      const _pipFlags = (!_targetWindows && !_inEnv) ? (_isAppleTarget ? ' --user' : ' --user --break-system-packages') : '';
       // Use the venv's python3 by absolute path when configured. Even with the
       // env_prefix sourcing activate, SSH non-interactive sessions sometimes
       // pick a `python3` ahead of the venv's bin on PATH, so the install
       // silently lands in the wrong site-packages.
       let _py;
-      if (_isWindows()) {
+      if (_targetWindows) {
         _py = 'python';
       } else if (targetEnv === 'venv' && targetEnvPath) {
-        _py = `${targetEnvPath.replace(/\/+$/, '')}/bin/python3`;
+        _py = _shellQuote(`${targetEnvPath.replace(/\/+$/, '').replace(/\/bin\/activate$/i, '')}/bin/python3`);
       } else {
         _py = 'python3';
       }
-      const pipArgs = String(pipName || '')
-        .trim()
-        .split(/\s+/)
+      const pipArgs = (atomicRequirement
+        ? [String(pipName || '').trim()]
+        : String(pipName || '').trim().split(/\s+/))
         .filter(Boolean)
         .map(_shellQuote)
         .join(' ');
       const depTaskId = String(pkgName || pipName || 'dependency').trim().replace(/\s+/g, '_');
       const cmd = `${_py} -m pip install${upgrade ? ' -U' : ''}${_pipFlags} ${pipArgs}`;
       let envPrefix = '';
-      if (_isWindows()) {
+      if (_targetWindows) {
         if (targetEnv === 'venv' && targetEnvPath) {
           envPrefix = '& ' + _psQuote(targetEnvPath.endsWith('\\Scripts\\Activate.ps1') ? targetEnvPath : targetEnvPath + '\\Scripts\\Activate.ps1');
         } else if (targetEnv === 'conda' && targetEnvPath) {
@@ -1466,7 +1500,7 @@ async function _fetchDependencies() {
           repo_id: depTaskId,
           cmd: cmd,
           remote_host: targetRemoteHost || undefined,
-          ssh_port: _getPort(targetRemoteHost) || undefined,
+          ssh_port: (checkedOverride?.sshPort ?? _getPort(targetRemoteHost)) || undefined,
           env_prefix: envPrefix || undefined,
           platform: targetPlatform || undefined,
         };
@@ -1488,25 +1522,27 @@ async function _fetchDependencies() {
             action: 'OK',
             onAction: () => {},
           });
-          return;
+          return false;
         }
         // _dep flags this as a pip dependency/driver install (not a servable
         // model) so the running-task card doesn't offer a "Serve →" button.
-        const payload = { repo_id: depTaskId, _cmd: cmd, remote_host: targetRemoteHost || '', _dep: true, env_path: targetEnvPath || '', platform: targetPlatform || '' };
+        const payload = { repo_id: depTaskId, _cmd: cmd, remote_host: targetRemoteHost || '', _dep: true, env_path: targetEnvPath || '', env_prefix: envPrefix || '', ssh_port: reqBody.ssh_port || '', platform: targetPlatform || '' };
         _addTask(data.session_id, 'pip ' + pkgName, 'download', payload);
         if (statusEl) { statusEl.textContent = upgrade ? 'Updating...' : 'Installing...'; statusEl.disabled = true; }
         uiModule.showToast(`${upgrade ? 'Updating' : 'Installing'} ${pkgName} on ${targetHost}...`);
+        return true;
       } catch (err) {
         uiModule.showToast('Install failed: ' + err.message, {
           duration: 20000,
           action: 'OK',
           onAction: () => {},
         });
+        return false;
       }
     }
 
     // Wire install buttons (not-installed packages)
-    list.querySelectorAll('.cookbook-dep-install:not(.cookbook-dep-recipe-run):not(.cookbook-dep-install-sysdeps)').forEach(btn => {
+    list.querySelectorAll('.cookbook-dep-install:not(.cookbook-dep-recipe-run):not(.cookbook-dep-install-sysdeps):not(.cookbook-dep-issues)').forEach(btn => {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
         const pipName = btn.dataset.depPip;
@@ -1514,6 +1550,29 @@ async function _fetchDependencies() {
         await _installDep(pipName, pkgName, btn.dataset.depTarget === 'local', !!btn.dataset.upgrade, btn);
       });
     });
+
+    const installIssue = (pkg, issue, button) => {
+      const local = pkg.target === 'local';
+      const target = local
+        ? { host: '', sshPort: '', env: 'none', envPath: '', platform: checkedLocalPlatform }
+        : checkedTarget;
+      return _installDep(issue.requirement || pkg.pip, issue.requirement ? issue.name : pkg.name,
+        local, !issue.requirement || issue.kind !== 'missing', button, target, !!issue.requirement);
+    };
+    list.querySelectorAll('.cookbook-dep-issues').forEach(button => {
+      button.addEventListener('click', event => {
+        event.stopPropagation();
+        const pkg = pkgs.find(item => item.name === button.dataset.depIssues
+          && (item.target === 'local') === (button.closest('.cookbook-dep-row')?.dataset.depTarget === 'local'));
+        if (pkg) showDependencyIssues([pkg], installIssue, button);
+      });
+    });
+    const findings = pkgs.filter(pkg => dependencyIssues([pkg]).length);
+    const issueCount = dependencyIssues(findings).length;
+    if (checkStatus) checkStatus.textContent = issueCount
+      ? `${issueCount} dependency ${issueCount === 1 ? 'issue' : 'issues'} found.`
+      : 'Check complete. No missing or incompatible subdependencies found.';
+    if (showIssues && issueCount) showDependencyIssues(findings, installIssue, checkButton);
 
     // Wire "Install build deps" buttons — surfaced on rows whose
     // system_prereqs are missing (e.g. llama_cpp with no cmake on the
@@ -1553,7 +1612,7 @@ async function _fetchDependencies() {
           });
           const data = await res.json().catch(() => ({}));
           if (res.ok && data.ok) {
-            const payload = { repo_id: 'pip llama-cpp-python[CUDA]', _cmd: cmd, remote_host: _envState.remoteHost || '', _dep: true };
+            const payload = { repo_id: 'pip llama-cpp-python[CUDA]', _cmd: cmd, remote_host: reqBody.remote_host || '', ssh_port: reqBody.ssh_port || '', platform: reqBody.platform || '', _dep: true };
             _addTask(data.session_id, 'pip llama-cpp-python[CUDA]', 'download', payload);
             uiModule.showToast(`Reinstalling llama-cpp-python with CUDA wheels on ${targetLabel} (~1-3 min)…`, 4000);
           } else {
@@ -1661,7 +1720,7 @@ async function _fetchDependencies() {
       const variant = panel.dataset.depRecipeActiveVariant || RECIPE_DEFAULT_VARIANT;
       const sel = panel.querySelector('[data-dep-recipe-pick]');
       const recipe = pickRecipe(backend, (sel && sel.value) || '');
-      const cmds = recipeCommands(recipe, variant);
+      const cmds = recipeCommands(recipe, variant, _recipeTarget);
       const runtimeCmds = _recipeRuntimeCommands(cmds, variant);
       const pre = panel.querySelector('[data-dep-recipe-cmds]');
       if (pre) {
@@ -1767,7 +1826,7 @@ async function _fetchDependencies() {
             uiModule.showToast('Run failed: ' + String(data.detail || data.error || `HTTP ${res.status}`).slice(0, 200));
             return;
           }
-          const payload = { repo_id: `${backend} setup`, _cmd: cmd, remote_host: _envState.remoteHost || '', _dep: true };
+          const payload = { repo_id: `${backend} setup`, _cmd: cmd, remote_host: reqBody.remote_host || '', env_prefix: reqBody.env_prefix || '', ssh_port: reqBody.ssh_port || '', platform: reqBody.platform || '', _dep: true };
           _addTask(data.session_id, `${backend} setup`, 'download', payload);
           uiModule.showToast(`Running ${backend} setup on ${targetHost}…`);
         } catch (err) {
@@ -1888,7 +1947,14 @@ async function _fetchDependencies() {
       });
     });
   } catch (err) {
+    if (checkSeq !== _dependencyCheckSeq) return;
     list.innerHTML = `<div class="hwfit-loading">Error loading packages: ${esc(err.message)}</div>`;
+    if (checkStatus) checkStatus.textContent = 'Dependency check failed. Please try again.';
+  } finally {
+    if (checkSeq === _dependencyCheckSeq && checkButton) {
+      checkButton.disabled = false;
+      checkButton.textContent = 'Check dependencies';
+    }
   }
 }
 
@@ -2184,6 +2250,7 @@ function _wireTabEvents(body) {
   }
 
   const depsServer = document.getElementById('hwfit-deps-server');
+  document.getElementById('cookbook-check-dependencies')?.addEventListener('click', () => _fetchDependencies({ showIssues: true }));
   if (depsServer) {
     depsServer.addEventListener('change', () => {
       _applyServerSelection(depsServer.value);
@@ -3224,6 +3291,7 @@ function _renderRecipes() {
   html += '<div class="admin-card" style="flex:1;display:flex;flex-direction:column;overflow:hidden;">';
   html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">';
   html += '<h2 style="margin:0;padding:0;line-height:1;">Dependencies</h2>';
+  html += '<button type="button" class="memory-toolbar-btn" id="cookbook-check-dependencies">Check dependencies</button>';
   // Rebuild llama.cpp button moved into the llama_cpp dep row (see _depRow);
   // having it in the title polluted the section header.
   html += '<span style="font-size:10px;opacity:0.5;margin-left:auto;">Server</span>';
@@ -3232,6 +3300,7 @@ function _renderRecipes() {
   html += '</select>';
   html += '</div>';
   html += '<p class="memory-desc doclib-desc">Optional packages that extend Odysseus capabilities.</p>';
+  html += '<p class="memory-item-meta" id="cookbook-deps-check-status" role="status" aria-live="polite"></p>';
   html += '<div class="doclib-grid" id="cookbook-deps-list"></div>';
   html += '</div></div>';
 

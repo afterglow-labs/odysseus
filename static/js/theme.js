@@ -11,6 +11,11 @@ import { snapModalToZone } from './tileManager.js';
 export const THEMES = {
   dark:       { bg:'#282c34', fg:'#9cdef2', panel:'#111111', border:'#355a66', red:'#e06c75' },
   light:      { bg:'#f0ebe3', fg:'#5a5248', panel:'#faf6f0', border:'#d4cdc2', red:'#c47d5a' },
+  afterglow:  { bg:'#120820', fg:'#fff2e9', panel:'#241237', border:'#7d6480', red:'#ff8000',
+                advanced: { userBubbleBg: '#3b2148', sidebarBg: '#1a0a2e', brandColor: '#ff6a00',
+                            inputBg: '#2f154b', inputBorder: '#8f6894',
+                            sendBtnBg: '#ffffff', sendBtnHover: '#ff6d00',
+                            codeBg: '#160d22', toggleActive: '#a54764', accentText: '#120820' } },
   midnight:   { bg:'#0d1117', fg:'#c9d1d9', panel:'#161b22', border:'#30363d', red:'#f85149' },
   paper:      { bg:'#faf8f5', fg:'#3b3836', panel:'#ffffff', border:'#d5d0c8', red:'#c5ac4a' },
   // Spicy / fun themes
@@ -42,11 +47,13 @@ const FONT_MAP = {
   opendyslexic: "'OpenDyslexic', sans-serif",
 };
 const DEFAULT_FONT = 'mono';
+const THEME_DEFAULT_FONT = { afterglow: 'sans' };
 const DEFAULT_DENSITY = 'comfortable';
 const MAX_CUSTOM_THEMES = 8;
 
 // Default background patterns for built-in themes
 const THEME_DEFAULT_PATTERN = {
+  afterglow:  'afterglow',
   dark:       'none',
   light:      'dots',
   midnight:   'rain',
@@ -63,6 +70,7 @@ const THEME_DEFAULT_PATTERN = {
 
 // Default effect colors for specific themes (overrides --fg)
 const THEME_DEFAULT_EFFECT_COLOR = {
+  afterglow:  '#ff7200',
   midnight:   '#ffffff',
   organs:     '#451616',
   cute:       '#ff8cb8',
@@ -194,6 +202,7 @@ const ADV_KEYS = [
   { key: 'codeBg',             css: '--code-bg',           label: 'Code Bg',          group: 'Code Blocks' },
   { key: 'codeFg',             css: '--code-fg',           label: 'Code Text',        group: 'Code Blocks' },
   { key: 'toggleActive',       css: '--toggle-active',     label: 'Toggle On',        group: 'Controls' },
+  { key: 'accentText',         css: '--accent-text',       label: 'Accent Button Text', group: 'Controls' },
 ];
 
 function computeAdvancedDefaults(colors) {
@@ -214,6 +223,7 @@ function computeAdvancedDefaults(colors) {
     codeBg: syn.bg,
     codeFg: syn.fg,
     toggleActive: red,
+    accentText: '#ffffff',
   };
 }
 
@@ -402,7 +412,7 @@ export function applyUiScale(scale) {
   if (s === '125') document.documentElement.classList.add('ui-scale-125');
 }
 
-const _BG_CLASSES = ['bg-pattern-dots',
+const _BG_CLASSES = ['bg-pattern-dots', 'bg-pattern-afterglow',
   'bg-pattern-synapse', 'bg-pattern-rain', 'bg-pattern-constellations',
   'bg-pattern-perlin-flow',
   'bg-pattern-petals', 'bg-pattern-sparkles', 'bg-pattern-embers'];
@@ -440,7 +450,7 @@ function _getEffectSize() {
 }
 
 // Patterns where the intensity/size sliders have no visible effect.
-const _STATIC_PATTERNS = new Set(['none', 'dots']);
+const _STATIC_PATTERNS = new Set(['none', 'dots', 'afterglow']);
 
 export function applyBgPattern(pattern) {
   const p = pattern || 'none';
@@ -469,13 +479,15 @@ export function getSaved() {
 export function save(name, colors, opts) {
   const obj = { name, colors };
   if (opts) {
-    if (opts.font && opts.font !== DEFAULT_FONT) obj.font = opts.font;
+    // Preserve explicit overrides even when they match global defaults:
+    // the selected preset may have a different font, pattern, or glass default.
+    if (opts.font) obj.font = opts.font;
     if (opts.density && opts.density !== DEFAULT_DENSITY) obj.density = opts.density;
-    if (opts.bgPattern && opts.bgPattern !== 'none') obj.bgPattern = opts.bgPattern;
+    if (opts.bgPattern) obj.bgPattern = opts.bgPattern;
     if (opts.bgEffectColor) obj.bgEffectColor = opts.bgEffectColor;
     if (opts.bgEffectIntensity !== undefined && opts.bgEffectIntensity !== 1) obj.bgEffectIntensity = opts.bgEffectIntensity;
     if (opts.bgEffectSize !== undefined && opts.bgEffectSize !== 1) obj.bgEffectSize = opts.bgEffectSize;
-    if (opts.frosted) obj.frosted = true;
+    if (opts.frosted !== undefined) obj.frosted = !!opts.frosted;
   }
   Storage.setJSON(LS_KEY, obj);
   _syncToServer(obj);
@@ -709,7 +721,7 @@ export function initThemeUI() {
         sw.classList.add('active');
         syncPickers(colors);
         const ct = sw.dataset.custom ? customThemes[name] : null;
-        const f = ct && ct.font ? ct.font : DEFAULT_FONT;
+        const f = ct && ct.font ? ct.font : (THEME_DEFAULT_FONT[name] || DEFAULT_FONT);
         const d = ct && ct.density ? ct.density : DEFAULT_DENSITY;
         const p = ct && ct.bgPattern ? ct.bgPattern : (THEME_DEFAULT_PATTERN[name] || 'none');
         const ec = ct && ct.bgEffectColor ? ct.bgEffectColor : (THEME_DEFAULT_EFFECT_COLOR[name] || '');
@@ -1092,7 +1104,7 @@ export function initThemeUI() {
   syncResetButtons();
 
   // Font, density, background pattern controls
-  const _initFont = (saved && saved.font) || DEFAULT_FONT;
+  const _initFont = (saved && saved.font) || (saved && THEME_DEFAULT_FONT[saved.name]) || DEFAULT_FONT;
   const _initDensity = (saved && saved.density) || DEFAULT_DENSITY;
   const _initPattern = (saved && saved.bgPattern) || (saved && THEME_DEFAULT_PATTERN[saved.name]) || 'none';
   const _initEffectColor = (saved && saved.bgEffectColor) || (saved && THEME_DEFAULT_EFFECT_COLOR[saved.name]) || '';

@@ -20,6 +20,14 @@ PORT="${ODYSSEUS_PORT:-7860}"
 DIST="$REPO_DIR/dist"
 APP="$DIST/$APP_NAME.app"
 
+VENV_PY="$REPO_DIR/venv/bin/python"
+if [ ! -x "$VENV_PY" ]; then
+  echo "Odysseus needs its supported Python environment first. Run ./start-macos.sh."
+  exit 1
+fi
+"$VENV_PY" "$REPO_DIR/src/python_runtime.py"
+if [ "${1:-}" = "--check-python" ]; then exit 0; fi
+
 echo "Building $APP_NAME.app"
 echo "  install dir: $INSTALL_DIR"
 echo "  port:        $PORT"
@@ -79,7 +87,7 @@ URL="http://127.0.0.1:${PORT}"
 export APP_PORT="$PORT"
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
-UVICORN="$INSTALL_DIR/venv/bin/uvicorn"
+VENV_PY="$INSTALL_DIR/venv/bin/python"
 LOG="$INSTALL_DIR/logs/odysseus-app.log"
 
 notify() { /usr/bin/osascript -e "display notification \"$1\" with title \"Odysseus\"" >/dev/null 2>&1; }
@@ -88,12 +96,11 @@ die_gui() {
   exit 1
 }
 
-[ -x "$UVICORN" ] || die_gui "Odysseus isn't set up yet. Open Terminal and run:
+[ -x "$VENV_PY" ] || die_gui "Odysseus isn't set up yet. Open Terminal and run:
 
 cd $INSTALL_DIR
-python3.11 -m venv venv
-./venv/bin/pip install -r requirements.txt
-./venv/bin/python setup.py"
+./start-macos.sh"
+RUNTIME_STATUS="$("$VENV_PY" "$INSTALL_DIR/src/python_runtime.py" 2>&1)" || die_gui "$RUNTIME_STATUS"
 
 # Open the UI in a chrome-less app window (Chromium browsers), else default browser.
 open_ui() {
@@ -124,9 +131,9 @@ fi
 notify "Starting…"
 cd "$INSTALL_DIR" || die_gui "Install folder not found: $INSTALL_DIR"
 if [ "$(uname -m)" = "arm64" ]; then
-  arch -arm64 "$UVICORN" app:app --host 127.0.0.1 --port "$PORT" >>"$LOG" 2>&1 &
+  arch -arm64 "$VENV_PY" -m uvicorn app:app --host 127.0.0.1 --port "$PORT" >>"$LOG" 2>&1 &
 else
-  "$UVICORN" app:app --host 127.0.0.1 --port "$PORT" >>"$LOG" 2>&1 &
+  "$VENV_PY" -m uvicorn app:app --host 127.0.0.1 --port "$PORT" >>"$LOG" 2>&1 &
 fi
 SERVER_PID=$!
 

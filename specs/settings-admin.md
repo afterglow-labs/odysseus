@@ -1,6 +1,6 @@
 # Settings And Admin Surfaces
 
-Last updated: dev@e71f8ce | 2026-08-25
+Last updated: 2026-10-02
 
 ## Scope
 
@@ -78,6 +78,8 @@ Admin gates inherit the auth contracts in `auth-security.md`: normal deployments
 `static/js/settings.js` owns domain panel load/save behavior and compatibility exports, while `static/js/settings/registry.js` is the canonical group/panel metadata inventory. `navigation.js` activates panels and lazy admin content, `search.js` implements the registry-backed finder while filtering admin-only entries, `lifecycle.js` owns modal open/close/Escape/drag/docking behavior, `sidebar.js` owns persisted collapse/resize state, and `dom.js` holds shared DOM helpers. Registry/DOM consistency is a tested contract; new panels must update both the registry metadata and actual DOM. `static/js/appConfig.js` shares one promise cache for settings and tool reads across frontend modules, consumes a login-page settings prefetch once, drops rejected promises for retry, and requires settings/tool writers to invalidate the matching cache; `/api/tools` writes invalidate both entries because disabled tools live in settings state.
 
 Settings panels cover provider/model/search/research/reminder/email/CalDAV/CardDAV/vault, accessibility/font/text-size, scoped tokens, and unified integrations. The hidden legacy fallback editor was removed; no current Settings panel exposes the new foreground fallback keys, so opt-in exists only through owner-scoped preferences/internal callers until a deliberate UI is added. Email OAuth connect preserves the selected SMTP security mode and returns to the Settings surface after callback. `static/js/admin.js` owns user/admin panels, model endpoints, builtin tool toggles, MCP forms, feature toggles, token/webhook panels, diagnostics, backup/import, and danger-zone wipes.
+
+The Experience group contains Appearance, Behavior, and Shortcuts. Behavior owns the question-mark help trigger setting: `hover` (default, “Hover”) or `click` (“Click”). The scalar preference is stored per user through `/api/prefs/tooltip-trigger`, not in admin settings. Mouse-opened help closes when the pointer leaves the button and tooltip, with a short grace period to move between them; clicking the button again or clicking outside also closes it. Both modes support Enter/Space on a focused help button, and keyboard-opened help stays available until dismissed or focus moves away. Touch users can tap again or outside to dismiss. The panel includes an interactive preview. This setting applies to the shared Settings field-help component in `static/js/settings/helpHints.js`; native browser `title` tooltips elsewhere are unaffected.
 
 Logout/user-switch flows clear local/session storage to avoid stale cross-account UI state.
 

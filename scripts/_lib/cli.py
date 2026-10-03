@@ -44,6 +44,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from src.python_runtime import require_supported_python
+
+require_supported_python()
+
 
 def quiet_logs() -> None:
     """Force the root logger down to WARNING (overridable via

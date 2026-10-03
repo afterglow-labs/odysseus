@@ -1,16 +1,19 @@
 # src/tts_service.py
 """Multi-provider TTS service — dispatches to local Kokoro, OpenAI-compatible API, or browser."""
 
-import io
 import os
-import wave
 import logging
 import hashlib
+import math
+import tempfile
+import threading
 import httpx
 from pathlib import Path
 from typing import Optional, Dict, Any
 
 from src.constants import TTS_CACHE_DIR
+from services.tts import kokoro_runtime
+from services.tts.kokoro_runtime import KokoroPipeline as _KokoroPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +27,7 @@ def _safe_speed(value, default: float = 1.0) -> float:
         speed = float(value)
     except (TypeError, ValueError):
         return default
-    return speed if speed > 0 else default
+    return speed if math.isfinite(speed) and speed > 0 else default
 
 
 class TTSService:
@@ -34,7 +37,7 @@ class TTSService:
     Providers:
       "disabled"        — no TTS
       "browser"         — client-side Web Speech API (no server synthesis)
-      "local"           — Kokoro-82M on GPU
+      "local"           — Kokoro-82M on CPU (sherpa-onnx)
       "endpoint:<id>"   — OpenAI-compatible /audio/speech via ModelEndpoint
     """
 
@@ -42,6 +45,8 @@ class TTSService:
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._kokoro = None  # lazy-init
+        self._kokoro_lock = threading.Lock()
+        self._cache_lock = threading.RLock()
         
         try:
             self.max_cache_bytes = int(os.getenv("ODYSSEUS_TTS_CACHE_MAX_BYTES", 500 * 1024 * 1024))
@@ -72,8 +77,11 @@ class TTSService:
         if provider == "browser":
             return True  # handled client-side
         if provider == "local":
-            kokoro = self._get_kokoro()
-            return kokoro is not None and kokoro.available
+            # Capability polling must not download or load a 350 MB model.
+            # Explicit synthesis performs the lazy initialization below.
+            # A previous initialization error remains visible in stats, but
+            # must not prevent a later explicit request from retrying it.
+            return bool(self._kokoro and self._kokoro.available) or kokoro_runtime.is_installed()
         if isinstance(provider, str) and provider.startswith("endpoint:"):
             return True  # assume reachable; errors surface at synthesis time
         return False
@@ -85,20 +93,43 @@ class TTSService:
         return hashlib.sha256(raw.encode()).hexdigest()
 
     def _get_cached(self, key: str) -> Optional[bytes]:
-        for ext in (".mp3", ".wav"):
-            path = self.cache_dir / f"{key}{ext}"
-            if path.exists():
-                return path.read_bytes()
+        with self._cache_lock:
+            for ext in (".mp3", ".wav"):
+                path = self.cache_dir / f"{key}{ext}"
+                try:
+                    return path.read_bytes()
+                except FileNotFoundError:
+                    continue
         return None
 
     def _put_cache(self, key: str, data: bytes):
         ext = ".mp3" if (len(data) >= 3 and (data[:3] == b'ID3' or (data[0] == 0xff and (data[1] & 0xe0) == 0xe0))) else ".wav"
-        (self.cache_dir / f"{key}{ext}").write_bytes(data)
-
-        self._enforce_cache_limit()
+        temporary = None
+        with self._cache_lock:
+            try:
+                # core.atomic_io supports text/JSON only. Publish binary audio
+                # using the same sibling-temp + fsync + replace pattern.
+                with tempfile.NamedTemporaryFile(dir=self.cache_dir, prefix=".tts-", suffix=".tmp", delete=False) as output:
+                    temporary = Path(output.name)
+                    output.write(data)
+                    output.flush()
+                    os.fsync(output.fileno())
+                os.replace(temporary, self.cache_dir / f"{key}{ext}")
+                temporary = None
+                self._enforce_cache_limit()
+            except OSError:
+                # Cache failures must not discard successfully synthesized audio.
+                logger.warning("Failed to cache TTS audio", exc_info=True)
+            finally:
+                if temporary is not None:
+                    try:
+                        temporary.unlink()
+                    except OSError:
+                        pass
 
     def _enforce_cache_limit(self):
-            """Evicts oldest files if the cache exceeds the configured byte limit."""
+        """Evict oldest audio files while holding the cache lock only."""
+        with self._cache_lock:
             if self.max_cache_bytes <= 0:
                 return
 
@@ -144,16 +175,23 @@ class TTSService:
 
     def clear_cache(self):
         count = 0
-        for f in self.cache_dir.glob("*.*"):
-            f.unlink()
-            count += 1
+        with self._cache_lock:
+            for f in self.cache_dir.iterdir():
+                if f.suffix.lower() not in (".mp3", ".wav"):
+                    continue
+                try:
+                    f.unlink()
+                    count += 1
+                except FileNotFoundError:
+                    continue
         logger.info(f"Cleared {count} cached TTS files")
 
     # ── Kokoro (local) ──
 
     def _get_kokoro(self):
-        if self._kokoro is None:
-            self._kokoro = _KokoroPipeline()
+        with self._kokoro_lock:
+            if self._kokoro is None or not self._kokoro.available:
+                self._kokoro = _KokoroPipeline()
         return self._kokoro
 
     # ── API endpoint ──
@@ -223,7 +261,7 @@ class TTSService:
         if provider == "local":
             kokoro = self._get_kokoro()
             if kokoro and kokoro.available:
-                audio_data = kokoro.synthesize_raw(text, voice)
+                audio_data = kokoro.synthesize_raw(text, voice, speed=speed)
             else:
                 logger.warning("Kokoro TTS not available")
                 return None
@@ -255,8 +293,17 @@ class TTSService:
         provider = settings["tts_provider"]
         tts_enabled = settings.get("tts_enabled", True)
 
-        cache_files = list(self.cache_dir.glob("*.wav")) + list(self.cache_dir.glob("*.mp3"))
-        cache_size = sum(f.stat().st_size for f in cache_files)
+        cache_entries = 0
+        cache_size = 0
+        with self._cache_lock:
+            for f in self.cache_dir.iterdir():
+                if f.suffix.lower() not in (".mp3", ".wav"):
+                    continue
+                try:
+                    cache_size += f.stat().st_size
+                    cache_entries += 1
+                except FileNotFoundError:
+                    continue
 
         is_available = self.available and tts_enabled
         stats = {
@@ -266,78 +313,26 @@ class TTSService:
             "model": settings["tts_model"],
             "voice": settings["tts_voice"],
             "speed": _safe_speed(settings.get("tts_speed", "1")),
-            "cache_entries": len(cache_files),
+            "cache_entries": cache_entries,
             "cache_size_mb": round(cache_size / (1024 * 1024), 2),
         }
 
         if provider == "local":
-            kokoro = self._get_kokoro()
-            stats["model"] = "Kokoro-82M (GPU)" if (kokoro and kokoro.available) else "Kokoro (not loaded)"
+            kokoro = self._kokoro
+            stats["model"] = "Kokoro-82M (CPU)"
+            stats["model_loaded"] = bool(kokoro and kokoro.available)
+            stats["model_cached"] = kokoro_runtime.is_model_cached()
+            if kokoro and getattr(kokoro, "error", None):
+                stats["error"] = kokoro.error
+            elif not kokoro_runtime.is_installed():
+                stats["error"] = ("Local TTS requires: python -m pip install --require-hashes "
+                                  "-r requirements.lock -r requirements-optional.lock")
         elif provider == "browser":
             stats["model"] = "Browser (Web Speech API)"
         elif provider.startswith("endpoint:"):
             stats["endpoint_id"] = provider.split(":", 1)[1]
 
         return stats
-
-
-class _KokoroPipeline:
-    """Encapsulates the Kokoro-82M local GPU pipeline."""
-
-    def __init__(self):
-        self.pipeline = None
-        self.available = False
-        self.device = None
-        self._init()
-
-    def _init(self):
-        try:
-            import torch
-            from kokoro import KPipeline
-
-            if not torch.cuda.is_available():
-                logger.warning("CUDA not available for Kokoro TTS")
-                return
-
-            self.device = torch.device("cuda:0")
-            with torch.cuda.device(0):
-                self.pipeline = KPipeline(lang_code="a")
-                if hasattr(self.pipeline, "model"):
-                    self.pipeline.model = self.pipeline.model.to(self.device)
-            self.available = True
-            logger.info("Kokoro-82M TTS pipeline loaded")
-        except ImportError as e:
-            logger.warning(f"Kokoro TTS not available: {e}")
-            logger.warning("Install with: pip install kokoro soundfile")
-        except Exception as e:
-            logger.error(f"Kokoro init failed: {e}", exc_info=True)
-
-    def synthesize_raw(self, text: str, voice: str = "af_heart") -> Optional[bytes]:
-        if not self.available:
-            return None
-        try:
-            import torch
-            import numpy as np
-
-            with torch.cuda.device(self.device):
-                chunks = []
-                for _, _, audio in self.pipeline(text, voice=voice):
-                    chunks.append(audio)
-
-            if not chunks:
-                return None
-
-            full = np.concatenate(chunks)
-            buf = io.BytesIO()
-            with wave.open(buf, "wb") as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)
-                wf.setframerate(24000)
-                wf.writeframes((full * 32767).astype(np.int16).tobytes())
-            return buf.getvalue()
-        except Exception as e:
-            logger.error(f"Kokoro synthesis failed: {e}", exc_info=True)
-            return None
 
 
 # Module-level singleton

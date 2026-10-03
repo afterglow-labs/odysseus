@@ -1,4 +1,4 @@
-"""Tests for auth policy endpoint and password length validation."""
+"""Tests for auth policy endpoint and required password validation."""
 
 import asyncio
 import importlib
@@ -47,10 +47,13 @@ async def _immediate_to_thread(fn, *args, **kwargs):
 # ── AuthManager.policy() ───────────────────────────────────────────────
 
 
-def test_policy_returns_password_min_length(tmp_path):
+def test_policy_requires_password_without_character_count(tmp_path):
     mgr = _make_manager(tmp_path)
     policy = mgr.policy()
-    assert policy["password_min_length"] == 8
+    assert policy["password_required"] is True
+    assert set(policy) == {
+        "password_required", "reserved_usernames", "signup_enabled", "session_days"
+    }
 
 
 def test_policy_returns_reserved_usernames(tmp_path):
@@ -95,7 +98,7 @@ def test_policy_endpoint_returns_dict(tmp_path):
     endpoint = _policy_endpoint(mgr)
     result = asyncio.run(endpoint())
     assert isinstance(result, dict)
-    assert "password_min_length" in result
+    assert result["password_required"] is True
     assert "reserved_usernames" in result
     assert "signup_enabled" in result
     assert "session_days" in result
@@ -108,7 +111,7 @@ def test_policy_endpoint_values_match_manager(tmp_path):
     assert result == mgr.policy()
 
 
-# ── Password length validation ─────────────────────────────────────────
+# ── Required passwords, with no character-count requirement ───────────
 
 
 def _setup_endpoint(auth_manager):
@@ -147,74 +150,82 @@ def _change_password_endpoint(auth_manager):
     raise AssertionError("change-password route not found")
 
 
-def test_setup_rejects_short_password(tmp_path):
+def _admin_create_endpoint(auth_manager):
+    sys.modules.pop("routes.auth_routes", None)
+    _real_core_package()
+    from routes.auth_routes import CreateUserRequest, setup_auth_routes
+
+    router = setup_auth_routes(auth_manager)
+    for route in router.routes:
+        if getattr(route, "path", None) == "/api/auth/users" and "POST" in route.methods:
+            return route.endpoint, CreateUserRequest
+    raise AssertionError("admin create route not found")
+
+
+def _password_request(tmp_path, flow, password):
     mgr = _make_manager(tmp_path)
-    endpoint, SetupRequest = _setup_endpoint(mgr)
-    request = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"))
-    body = SetupRequest(username="admin", password="short")
-
-    with pytest.raises(HTTPException) as exc:
-        asyncio.run(endpoint(body=body, request=request))
-
-    assert exc.value.status_code == 400
-    assert "8 characters" in exc.value.detail
-
-
-def test_signup_rejects_short_password(tmp_path):
-    mgr = _make_manager(tmp_path)
-    mgr.create_user("admin", "admin-password", is_admin=True)
-    mgr.signup_enabled = True
-    endpoint, SignupRequest = _signup_endpoint(mgr)
-    request = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"))
-    body = SignupRequest(username="newuser", password="short")
-
-    with pytest.raises(HTTPException) as exc:
-        asyncio.run(endpoint(body=body, request=request))
-
-    assert exc.value.status_code == 400
-    assert "8 characters" in exc.value.detail
-
-
-def test_change_password_rejects_short_password(tmp_path):
-    mgr = _make_manager(tmp_path)
-    mgr.create_user("alice", "old-password", is_admin=False)
-    endpoint, ChangePasswordRequest = _change_password_endpoint(mgr)
     request = SimpleNamespace(
         cookies={"odysseus_session": "current-token"},
         client=SimpleNamespace(host="127.0.0.1"),
     )
-    # Mock get_username_for_token to return alice
-    mgr.get_username_for_token = MagicMock(return_value="alice")
-    body = ChangePasswordRequest(current_password="old-password", new_password="short")
+    username = "newuser"
+    if flow == "setup":
+        endpoint, body_type = _setup_endpoint(mgr)
+    elif flow == "signup":
+        mgr.create_user("admin", "admin-password", is_admin=True)
+        mgr.signup_enabled = True
+        endpoint, body_type = _signup_endpoint(mgr)
+    elif flow == "admin-create":
+        mgr.create_user("admin", "admin-password", is_admin=True)
+        mgr.get_username_for_token = MagicMock(return_value="admin")
+        endpoint, body_type = _admin_create_endpoint(mgr)
+    else:
+        mgr.create_user(username, "old-password")
+        mgr.get_username_for_token = MagicMock(return_value=username)
+        endpoint, body_type = _change_password_endpoint(mgr)
+        body = body_type(current_password="old-password", new_password=password)
+        return mgr, username, endpoint, body, request
+    body = body_type(username=username, password=password)
+    return mgr, username, endpoint, body, request
 
-    with pytest.raises(HTTPException) as exc:
-        asyncio.run(endpoint(body=body, request=request))
 
-    assert exc.value.status_code == 400
-    assert "8 characters" in exc.value.detail
-
-
-def test_setup_accepts_exactly_min_length_password(tmp_path):
-    mgr = _make_manager(tmp_path)
-    endpoint, SetupRequest = _setup_endpoint(mgr)
-    request = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"))
-    body = SetupRequest(username="admin", password="12345678")
+@pytest.mark.parametrize("flow", ["setup", "signup", "admin-create", "change-password"])
+@pytest.mark.parametrize("password", ["a", "sixsix"])
+def test_password_routes_accept_short_nonempty_passwords(tmp_path, flow, password):
+    mgr, username, endpoint, body, request = _password_request(tmp_path, flow, password)
 
     result = asyncio.run(endpoint(body=body, request=request))
 
-    assert result == {"ok": True, "message": "Admin account created"}
+    assert result["ok"] is True
+    assert mgr.verify_password(username, password)
+    if flow == "change-password":
+        assert not mgr.verify_password(username, "old-password")
 
 
-def test_setup_rejects_seven_char_password(tmp_path):
-    mgr = _make_manager(tmp_path)
-    endpoint, SetupRequest = _setup_endpoint(mgr)
-    request = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"))
-    body = SetupRequest(username="admin", password="1234567")
+@pytest.mark.parametrize("flow", ["setup", "signup", "admin-create", "change-password"])
+def test_password_routes_reject_empty_passwords(tmp_path, flow):
+    mgr, username, endpoint, body, request = _password_request(tmp_path, flow, "")
 
     with pytest.raises(HTTPException) as exc:
         asyncio.run(endpoint(body=body, request=request))
 
     assert exc.value.status_code == 400
+    assert exc.value.detail == "Password is required"
+    if flow == "change-password":
+        assert mgr.verify_password(username, "old-password")
+    else:
+        assert username not in mgr.users
+
+
+def test_core_rejects_empty_passwords_without_changing_accounts(tmp_path):
+    mgr = _make_manager(tmp_path)
+    assert not mgr.setup("admin", "")
+    assert not mgr.create_user("alice", "")
+    assert not mgr.is_configured
+
+    assert mgr.create_user("alice", "a")
+    assert not mgr.change_password("alice", "a", "")
+    assert mgr.verify_password("alice", "a")
 
 
 # ── Login "remember me" cookie lifetime ────────────────────────────────

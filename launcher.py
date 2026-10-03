@@ -20,6 +20,8 @@ import webbrowser
 if __name__ == "__main__":
     import multiprocessing
     multiprocessing.freeze_support()
+    from src.python_runtime import require_supported_python
+    require_supported_python()
 
 # Define a dummy NullWriter to suppress standard stream crashes (isatty etc.) in GUI mode
 class NullWriter:

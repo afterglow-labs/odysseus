@@ -292,3 +292,33 @@ class TestResearchPrimerPreserved:
         trimmed = trim_for_context(msgs, context_length=1024, reserve_tokens=256)
         joined = "\n".join(str(m.get("content", "")) for m in trimmed)
         assert "You are Odysseus." in joined
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('use_utility', [False, True])
+async def test_reasoning_effort_applies_to_same_model_compaction_only(monkeypatch, use_utility):
+    calls = []
+    monkeypatch.setattr(cc, 'get_context_length', lambda *args: 100)
+    utility = ('https://utility.example/v1', 'other-model', {}) if use_utility else (None, None, None)
+    monkeypatch.setattr(cc, 'resolve_endpoint', lambda *args, **kwargs: utility)
+
+    async def summarize(*args, **kwargs):
+        calls.append((args, kwargs))
+        return 'summary'
+
+    monkeypatch.setattr(cc, 'llm_call_async', summarize)
+    messages = [
+        {'role': 'system', 'content': 'system ' * 100},
+        {'role': 'user', 'content': 'one'},
+        {'role': 'assistant', 'content': 'two'},
+        {'role': 'user', 'content': 'three'},
+        {'role': 'assistant', 'content': 'four'},
+        {'role': 'user', 'content': 'five'},
+    ]
+    _, _, compacted = await cc.maybe_compact(
+        None, 'https://chatgpt.com/backend-api/codex', 'gpt-6-sol', messages,
+        persist=False, reasoning_effort='high',
+    )
+    assert compacted
+    assert len(calls) == 1
+    assert calls[0][1].get('reasoning_effort') == (None if use_utility else 'high')

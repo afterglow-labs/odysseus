@@ -36,6 +36,11 @@ def test_plain_names_pass_through():
     assert _pip_dist_name({"name": "hf_transfer", "pip": "hf_transfer"}) == "hf_transfer"
 
 
+def test_git_installs_use_their_distribution_not_the_repository_url():
+    assert _pip_dist_name({"name": "boogu_image_mlx", "pip": "git+https://github.com/xocialize/boogu-image-mlx.git"}) == "boogu-image-mlx"
+    assert _pip_dist_name({"name": "krea_diffusers", "pip": "git+https://github.com/huggingface/diffusers.git torchvision"}) == "diffusers"
+
+
 def test_falls_back_to_import_name_when_no_pip_spec():
     # System rows (tmux/docker) declare no pip spec; fall back to the munged name.
     assert _pip_dist_name({"name": "some_mod", "pip": ""}) == "some-mod"
@@ -52,8 +57,7 @@ def test_route_uses_dist_name_helper_not_munged_import_name():
 
 
 def test_transformers_is_listed_as_image_dependency():
-    src = (Path(__file__).resolve().parents[1] / "routes" / "shell_routes.py").read_text(encoding="utf-8")
-
-    assert '"name": "transformers"' in src
-    assert '"pip": "transformers"' in src
-    assert '"transformers",' in src
+    from src.dependency_catalog import dependency_catalog
+    package = next(p for p in dependency_catalog() if p["name"] == "transformers")
+    assert package["pip"] == "transformers"
+    assert package["category"] == "Image"

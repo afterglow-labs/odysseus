@@ -63,7 +63,7 @@ Provider runtime:
 
 - `disabled` returns unavailable and avoids provider calls;
 - `browser` is client-side only through `speechSynthesis`;
-- `local` currently means Kokoro and requires `torch`, `kokoro`, `soundfile`, and CUDA/import availability;
+- `local` means Kokoro ONNX via `sherpa-onnx` on the application's Python 3.14 runtime; CPU inference requires no torch/CUDA installation;
 - `endpoint:<id>` resolves a `ModelEndpoint` and posts to `/audio/speech`.
 - unknown or non-string `tts_provider` values are treated as unavailable rather
   than being parsed as endpoint strings.
@@ -109,7 +109,7 @@ TTS cached audio can contain sensitive assistant text rendered as speech. The ca
 
 - Optional local speech packages may be absent.
 - Local STT can run CPU-only and tolerates missing/broken torch by falling back to CPU/int8 behavior.
-- Local TTS/Kokoro extras are declared as `kokoro==0.9.4` plus `soundfile` only for Python 3.11-3.12; Python 3.13+ intentionally skips them because Kokoro excludes those runtimes. Even where installed, local Kokoro remains unavailable without a CUDA-capable torch build/GPU.
+- Local TTS uses locked `sherpa-onnx==1.13.8`. `services/tts/kokoro_runtime.py` owns the official Kokoro model download, SHA256 verification, bounded extraction, atomic cache publication, named English voices, and CPU synthesis. Models live under `TTS_MODEL_DIR` inside the configured data directory. First synthesis needs the model bundle unless already cached. Availability/statistics checks do not download or load the model; synchronous TTS routes run in FastAPI's threadpool to keep downloads and inference off the event loop.
 - External endpoint providers can be offline or misconfigured and may only fail at request time.
 - Browser `speechSynthesis`, `SpeechRecognition`, `webkitSpeechRecognition`, secure context, and microphone permissions can be absent.
 - Docker GPU overlays are passthrough-only and do not install speech engines by themselves.

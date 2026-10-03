@@ -71,7 +71,7 @@
         // Apply advanced overrides if present
         if (c.advanced) {
           var a = c.advanced;
-          var advMap = {userBubbleBg:'--user-bubble-bg',aiBubbleBg:'--ai-bubble-bg',bubbleBorder:'--bubble-border',sidebarBg:'--sidebar-bg',sectionAccent:'--section-accent',brandColor:'--brand-color',inputBg:'--input-bg',inputBorder:'--input-border',sendBtnBg:'--send-btn-bg',sendBtnHover:'--send-btn-hover',codeBg:'--code-bg',codeFg:'--code-fg',toggleBg:'--toggle-bg',toggleActive:'--toggle-active',accentPrimary:'--accent-primary',accentError:'--accent-error'};
+          var advMap = {userBubbleBg:'--user-bubble-bg',aiBubbleBg:'--ai-bubble-bg',bubbleBorder:'--bubble-border',sidebarBg:'--sidebar-bg',sectionAccent:'--section-accent',brandColor:'--brand-color',inputBg:'--input-bg',inputBorder:'--input-border',sendBtnBg:'--send-btn-bg',sendBtnHover:'--send-btn-hover',codeBg:'--code-bg',codeFg:'--code-fg',toggleBg:'--toggle-bg',toggleActive:'--toggle-active',accentPrimary:'--accent-primary',accentError:'--accent-error',accentText:'--accent-text'};
           for (var k in advMap) { if (a[k]) s.setProperty(advMap[k], a[k]); }
         }
       }
@@ -665,6 +665,7 @@
             <label class="theme-fd-label">Background / Effect</label>
             <select id="theme-bg-pattern-select" class="theme-fd-select">
               <option value="none">Solid</option>
+              <option value="afterglow">Afterglow glow</option>
               <option value="dots">Dots</option>
               <option value="synapse">Synapse</option>
               <option value="rain">Rain</option>
@@ -1047,6 +1048,11 @@
         <!-- Model picker (inside chatbox, top-right) -->
         <div class="model-picker-wrap" id="model-picker-wrap">
           <button type="button" class="model-picker-btn" id="model-picker-btn" title="Switch model"><span id="model-picker-label">Select model</span> <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 15 12 9 18 15"/></svg></button>
+          <div class="model-picker-reasoning" id="model-picker-reasoning-row" hidden>
+            <label for="model-picker-reasoning" class="a11y-visually-hidden">Reasoning effort</label>
+            <select id="model-picker-reasoning" title="Reasoning effort" aria-describedby="model-picker-reasoning-help"><option value="">Provider default</option></select>
+            <small id="model-picker-reasoning-help" class="a11y-visually-hidden">Uses provider default.</small>
+          </div>
           <div class="model-picker-menu hidden" id="model-picker-menu">
             <div class="model-picker-search-row">
               <div class="model-picker-search-wrap">
@@ -1060,6 +1066,11 @@
               </button>
             </div>
             <div class="model-picker-list" id="model-picker-list"></div>
+            <div class="model-picker-daybreak" id="model-picker-daybreak-row" hidden>
+              <label><input type="checkbox" id="model-picker-daybreak" aria-describedby="model-picker-daybreak-help"> Daybreak</label>
+              <span id="model-picker-daybreak-model"></span>
+              <small id="model-picker-daybreak-help">Uses your account’s approved access for this model.</small>
+            </div>
           </div>
         </div>
         <script nonce="{{CSP_NONCE}}">
@@ -1492,10 +1503,14 @@
             <span>Reminders</span>
           </button>
           <div class="settings-sidebar-divider"></div>
-          <!-- Section 3: UX (Appearance → Shortcuts) -->
+          <!-- Section 3: UX (Appearance → Behavior → Shortcuts) -->
           <button class="settings-nav-item" data-settings-tab="appearance">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a7 7 0 0 0 0 20 4 4 0 0 1 0-8 4 4 0 0 0 0-8"/></svg>
             <span>Appearance</span>
+          </button>
+          <button class="settings-nav-item" data-settings-tab="behavior">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 3 7.07 17 2.51-7.39L21 10.07 4 3z"/></svg>
+            <span>Behavior</span>
           </button>
           <button class="settings-nav-item" data-settings-tab="shortcuts">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10"/></svg>
@@ -2003,6 +2018,23 @@
         <!-- ═══ THEME TAB ═══ -->
 
         <!-- ═══ MEMORY TAB ═══ -->
+        <!-- ═══ BEHAVIOR TAB ═══ -->
+        <div data-settings-panel="behavior" class="hidden">
+          <div class="admin-card">
+            <h2><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:5px;opacity:0.6" aria-hidden="true"><path d="m4 3 7.07 17 2.51-7.39L21 10.07 4 3z"/></svg>Behavior</h2>
+            <div class="settings-row">
+              <label for="set-tooltip-trigger" class="settings-label">Help tooltips</label>
+              <select id="set-tooltip-trigger" class="settings-select" aria-describedby="set-tooltip-trigger-help">
+                <option value="hover" selected>Hover</option>
+                <option value="click">Click</option>
+              </select>
+              <span id="set-tooltip-preview"></span>
+            </div>
+            <p id="set-tooltip-trigger-help" class="admin-toggle-sub" style="margin:8px 0 0;">Choose how question-mark help opens. Keyboard users can press Enter or Space in either mode.</p>
+            <p id="set-tooltip-trigger-msg" class="admin-toggle-sub" role="status" style="margin:6px 0 0;"></p>
+          </div>
+        </div>
+
         <!-- ═══ SHORTCUTS TAB ═══ -->
         <div data-settings-panel="shortcuts" class="hidden">
           <div class="admin-card" style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;">

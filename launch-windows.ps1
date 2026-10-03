@@ -15,7 +15,8 @@
 #>
 param(
     [int]$Port = 7000,
-    [string]$BindHost = "127.0.0.1"
+    [string]$BindHost = "127.0.0.1",
+    [switch]$CheckPython
 )
 
 $ErrorActionPreference = "Stop"
@@ -26,7 +27,6 @@ function Fail($msg) {
     Write-Host ""
     Write-Host ("ERROR: " + $msg) -ForegroundColor Red
     Write-Host ""
-    Read-Host "Press Enter to exit"
     exit 1
 }
 
@@ -62,77 +62,43 @@ function Find-GitBash {
     return $null
 }
 
-# 1. Locate a Python interpreter (3.11+ required)
+# 1. Select only the supported Python, including an existing environment.
 Write-Step "Checking for Python"
-function Get-PythonVersionText($launcher, $launcherArgs) {
-    try {
-        return (& $launcher @launcherArgs -c "import sys; print('.'.join(map(str, sys.version_info[:3])))" 2>$null).Trim()
-    } catch {
-        return $null
-    }
-}
+. (Join-Path $PSScriptRoot "scripts\_lib\python-runtime.ps1")
+try { $runtime = Resolve-OdysseusPython -RepoDir $PSScriptRoot }
+catch { Fail $_.Exception.Message }
+Write-Host $runtime.Status
+if ($CheckPython) { exit 0 }
+$pyExe = $runtime.Executable
+$pyArgs = $runtime.Arguments
 
-$pyExe = $null
-$pyArgs = @()
-$pyVersion = $null
-
-$pyLauncher = Get-Command py -ErrorAction SilentlyContinue
-if ($pyLauncher) {
-    foreach ($v in @("-3.13", "-3.12", "-3.11")) {
-        $ver = Get-PythonVersionText $pyLauncher.Source @($v)
-        if ($ver) {
-            $pyExe = $pyLauncher.Source
-            $pyArgs = @($v)
-            $pyVersion = $ver
-            break
-        }
-    }
-}
-
-if (-not $pyExe) {
-    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-    if ($pythonCmd) {
-        $ver = Get-PythonVersionText $pythonCmd.Source @()
-        if ($ver) {
-            $versionParts = $ver.Split('.')
-            $major = [int]$versionParts[0]
-            $minor = [int]$versionParts[1]
-            if ($major -gt 3 -or ($major -eq 3 -and $minor -ge 11)) {
-                $pyExe = $pythonCmd.Source
-                $pyVersion = $ver
-            }
-        }
-    }
-}
-
-if ($pyExe -like "*WindowsApps*python.exe") {
-    $pyCmd = Get-Command py -ErrorAction SilentlyContinue
-    if ($pyCmd) {
-        $pyExe = $pyCmd.Source
-        $pyArgs = @("-3.11")
-    }
-}
-
-if (-not $pyExe) {
-    Fail "Couldn't find Python 3.11+ for Windows setup. Install Python 3.11+ (or open the Python launcher with 'py -3.11') from https://www.python.org/downloads/, then re-run this script."
-}
-$pythonLabel = ("Using Python {0}: {1} {2}" -f $pyVersion, $pyExe, ($pyArgs -join ' ')).TrimEnd()
-Write-Host $pythonLabel
-
-# 2. Create the virtualenv if missing
+# 2. Create the virtualenv if missing; incompatible environments fail above.
 $venvPy = Join-Path $PSScriptRoot "venv\Scripts\python.exe"
-if (-not (Test-Path $venvPy)) {
+if (-not $runtime.Venv) {
     Write-Step "Creating virtual environment (venv)"
     & $pyExe @pyArgs -m venv venv
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $venvPy)) { Fail "Failed to create the virtual environment." }
-} else {
-    Write-Host "venv already exists - skipping creation."
 }
+& $venvPy (Join-Path $PSScriptRoot "src\python_runtime.py")
+if ($LASTEXITCODE -ne 0) { Fail "The virtual environment does not use the supported Python." }
 
 # 3. Install / update dependencies
 Write-Step "Installing dependencies (first run can take a few minutes)"
+& $venvPy -c "import importlib.util; raise SystemExit(importlib.util.find_spec('pip') is None)"
+if ($LASTEXITCODE -ne 0) {
+    & $venvPy -m ensurepip --upgrade
+    if ($LASTEXITCODE -ne 0) { Fail "Unable to bootstrap pip in the existing environment." }
+}
 & $venvPy -m pip install --upgrade pip --quiet
-& $venvPy -m pip install -r requirements.txt
+if ($LASTEXITCODE -ne 0) { Fail "pip upgrade failed." }
+$installArgs = @()
+& $venvPy -c "import importlib.metadata as m; raise SystemExit('chromadb-client' not in {d.metadata['Name'].lower() for d in m.distributions()})"
+if ($LASTEXITCODE -eq 0) {
+    & $venvPy -m pip uninstall -y chromadb-client
+    if ($LASTEXITCODE -ne 0) { Fail "Unable to remove the old conflicting Chroma client." }
+    $installArgs += "--force-reinstall"
+}
+& $venvPy -m pip install @installArgs --require-hashes -r requirements.lock
 if ($LASTEXITCODE -ne 0) { Fail "Dependency install failed. Scroll up for the pip error." }
 
 # 4. First-time setup (creates data dirs, DB, .env, admin user)

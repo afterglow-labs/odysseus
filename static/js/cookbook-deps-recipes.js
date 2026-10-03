@@ -121,7 +121,7 @@ const _RECIPES = [
     label: 'Any Diffusers image model',
     match: () => true,
     variants: {
-      pip:    { commands: ['python -m pip install -U "diffusers[torch]" torchvision accelerate scipy python-multipart'] },
+      pip:    { commands: ['python -m pip install -U "diffusers[torch]" torchvision transformers accelerate scipy python-multipart'] },
     },
   },
   {
@@ -129,7 +129,7 @@ const _RECIPES = [
     label: 'Latest Diffusers from Git',
     match: () => true,
     variants: {
-      pip:    { commands: ['python -m pip install -U git+https://github.com/huggingface/diffusers.git torchvision accelerate scipy python-multipart'] },
+      pip:    { commands: ['python -m pip install -U git+https://github.com/huggingface/diffusers.git torchvision transformers accelerate scipy python-multipart'] },
     },
   },
   {
@@ -147,8 +147,8 @@ const _RECIPES = [
     label: 'Any GGUF model',
     match: () => true,
     variants: {
-      pip:    { commands: ['CMAKE_ARGS="-DGGML_CUDA=on" uv pip install -U "llama-cpp-python[server]"'] },
-      docker: { commands: ['docker pull ghcr.io/ggml-org/llama.cpp:server-cuda'] },
+      pip:    { commands: ['python -m pip install -U "llama-cpp-python[server]"'] },
+      docker: { commands: ['docker pull ghcr.io/ggml-org/llama.cpp:server'] },
     },
   },
 ];
@@ -158,8 +158,27 @@ export const RECIPE_DEFAULT_VARIANT = 'pip';
 
 // Get the commands array for a recipe + variant. Falls back to pip when
 // the requested variant isn't defined for the recipe.
-export function recipeCommands(recipe, variant) {
+export function recipeCommands(recipe, variant, target = {}) {
   if (!recipe) return [];
+  if (recipe.backend === 'llama_cpp') {
+    const platform = String(target.platform || '').toLowerCase();
+    const hardware = target.hardware;
+    const matchingScan = hardware && String(hardware._scannedHost || '') === String(target.host || '');
+    const backend = matchingScan ? String(hardware.system?.backend || '').toLowerCase() : '';
+    const isMac = ['darwin', 'macos', 'macosx', 'mac os'].includes(platform)
+      || (!platform && ['metal', 'mps', 'apple'].includes(backend));
+    const useCuda = platform === 'linux' && backend === 'cuda';
+    if (variant === 'docker') {
+      return [useCuda
+        ? 'docker pull ghcr.io/ggml-org/llama.cpp:server-cuda'
+        : 'docker pull ghcr.io/ggml-org/llama.cpp:server'];
+    }
+    const command = recipe.variants.pip.commands[0];
+    const option = isMac ? 'GGML_METAL' : (useCuda ? 'GGML_CUDA' : '');
+    // pip's CMake settings work in Bash and PowerShell. Source-build the
+    // accelerated variant so an available CPU wheel cannot ignore the flag.
+    return [option ? `${command} --no-binary=llama-cpp-python -C cmake.args="-D${option}=on"` : command];
+  }
   const v = (recipe.variants || {})[variant] || (recipe.variants || {}).pip;
   return (v && v.commands) || [];
 }

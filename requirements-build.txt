@@ -1,0 +1,5 @@
+# Portable application packaging. Resolved separately, constrained by the core
+# lock, so build tools cannot replace the application's tested dependencies.
+pyinstaller
+pystray
+Pillow

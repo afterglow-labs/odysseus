@@ -15,6 +15,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  dependency-locks:
+    name: Dependency lock freshness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version-file: .python-version
+      - name: Check checked-in dependency locks
+        run: |
+          python -m pip install uv==0.11.28
+          python scripts/lock_dependencies.py --check
+
   focused-test-guidance:
     name: Focused test guidance (report-only)
     if: github.event_name == 'pull_request'
@@ -25,6 +40,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version-file: .python-version
       - name: Report changed test paths
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -78,7 +96,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: "3.11"
+          python-version-file: .python-version
       # Byte-compile sources — catches syntax errors without installing deps.
       - run: python -m compileall -q app.py core routes src services scripts tests
 
@@ -136,11 +154,111 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         if: steps.docs-check.outputs.docs_only != 'true'
         with:
-          python-version: "3.11"
+          python-version-file: .python-version
           cache: pip
-      - run: pip install -r requirements.txt
+          cache-dependency-path: requirements.lock
+      - run: python -m pip install --require-hashes -r requirements.lock
         if: steps.docs-check.outputs.docs_only != 'true'
       - run: mkdir -p data  # sqlite DB lives at ./data/app.db
         if: steps.docs-check.outputs.docs_only != 'true'
       - run: python -m pytest -q
         if: steps.docs-check.outputs.docs_only != 'true'
+
+  native-runtime:
+    name: Native runtime (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version-file: .python-version
+          cache: pip
+          cache-dependency-path: |
+            requirements.lock
+            requirements-optional.lock
+      - name: Create native project environment
+        run: |
+          python -m venv venv
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            echo "$GITHUB_WORKSPACE/venv/Scripts" >> "$GITHUB_PATH"
+          else
+            echo "$GITHUB_WORKSPACE/venv/bin" >> "$GITHUB_PATH"
+          fi
+      - name: Install locked dependencies
+        run: |
+          python -m pip install --require-hashes -r requirements.lock
+          python -m pip check
+          python src/python_runtime.py
+      - name: Test platform and launcher contracts
+        run: >-
+          python -m pytest -q tests/test_python_runtime.py tests/test_platform_compat.py
+          tests/test_runtime_paths.py tests/test_launcher.py tests/test_setup_admin_user.py
+      - name: Check macOS launchers
+        if: runner.os == 'macOS'
+        run: |
+          bash -n start-macos.sh build-macos-app.sh
+          bash start-macos.sh --check-python
+          bash build-macos-app.sh --check-python
+      - name: Check Linux service installer
+        if: runner.os == 'Linux'
+        run: |
+          bash -n install-service.sh
+          bash install-service.sh --check-python
+      - name: Check Windows launchers
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          ./launch-windows.ps1 -CheckPython
+          ./build-windows-portable.ps1 -CheckPython
+      - name: Boot application and check readiness
+        run: python scripts/smoke_runtime.py
+      - name: Install and exercise optional speech dependencies
+        run: |
+          python -m pip install --require-hashes -r requirements.lock -r requirements-optional.lock
+          python -m pip check
+          python -m pytest -q tests/test_kokoro_runtime.py tests/test_stt_audio_runtime.py tests/test_kokoro_optional_requirements.py
+
+  container-runtime:
+    name: Container build and runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version-file: .python-version
+      - name: Read supported Python
+        id: python
+        run: echo "version=$(cat .python-version)" >> "$GITHUB_OUTPUT"
+      - name: Validate Compose deployments
+        run: |
+          docker compose -f docker-compose.yml config --quiet
+          docker compose -f docker-compose.yml -f docker/gpu.nvidia.yml config --quiet
+          docker compose -f docker-compose.yml -f docker/gpu.amd.yml config --quiet
+          docker compose -f docker-compose.gpu-nvidia.yml config --quiet
+          docker compose -f docker-compose.gpu-amd.yml config --quiet
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e  # v4.3.0
+      - name: Build runtime image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
+        with:
+          context: .
+          push: false
+          load: true
+          tags: odysseus:ci
+          build-args: PYTHON_VERSION=${{ steps.python.outputs.version }}
+          cache-from: type=gha,scope=runtime-ci
+          cache-to: type=gha,mode=max,scope=runtime-ci
+      - name: Test image startup and readiness
+        run: bash docker/smoke-image.sh odysseus:ci

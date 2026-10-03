@@ -330,8 +330,16 @@ def _pip_install_help_check_from_cmd(cmd: str) -> str | None:
     return f"{shlex.join(pip_prefix + ['install', '--help'])} 2>/dev/null | grep -q -- --break-system-packages"
 
 
-def _append_pip_install_runner_lines(runner_lines: list[str], cmd: str) -> None:
-    """Append a pip install command, guarding --break-system-packages support.
+def _append_pip_install_runner_lines(
+    runner_lines: list[str], cmd: str, *, bootstrap_pip: bool = False,
+    realesrgan_builder: str | None = None,
+) -> None:
+    """Append a pip install command, optionally bootstrapping its Python's pip.
+
+    Local uv-created environments may intentionally start without pip. Probe
+    the interpreter selected by the validated install command, not a separate
+    system Python. Keep bootstrap failure inside a subshell so the normal task
+    exit marker still receives its nonzero status without attempting install.
 
     The Dependencies UI may submit ``python3 -m pip install --user
     --break-system-packages ...`` for non-venv installs. That flag is useful on
@@ -339,20 +347,65 @@ def _append_pip_install_runner_lines(runner_lines: list[str], cmd: str) -> None:
     the NVIDIA CUDA base image) aborts with "no such option". Branch at runner
     time so stale browser JS and remote targets are handled by the server too.
     """
-    if "--break-system-packages" not in (cmd or ""):
-        runner_lines.append(cmd)
-        return
+    python_match = re.match(r"(.+?)\s+-m\s+pip\s+install(?:\s|$)", cmd or "")
+    bootstrap = bootstrap_pip and python_match is not None
+    try:
+        install_args = shlex.split(cmd[python_match.end():]) if python_match else []
+    except ValueError:
+        install_args = []
+    prepare_realesrgan = bool(realesrgan_builder and any(
+        re.match(r"^(?:realesrgan|basicsr|gfpgan|facexlib)(?:$|[<>=!~\[])", arg, re.IGNORECASE)
+        for arg in install_args
+    ))
+    if bootstrap or prepare_realesrgan:
+        runner_lines.append("(")
+    if bootstrap:
+        # Preserve shell quoting and variable expansion in the original prefix
+        # (for example, a quoted venv path or ${HOME}/venv/bin/python3).
+        python_cmd = python_match.group(1)
+        runner_lines.extend([
+            f"if ! {python_cmd} -m pip --version >/dev/null 2>&1; then",
+            '  echo "[odysseus] pip is missing; bootstrapping it in the selected Python environment."',
+            f"  {python_cmd} -m ensurepip --upgrade && {python_cmd} -m pip --version || {{",
+            "    _odysseus_pip_exit=$?",
+            '    echo "ERROR: Could not bootstrap pip. Install pip in the selected Python environment, then retry this dependency install." >&2',
+            '    exit "$_odysseus_pip_exit"',
+            "  }",
+            "fi",
+        ])
     help_check = _pip_install_help_check_from_cmd(cmd)
+    if prepare_realesrgan:
+        # The same fixed-source compatibility wheels used by Docker are needed
+        # on native Python 3.14 too. Prepare them before the original pip command
+        # so installs, updates, and retries all avoid the broken upstream sdists.
+        flags = ["--user"] if "--user" in install_args else []
+        runner_lines.append(f"_odysseus_wheel_flags=({shlex.join(flags)})")
+        if "--break-system-packages" in install_args and help_check:
+            runner_lines.extend([
+                f"if {help_check}; then",
+                "  _odysseus_wheel_flags+=(--break-system-packages)",
+                "fi",
+            ])
+        runner_lines.extend([
+            'echo "[odysseus] Preparing Real-ESRGAN compatibility wheels for this Python."',
+            f'{python_match.group(1)} {shlex.quote(realesrgan_builder)} --install "${{_odysseus_wheel_flags[@]}}" || {{',
+            "  _odysseus_wheel_exit=$?",
+            '  echo "ERROR: Real-ESRGAN compatibility preparation failed; dependency installation stopped." >&2',
+            '  exit "$_odysseus_wheel_exit"',
+            "}",
+        ])
     without_break = _pip_install_command_without_break_system_packages(cmd)
-    if not help_check or without_break == cmd:
+    if "--break-system-packages" not in (cmd or "") or not help_check or without_break == cmd:
         runner_lines.append(cmd)
-        return
-    runner_lines.append(f"if {help_check}; then")
-    runner_lines.append(f"  {cmd}")
-    runner_lines.append("else")
-    runner_lines.append('  echo "[odysseus] pip does not support --break-system-packages; installing without it."')
-    runner_lines.append(f"  {without_break}")
-    runner_lines.append("fi")
+    else:
+        runner_lines.append(f"if {help_check}; then")
+        runner_lines.append(f"  {cmd}")
+        runner_lines.append("else")
+        runner_lines.append('  echo "[odysseus] pip does not support --break-system-packages; installing without it."')
+        runner_lines.append(f"  {without_break}")
+        runner_lines.append("fi")
+    if bootstrap or prepare_realesrgan:
+        runner_lines.append(")")
 
 
 def _user_shell_path_bootstrap() -> list[str]:

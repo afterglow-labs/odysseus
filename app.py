@@ -1,4 +1,8 @@
 # app.py — slim orchestrator
+from src.python_runtime import require_supported_python
+
+require_supported_python()
+
 import mimetypes
 import os
 import sys

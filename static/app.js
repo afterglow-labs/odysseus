@@ -2069,7 +2069,7 @@ function initializeEventListeners() {
   if (chatInputBar && _msgTextarea) {
     let _refocusOnBlur = false;
     function _flagRefocus(e) {
-      if (e.target.closest('textarea, input')) return;
+      if (e.target.closest('textarea, input, select')) return;
       // Don't refocus for attach — file picker needs full focus control
       if (e.target.closest('#overflow-attach-btn')) return;
       // Don't refocus for model picker button — focus should go to picker search input

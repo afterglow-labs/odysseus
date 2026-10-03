@@ -20,5 +20,5 @@ def test_pdf_viewer_dependency_error_is_user_actionable(monkeypatch):
 
     message = str(exc.value)
     assert message == PDF_VIEWER_PYMUPDF_MISSING
-    assert "requirements-optional.txt" in message
+    assert "--require-hashes -r requirements.lock -r requirements-optional.lock" in message
     assert "PyMuPDF" in message

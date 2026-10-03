@@ -46,6 +46,12 @@ ODYSSEUS_IMAGE=ghcr.io/odysseus-dev/odysseus:1.0.2-7c8070f docker compose up -d
 
 Native installs, GPU notes, Windows/macOS instructions, HTTPS, and configuration live in the [setup guide](website/setup.md).
 
+All application installs use **CPython 3.14**, the standard GIL build, with the
+latest available patch release. `.python-version` is the shared runtime target
+for native launchers, Docker, and CI. Install the checked-in `requirements.lock`
+for the tested dependency versions; see the [dependency workflow](website/setup.md#faster-reproducible-installs-with-uv-optional)
+for updating them.
+
 ## Features
 
 - **Chat + Agents** — local/API models, tools, MCP, files, shell, skills, and memory.

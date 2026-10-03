@@ -1,13 +1,13 @@
 import ipaddress
 import json
 import os
-import time
 import uuid
 import logging
 import re
 from typing import Dict, List, Optional, Any
 from urllib.parse import urljoin, urlparse, urlunparse
 
+import anyio
 import httpcore
 import httpx
 from fastapi import HTTPException
@@ -375,11 +375,14 @@ _HTTPCORE_TO_HTTPX_EXC = {
 }
 
 
+_PINNED_CONNECT_DELAY = 0.25
+
+
 class _PinnedAsyncBackend(httpcore.AsyncNetworkBackend):
     """Network backend that connects only to the pre-validated IPs, in order.
 
     Every address here came out of the single SSRF resolution, so moving to the
-    next one after a connect failure is not re-resolution — it's ordinary
+    next one after a failure or a bounded delay is not re-resolution — it's ordinary
     multi-address fallback restricted to the set the guard already approved.
     httpcore takes TLS SNI and the ``Host`` header from the request URL rather
     than the connect host, so pinning the socket destination leaves certificate
@@ -392,22 +395,80 @@ class _PinnedAsyncBackend(httpcore.AsyncNetworkBackend):
 
     async def connect_tcp(self, host, port, timeout=None, local_address=None,
                           socket_options=None):
-        # One shared connect budget: each attempt gets the time left until the
-        # original deadline, so N dead addresses can't stretch the connect
-        # phase to N * timeout.
-        deadline = None if timeout is None else time.monotonic() + timeout
+        # Stagger only the validated addresses, retaining resolver preference
+        # without letting a blackhole consume the whole connection deadline.
+        # Earlier attempts stay alive: a slow healthy address still receives
+        # the original budget even when a later address immediately refuses.
+        deadline = None if timeout is None else anyio.current_time() + timeout
+        delay = _PINNED_CONNECT_DELAY if timeout is None else min(
+            _PINNED_CONNECT_DELAY, max(0.0, timeout) / max(1, len(self._ips))
+        )
+        connected = None
         last_exc: Optional[Exception] = None
-        for ip in self._ips:
-            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+        fatal_exc: Optional[Exception] = None
+        attempts = []
+
+        async def attempt(ip, finished):
+            nonlocal connected, last_exc, fatal_exc
+            scope = anyio.CancelScope()
+            attempts.append(scope)
             try:
-                return await self._real.connect_tcp(
-                    ip, port, remaining, local_address, socket_options
-                )
-            except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
-                last_exc = exc
-                if deadline is not None and time.monotonic() >= deadline:
-                    break
-        raise last_exc
+                with scope:
+                    try:
+                        remaining = None if deadline is None else max(0.0, deadline - anyio.current_time())
+                        stream = await self._real.connect_tcp(
+                            ip, port, remaining, local_address, socket_options
+                        )
+                    except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
+                        last_exc = exc
+                    except Exception as exc:
+                        fatal_exc = exc
+                    else:
+                        if connected is None:
+                            connected = stream
+                        else:
+                            # A simultaneous success may arrive as cancellation
+                            # is delivered. Shield cleanup of this losing stream.
+                            with anyio.CancelScope(shield=True):
+                                await stream.aclose()
+                    if connected is not None or fatal_exc is not None:
+                        # Cancel child attempts, not the enclosing task group:
+                        # cancelling the group here can swallow caller cancellation
+                        # arriving while losing streams are being closed.
+                        for other in attempts:
+                            if other is not scope:
+                                other.cancel()
+            finally:
+                attempts.remove(scope)
+                finished.set()
+
+        try:
+            try:
+                with anyio.fail_after(timeout):
+                    async with anyio.create_task_group() as tasks:
+                        for ip in self._ips:
+                            finished = anyio.Event()
+                            tasks.start_soon(attempt, ip, finished)
+                            # Refusal starts the next address immediately;
+                            # pending attempts get a bounded head start.
+                            with anyio.move_on_after(delay):
+                                await finished.wait()
+                            if connected is not None or fatal_exc is not None:
+                                break
+            except TimeoutError as exc:
+                raise httpcore.ConnectTimeout("Timed out connecting to validated addresses") from exc
+            if fatal_exc is not None:
+                raise fatal_exc
+            if connected is None:
+                raise last_exc or httpcore.ConnectError("No validated addresses to connect to")
+            stream, connected = connected, None
+            return stream
+        finally:
+            # Caller cancellation or another failure can occur after a winner
+            # connected but before ownership of its stream reaches httpcore.
+            if connected is not None:
+                with anyio.CancelScope(shield=True):
+                    await connected.aclose()
 
     async def connect_unix_socket(self, path, timeout=None, socket_options=None):
         return await self._real.connect_unix_socket(path, timeout, socket_options)

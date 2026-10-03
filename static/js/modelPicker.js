@@ -6,6 +6,7 @@ import uiModule from './ui.js';
 import settingsModule from './settings.js';
 import { sortModelObjects } from './modelSort.js';
 import spinnerModule from './spinner.js';
+import { daybreakForSelection, reasoningForSelection, initDaybreakPicker, updateDaybreakPicker, patchChatSelection, sameChatRoute, beginChatSelection } from './daybreak.js';
 
 const API_BASE = window.location.origin;
 
@@ -85,6 +86,18 @@ let _deps = null;
 let _autoSelectingDefault = false;
 let _defaultChatPickInFlight = false;
 let _defaultPendingSeq = 0;
+let _initialModelCacheLoad = null;
+
+function _loadInitialModelCache() {
+  const models = window.modelsModule;
+  // sessions.js can run before the separate models.js module script. A
+  // missing registration must not consume the one-time startup load.
+  if (_initialModelCacheLoad || typeof models?.refreshModels !== 'function') return;
+  _initialModelCacheLoad = Promise.resolve()
+    .then(() => models.refreshModels(false, { cacheOnly: true }))
+    .catch(() => {})
+    .then(() => updateDaybreakPicker());
+}
 
 function _modelExists(modelId, url) {
   if (!modelId || !window.modelsModule || !window.modelsModule.getCachedItems) return false;
@@ -191,7 +204,16 @@ async function _ensureDefaultPendingChat() {
  */
 export function initModelPicker(deps) {
   _deps = deps;
+  initDaybreakPicker(deps, message => uiModule.showError(message));
   _initModelPickerDropdown();
+  // Inline model options need capabilities before the popover is opened.
+  // DOMContentLoaded follows all module scripts; a microtask alone can run
+  // before the later models.js script registers. Reuse its shared cache/fetch
+  // without triggering endpoint probes or opening the model menu.
+  _loadInitialModelCache();
+  if (document.readyState !== 'complete') {
+    document.addEventListener('DOMContentLoaded', _loadInitialModelCache, { once: true });
+  }
 }
 
 function _initModelPickerDropdown() {
@@ -643,11 +665,20 @@ function _initModelPickerDropdown() {
 
 async function _pick(m) {
     _defaultPendingSeq++;
+    const selectedSession = _deps.getSessions().find(s => s.id === _deps.getCurrentSessionId());
+    const selected = selectedSession || _deps.getPendingChat();
+    const sameModel = selected && sameChatRoute(selected, m);
+    const daybreakEnabled = daybreakForSelection(sameModel ? selected : m, { session: !!(sameModel && selectedSession) });
+    const reasoningEffort = reasoningForSelection(sameModel ? selected : selectedSession
+      ? { ...m, reasoning_effort: selectedSession.reasoning_effort ?? '' } : m,
+    { session: !!selectedSession, preserveUnknown: !!sameModel });
     try {
       window.__odysseusLastPickedRoute = {
         model: m.mid || '',
         endpoint_url: m.url || '',
         endpoint_id: m.endpointId || '',
+        daybreak_enabled: daybreakEnabled,
+        reasoning_effort: reasoningEffort,
         display: m.display || m.mid || '',
         picked_at: Date.now(),
       };
@@ -682,7 +713,7 @@ async function _pick(m) {
     }
     if (!currentSessionId && _pendingChat) {
       // Already have a deferred session — just update the model
-      _deps.setPendingChat({ url: m.url, modelId: m.mid, endpointId: m.endpointId, source: 'manual' });
+      _deps.setPendingChat({ url: m.url, modelId: m.mid, endpointId: m.endpointId, source: 'manual', daybreak_enabled: daybreakEnabled, reasoning_effort: reasoningEffort });
       // Header stays as session name — model switch only updates picker
       updateModelPicker();
       uiModule.showToast(`Using ${m.display}`);
@@ -691,7 +722,7 @@ async function _pick(m) {
     } else if (!currentSessionId) {
       // No session yet — create one with this model
       try {
-        await _deps.createDirectChat(m.url, m.mid, m.endpointId);
+        await _deps.createDirectChat(m.url, m.mid, m.endpointId, { daybreak_enabled: daybreakEnabled, reasoning_effort: reasoningEffort });
       } catch (e) {
         uiModule.showError('Failed to start chat: ' + e);
         finishSwitch();
@@ -701,21 +732,17 @@ async function _pick(m) {
       // Existing session with no model — PATCH it
       const sessions = _deps.getSessions();
       const s = sessions.find(x => x.id === currentSessionId);
-      if (s) { s.model = m.mid; s.endpoint_url = m.url; s.endpoint_id = m.endpointId || s.endpoint_id || ''; }
+      const previous = s && { model: s.model, endpoint_url: s.endpoint_url, endpoint_id: s.endpoint_id, daybreak_enabled: s.daybreak_enabled, reasoning_effort: s.reasoning_effort };
+      const isCurrentEdit = beginChatSelection(s);
+      if (s) { s.model = m.mid; s.endpoint_url = m.url; s.endpoint_id = m.endpointId || ''; s.daybreak_enabled = daybreakEnabled; s.reasoning_effort = reasoningEffort; }
       updateModelPicker();
-      const fd = new FormData();
-      fd.append('model', m.mid);
-      fd.append('endpoint_url', m.url);
-      if (m.endpointId) fd.append('endpoint_id', m.endpointId);
       try {
-        const res = await fetch(`${API_BASE}/api/session/${currentSessionId}`, { method: 'PATCH', body: fd });
-        if (!res.ok) {
-          uiModule.showError('Failed to set model');
-          finishSwitch();
-          return;
-        }
+        await patchChatSelection(currentSessionId, { model: m.mid, endpoint_url: m.url,
+          ...(m.endpointId ? { endpoint_id: m.endpointId } : {}), daybreak_enabled: daybreakEnabled, reasoning_effort: reasoningEffort });
         // Header stays as session name — model info shown in picker only
       } catch (e) {
+        if (isCurrentEdit()) Object.assign(s, previous);
+        updateModelPicker();
         uiModule.showError('Failed to set model: ' + e);
         finishSwitch();
         return;
@@ -955,4 +982,5 @@ export function updateModelPicker() {
   } else {
     label.textContent = displayName;
   }
+  updateDaybreakPicker();
 }

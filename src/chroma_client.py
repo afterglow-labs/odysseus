@@ -32,7 +32,7 @@ def get_chroma_client():
     """Get or create the singleton ChromaDB HTTP client.
 
     Raises RuntimeError with a clear install hint if the `chromadb` package
-    is not installed — it's an optional dependency (RAG + memory vectors).
+    is not installed — it is a core dependency for RAG and memory vectors.
     """
     global _client
     if _client is not None:
@@ -42,8 +42,8 @@ def get_chroma_client():
         import chromadb
     except ImportError as e:
         raise RuntimeError(
-            "ChromaDB integration is not installed. Install the optional "
-            "dependency with: pip install chromadb-client"
+            "ChromaDB integration is not installed. Restore core dependencies with: "
+            "python -m pip install --require-hashes -r requirements.lock"
         ) from e
 
     host = os.getenv("CHROMADB_HOST", "localhost")

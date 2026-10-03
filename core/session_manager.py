@@ -150,6 +150,8 @@ class SessionManager:
             history=[],
             owner=getattr(db_session, "owner", None),
             is_important=getattr(db_session, "is_important", False) or False,
+            daybreak_enabled=bool(getattr(db_session, "daybreak_enabled", False)),
+            reasoning_effort=getattr(db_session, "reasoning_effort", None),
         )
         session.message_count = getattr(db_session, "message_count", 0) or 0
         return session
@@ -208,6 +210,8 @@ class SessionManager:
             history=history,
             owner=getattr(db_session, 'owner', None),
             is_important=getattr(db_session, 'is_important', False) or False,
+            daybreak_enabled=bool(getattr(db_session, "daybreak_enabled", False)),
+            reasoning_effort=getattr(db_session, "reasoning_effort", None),
         )
 
         # The rows just loaded are the whole transcript, so they — not the
@@ -482,6 +486,8 @@ class SessionManager:
             session.model = db_session.model or ""
             session.headers = headers or {}
             session.rag = db_session.rag
+            session.daybreak_enabled = bool(getattr(db_session, "daybreak_enabled", False))
+            session.reasoning_effort = getattr(db_session, "reasoning_effort", None)
             session.archived = db_session.archived
             session.owner = getattr(db_session, "owner", None)
             session.is_important = getattr(db_session, "is_important", False) or False
@@ -545,7 +551,9 @@ class SessionManager:
         endpoint_url: str,
         model: str,
         rag: bool = False,
-        owner: str = None
+        owner: str = None,
+        daybreak_enabled: bool = False,
+        reasoning_effort: Optional[str] = None,
     ) -> Session:
         """Create a new session and save to database."""
         db = SessionLocal()
@@ -556,6 +564,8 @@ class SessionManager:
                 endpoint_url=endpoint_url,
                 model=model,
                 rag=rag,
+                daybreak_enabled=daybreak_enabled,
+                reasoning_effort=reasoning_effort,
                 headers={},
                 owner=owner,
                 created_at=datetime.now(timezone.utc),
@@ -570,6 +580,8 @@ class SessionManager:
                 endpoint_url=endpoint_url,
                 model=model,
                 rag=rag,
+                daybreak_enabled=daybreak_enabled,
+                reasoning_effort=reasoning_effort,
                 headers={},
                 owner=owner,
             )
@@ -583,6 +595,32 @@ class SessionManager:
             raise
         finally:
             db.close()
+
+    def set_daybreak_enabled(self, session_id: str, enabled: bool) -> None:
+        """Persist a conversation choice before updating its cached metadata."""
+        with SessionLocal() as db:
+            stored = db.query(DbSession).filter(DbSession.id == session_id).first()
+            if stored is None:
+                raise KeyError(f"Session {session_id} not found")
+            stored.daybreak_enabled = bool(enabled)
+            stored.updated_at = utcnow_naive()
+            db.commit()
+        if session_id in self.sessions:
+            self.sessions[session_id].daybreak_enabled = bool(enabled)
+
+    def set_reasoning_effort(self, session_id: str, value: Optional[str]) -> None:
+        """Persist the selected effort before updating cached conversation state."""
+        from src.chatgpt_subscription import normalize_reasoning_effort
+        value = normalize_reasoning_effort(value)
+        with SessionLocal() as db:
+            stored = db.query(DbSession).filter(DbSession.id == session_id).first()
+            if stored is None:
+                raise KeyError(f"Session {session_id} not found")
+            stored.reasoning_effort = value
+            stored.updated_at = utcnow_naive()
+            db.commit()
+        if session_id in self.sessions:
+            self.sessions[session_id].reasoning_effort = value
 
     def delete_session(self, session_id: str) -> bool:
         """Permanently delete a session and all its messages."""

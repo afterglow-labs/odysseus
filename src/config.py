@@ -130,6 +130,18 @@ class AppConfig(BaseSettings):
     # Application settings
     debug: bool = Field(default=False, description="Enable debug mode")
     log_level: str = Field(default="INFO", description="Logging level")
+
+    @field_validator("debug", mode="before")
+    @classmethod
+    def normalize_build_debug_mode(cls, value):
+        """Accept build-mode DEBUG values inherited from native toolchains."""
+        if isinstance(value, str):
+            mode = value.strip().lower()
+            if mode == "release":
+                return False
+            if mode == "debug":
+                return True
+        return value
     
     @field_validator("data", mode="before")
     def set_data_paths(cls, v, info):

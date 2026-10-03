@@ -14,21 +14,19 @@ These tests pin both halves:
    web_fetching the HTML report.
 """
 import json
-from pathlib import Path
 
 import pytest
 
 from src.tool_implementations import do_manage_research
 from src.agent_loop import TOOL_SECTIONS
 
-_DATA_DIR = Path("data/deep_research")
-
-
 @pytest.fixture
-def saved_report():
-    _DATA_DIR.mkdir(parents=True, exist_ok=True)
+def saved_report(tmp_path, monkeypatch):
+    # Keep the report in this test's store, including when the app uses a
+    # custom ODYSSEUS_DATA_DIR. Never write into the developer's live data/.
+    monkeypatch.setattr("src.tools.research.DEEP_RESEARCH_DIR", str(tmp_path))
     rid = "rp-testreport1363"
-    path = _DATA_DIR / f"{rid}.json"
+    path = tmp_path / f"{rid}.json"
     path.write_text(json.dumps({
         "query": "trending blender video ideas",
         "result": "## Findings\nShort-form Geometry Nodes tutorials are trending.",
