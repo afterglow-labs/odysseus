@@ -173,12 +173,19 @@ DEPENDENCIES = [
     },
     {
         "name": "realesrgan",
-        "pip": "realesrgan",
+        "pip": "realesrgan setuptools",
         "desc": "AI denoise + upscale (Real-ESRGAN). Used by editor's Denoise and Upscale tools.",
         "category": "Image",
         "target": "local",
     },
     # ── Tools ──
+    {
+        "name": "pip",
+        "pip": "pip",
+        "desc": "Package installer for Odysseus's Python environment",
+        "category": "Tools",
+        "target": "local",
+    },
     {
         "name": "playwright",
         "pip": "playwright",

@@ -28,6 +28,7 @@ from src.dependency_catalog import (
 )
 from src.dependency_health import check_dependency_health
 from src.dependency_index import check_latest_release
+from src.environment_packages import inspect_environment
 
 # POSIX-only: `pty`/`fcntl` transitively import `termios`, which does NOT exist
 # on Windows, so importing them unconditionally crashed app startup there
@@ -1100,6 +1101,33 @@ async def _generate_win_detached(cmd: str, request: Request):
 
 def setup_shell_routes() -> APIRouter:
     router = APIRouter(tags=["shell"])
+
+    @router.post("/api/cookbook/clear-vram")
+    async def clear_gpu_memory(request: Request):
+        _require_admin(request)
+        _reject_cross_site(request)
+        try:
+            body = await request.json()
+        except ValueError as exc:
+            raise HTTPException(400, "Expected a JSON object") from exc
+        if not isinstance(body, dict) or set(body) - {"unload_models"} or not isinstance(body.get("unload_models", False), bool):
+            raise HTTPException(400, "Expected unload_models to be true or false")
+        from src.gpu_memory import clear_vram
+        return await asyncio.to_thread(clear_vram, unload_models=body.get("unload_models", False))
+
+    @router.get("/api/cookbook/environment-packages")
+    async def environment_packages(request: Request, host: str | None = None, ssh_port: str | None = None,
+                                   env: str = "none", env_path: str = "", platform: str = "", check_updates: bool = False):
+        """List and check all packages without importing them into the app."""
+        _require_admin(request)
+        _reject_cross_site(request)
+        try:
+            return await inspect_environment(host=host, ssh_port=ssh_port, env=env, env_path=env_path,
+                                             platform=platform, check_updates=check_updates)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(502, str(exc)) from exc
 
     @router.post("/api/shell/exec")
     async def shell_exec(request: Request, req: ShellExecRequest) -> Dict[str, Any]:

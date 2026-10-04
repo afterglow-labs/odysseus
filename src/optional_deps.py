@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import sys
 import types
 
@@ -29,4 +30,8 @@ def patch_realesrgan_torchvision_compat() -> None:
 def prepare_optional_dependency_import(name: str) -> None:
     """Apply known import-time compatibility shims before probing a package."""
     if name == "realesrgan":
+        # BasicSR imports distutils.version, removed from Python 3.12+. Import
+        # its provider explicitly: a live install may not have run setuptools'
+        # startup .pth hook in this already-running app process.
+        importlib.import_module("setuptools")
         patch_realesrgan_torchvision_compat()

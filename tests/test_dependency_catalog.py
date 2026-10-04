@@ -12,6 +12,16 @@ def test_app_background_removal_uses_local_mac_runtime_with_remote_selected():
     assert requirement_specs(row("rembg")) == ["rembg[cpu]"]
 
 
+def test_app_package_installer_can_be_updated_from_dependencies():
+    pip = row("pip", local="win32", target="linux")
+    assert pip["target"] == "local"
+    assert requirement_specs(pip) == ["pip"]
+
+
+def test_realesrgan_declares_distutils_provider_for_runtime_repairs():
+    assert "setuptools" in requirement_specs(row("realesrgan"))
+
+
 def test_linux_serving_recipes_are_not_offered_as_native_mac_installs():
     for platform in ("darwin", "macos", "mac"):
         for name in ("vllm", "sglang"):

@@ -22,8 +22,11 @@ const storage = new Map();
 const requests = [];
 const toasts = [];
 let failLaunch = false;
+let stopMode = false, modelStillAlive = false;
+const finished = [];
 const context = vm.createContext({
-  console, window: {},
+  console, window: { dispatchEvent: event => finished.push(event) },
+  CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } },
   document: {
     visibilityState: 'hidden', addEventListener() {},
     getElementById() { return null; }, querySelector() { return null; },
@@ -37,8 +40,10 @@ const context = vm.createContext({
   setTimeout() { return 1; }, clearTimeout() {},
   setInterval() { return 1; }, clearInterval() {},
   fetch: async (url, options) => {
-    const body = JSON.parse(options.body);
+    const body = options?.body ? JSON.parse(options.body) : null;
     requests.push({ url, body });
+    if (stopMode && url.startsWith('/api/model-endpoints/')) return { ok: true };
+    if (stopMode && url === '/api/shell/exec') return { ok: true, json: async () => ({ exit_code: !body.command.includes('Stop-Tree') && body.command.includes('Get-Process') ? (modelStillAlive ? 0 : 1) : 0 }) };
     if (url === '/api/shell/exec') return { ok: true, json: async () => ({ exit_code: 0 }) };
     assert.ok(['/api/model/serve', '/api/model/download'].includes(url));
     return failLaunch
@@ -58,7 +63,7 @@ const filename = path.resolve('static/js/cookbookRunning.js');
 // Expose the private click handler and configure only its injected host helpers;
 // all retry, request construction, persistence, and rendering code stays real.
 const module = new vm.SourceTextModule(fs.readFileSync(filename, 'utf8') + `
-_isWindows = () => false;
+_isWindows = task => task?.platform === 'windows';
 _getPort = task => task?.sshPort || '';
 _sshPrefix = port => port ? '-p ' + port + ' ' : '';
 _getPlatform = () => 'darwin';
@@ -146,6 +151,8 @@ assert.equal(tasks[0].sessionId, 'old-install');
 assert.equal(tasks[0].status, 'crashed');
 assert.equal(tasks[0]._retrying, false);
 assert.equal(toasts.at(-1), 'Install failed: Invalid install target');
+assert.equal(finished.at(-1).type, 'cookbook:dependency-finished');
+assert.equal(finished.at(-1).detail.status, 'crashed');
 
 // Genuine model retries keep the HF endpoint, resume option, and model wording.
 failLaunch = false;
@@ -153,6 +160,34 @@ await retry({ ...install, name: 'org/model', payload: { repo_id: 'org/model' } }
 assert.equal(requests[1].url, '/api/model/download');
 assert.equal(requests[1].body.disable_hf_transfer, true);
 assert.ok(toasts.some(t => /HuggingFace/.test(t)));
+
+// Clear VRAM stops only the model snapshot on the chosen server, leaving
+// installs, other hosts, and tasks started since the dialog opened intact.
+stopMode = true; requests.length = 0;
+const owned = { sessionId: 'serve_owned', name: 'Owned model', type: 'serve', status: 'running', platform: 'windows', remoteHost: '', _endpointId: 'owned-endpoint', payload: { _cmd: 'python -m llama_cpp.server' } };
+const download = { ...owned, sessionId: 'download_keep', type: 'download', payload: { _dep: true } };
+const remoteModel = { ...owned, sessionId: 'serve_remote', remoteHost: 'remote-box', sshPort: '2224' };
+storage.set('cookbook-tasks', JSON.stringify([owned, download, remoteModel]));
+const selected = running._managedModelTasks({ host: '' });
+assert.equal(selected.length, 1);
+assert.equal(running._managedModelTasks({ host: 'remote-box', sshPort: '22' }).length, 0);
+storage.set('cookbook-tasks', JSON.stringify([owned, download, remoteModel, { ...owned, sessionId: 'serve_new' }]));
+const stopped = await running._stopManagedModels(selected);
+assert.equal(stopped.errors.length, 0);
+assert.equal(stopped.stopped[0], 'Owned model');
+assert.match(requests[0].body.command, /Stop-Tree/);
+assert.match(requests[0].body.command, /serve_owned\.pid/);
+assert.equal(requests.filter(r => r.url.startsWith('/api/model-endpoints/')).length, 1);
+assert.ok(requests.some(r => r.url === '/api/model-endpoints/owned-endpoint'));
+tasks = running._loadTasks();
+assert.equal(tasks.find(t => t.sessionId === 'serve_owned').status, 'stopped');
+for (const id of ['download_keep', 'serve_remote', 'serve_new']) assert.equal(tasks.find(t => t.sessionId === id).status, 'running');
+modelStillAlive = true; requests.length = 0;
+const failedStop = await running._stopManagedModels(running._managedModelTasks({ host: '' }));
+assert.equal(failedStop.stopped.length, 0);
+assert.match(failedStop.errors[0], /still running/);
+assert.equal(running._loadTasks().find(t => t.sessionId === 'serve_new').status, 'running');
+assert.ok(!requests.some(r => r.url.startsWith('/api/model-endpoints/')));
 """
     result = subprocess.run(
         ["node", "--experimental-vm-modules", "--input-type=module"],

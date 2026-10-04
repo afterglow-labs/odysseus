@@ -955,6 +955,9 @@ function _updateTask(sessionId, updates) {
   if (task) {
     Object.assign(task, updates);
     _saveTasks(tasks);
+    if (['error', 'crashed', 'stopped', 'killed'].includes(updates.status) && task.payload?._dep) {
+      window.dispatchEvent(new CustomEvent('cookbook:dependency-finished', { detail: task }));
+    }
   }
   if ('status' in updates || '_unreachable' in updates) {
     _refreshServerDots();
@@ -973,6 +976,7 @@ function _updateTask(sessionId, updates) {
 
 function _refreshDepsAfterInstall(task) {
   if (!task || task.type !== 'download' || !task.payload?._dep) return;
+  window.dispatchEvent(new CustomEvent('cookbook:dependency-finished', { detail: task }));
   try {
     _refreshDependencies?.({ host: task.remoteHost || '', port: task.sshPort || '', venv: task.payload?.env_path || '' });
   } catch {}
@@ -1000,6 +1004,64 @@ function _animateOutThenRemove(el, sessionId) {
 
 function _taskRemoteHost(task) {
   return task?.remoteHost || task?.payload?.remote_host || '';
+}
+
+export function _managedModelTasks(target) {
+  return _loadTasks().filter(task => task.type === 'serve' && !task.payload?._dep
+    && ['running', 'ready', 'loading', 'warming', 'starting'].includes(task.status)
+    && _taskRemoteHost(task) === (target.host || '')
+    && (!target.host || String(task.sshPort || task.payload?.ssh_port || '22') === String(target.sshPort || '22')));
+}
+
+// Stop only the snapshot shown in Clear VRAM. Downloads and servers launched
+// after the dialog opened are deliberately outside this operation.
+export async function _stopManagedModels(models) {
+  const stopped = [], errors = [];
+  const execute = async command => {
+    const response = await fetch('/api/shell/exec', {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command, timeout: 20 }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || 'Could not contact the model server');
+    return data;
+  };
+  for (const snapshot of models) {
+    const task = _managedModelTasks({ host: _taskRemoteHost(snapshot), sshPort: snapshot.sshPort || snapshot.payload?.ssh_port })
+      .find(current => current.sessionId === snapshot.sessionId);
+    if (!task) continue;
+    const host = _taskRemoteHost(task);
+    if (!/^[a-zA-Z0-9_-]+$/.test(task.sessionId) || (host && (!/^[a-zA-Z0-9_.@:\[\]-]+$/.test(host) || host.startsWith('-')))) {
+      errors.push(`${task.name}: invalid saved server identity.`); continue;
+    }
+    const port = task.sshPort || task.payload?.ssh_port || '22';
+    if (!/^\d+$/.test(String(port)) || Number(port) < 1 || Number(port) > 65535) {
+      errors.push(`${task.name}: invalid saved SSH port.`); continue;
+    }
+    try {
+      _updateTask(task.sessionId, { _userStopped: true });
+      const el = document.querySelector(`.cookbook-task[data-task-id="${task.sessionId}"]`);
+      el?._abort?.abort();
+      const unload = _ollamaUnloadCommand(task, task.output || '');
+      if (unload) await execute(unload);
+      const result = await execute(_tmuxGracefulKill(task));
+      if (result.exit_code !== 0 && !/can't find session|no server running|session not found/i.test(result.stderr || '')) {
+        throw new Error(result.stderr || 'Model stop failed');
+      }
+      const probe = await execute(_tmuxCmd(task, `has-session -t ${task.sessionId}`));
+      if (probe.exit_code !== 1) throw new Error(probe.exit_code === 0 ? 'Model is still running' : probe.stderr || 'Could not verify that the model stopped');
+      _updateTask(task.sessionId, { status: 'stopped', _scheduledStopAtMs: null, _lastStatusFlipAt: Date.now() });
+      const endpointId = task._endpointId || task.endpointId;
+      if (endpointId) {
+        const response = await fetch(`/api/model-endpoints/${encodeURIComponent(endpointId)}`, { method: 'DELETE', credentials: 'same-origin' });
+        if (!response.ok && response.status !== 404) errors.push(`${task.name}: stopped, but its model entry could not be removed.`);
+      }
+      stopped.push(task.name);
+    } catch (error) { errors.push(`${task.name}: ${error.message}`); }
+  }
+  _renderRunningTab();
+  if (stopped.length) _refreshModelsAfterEndpointChange();
+  return { stopped, errors };
 }
 
 function _remoteTmuxPrefix() {
@@ -1031,7 +1093,7 @@ function _winSessionCmd(task, tmuxArgs) {
   }
   if (tmuxArgs.includes('has-session')) {
     const ps = host
-      ? `$p = Get-Content '${sd}\\${sid}.pid' -ErrorAction SilentlyContinue; if ($p) { Get-Process -Id $p -ErrorAction SilentlyContinue | Out-Null; if ($?) { exit 0 } else { exit 1 } } else { exit 1 }`
+      ? `$p = Get-Content (Join-Path $env:TEMP 'odysseus-sessions\\${sid}.pid') -ErrorAction SilentlyContinue; if ($p) { Get-Process -Id $p -ErrorAction SilentlyContinue | Out-Null; if ($?) { exit 0 } else { exit 1 } } else { exit 1 }`
       : `$p = Get-Content (Join-Path $env:TEMP 'odysseus-tmux\\${sid}.pid') -ErrorAction SilentlyContinue; if ($p) { Get-Process -Id $p -ErrorAction SilentlyContinue | Out-Null; if ($?) { exit 0 } else { exit 1 } } else { exit 1 }`;
     return _winPowerShellCmd(task, ps);
   }
@@ -1057,12 +1119,14 @@ function _winPowerShellCmd(task, ps) {
 
 function _winSessionStopTreePs(task) {
   const host = _taskRemoteHost(task);
-  const sd = host ? '$env:TEMP\\odysseus-sessions' : '$env:TEMP\\odysseus-tmux';
   const sid = task.sessionId;
-  const stopTree = `function Stop-Tree([int]$Id) { Get-CimInstance Win32_Process -Filter ('ParentProcessId = ' + $Id) -ErrorAction SilentlyContinue | ForEach-Object { Stop-Tree ([int]$_.ProcessId) }; Stop-Process -Id $Id -Force -ErrorAction SilentlyContinue }`;
-  return host
-    ? `${stopTree}; $p = Get-Content '${sd}\\${sid}.pid' -ErrorAction SilentlyContinue; if ($p -match '^\\d+$') { Stop-Tree ([int]$p) }; Remove-Item '${sd}\\${sid}.*' -Force -ErrorAction SilentlyContinue`
-    : `${stopTree}; $p = Get-Content (Join-Path $env:TEMP 'odysseus-tmux\\${sid}.pid') -ErrorAction SilentlyContinue; if ($p -match '^\\d+$') { Stop-Tree ([int]$p) }; Remove-Item (Join-Path $env:TEMP 'odysseus-tmux\\${sid}.*') -Force -ErrorAction SilentlyContinue`;
+  if (!/^[a-zA-Z0-9_-]+$/.test(sid)) throw new Error('Invalid model session');
+  const directory = host ? 'odysseus-sessions' : 'odysseus-tmux';
+  const stopTree = `function Stop-Tree([int]$Id) { if ($Id -lt 100) { throw 'Invalid model process' }; Get-CimInstance Win32_Process -Filter ('ParentProcessId = ' + $Id) -ErrorAction Stop | ForEach-Object { Stop-Tree ([int]$_.ProcessId) }; if (Get-Process -Id $Id -ErrorAction SilentlyContinue) { Stop-Process -Id $Id -Force -ErrorAction Stop } }`;
+  // Keep the PID record on failure. Removing it unconditionally makes the
+  // subsequent liveness probe falsely report success after access is denied.
+  // Also reject recycled PIDs whose command no longer belongs to this runner.
+  return `$ErrorActionPreference = 'Stop'; ${stopTree}; $pidFile = Join-Path $env:TEMP '${directory}\\${sid}.pid'; $p = Get-Content -LiteralPath $pidFile -ErrorAction SilentlyContinue; if ($p -match '^\\d+$') { $owner = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + [int]$p); if ($owner -and $owner.CommandLine -notlike '*${sid}*') { throw 'Saved process no longer belongs to this model session' }; Stop-Tree ([int]$p) }; Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue`;
 }
 
 export function _tmuxGracefulKill(task) {
@@ -4257,7 +4321,7 @@ async function _pollBackgroundStatus() {
                 : null))));
         if (nextStatus && (task.status !== nextStatus || failedByExit)) {
           updates.status = nextStatus;
-          if (nextStatus === 'done' && task.payload?._dep) completedDeps.push(task);
+          if (['done', 'error', 'crashed', 'stopped', 'killed'].includes(nextStatus) && task.payload?._dep) completedDeps.push(task);
         }
         if (serveReady && !task._serveReady) {
           updates._serveReady = true;

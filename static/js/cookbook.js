@@ -10,6 +10,7 @@ import { makeWindowDraggable } from './windowDrag.js';
 import { _diagnose, _showDiagnosis, _clearDiagnosis, _runQuickCmd, ERROR_PATTERNS } from './cookbook-diagnosis.js';
 import { RECIPE_BACKENDS, recipesForBackend, pickRecipe, recipeCommands, RECIPE_DEFAULT_VARIANT } from './cookbook-deps-recipes.js';
 import { dependencyIssues, showDependencyIssues } from './cookbookDependencyHealth.js';
+import { showEnvironmentPackages, showClearVram } from './cookbookMaintenance.js';
 import { _hwfitCache, _hwfitDebounce, _hwfitFetch, _hwfitInit, _hwfitRenderList, _hwfitRenderHw, _renderGpuToggles, _expandModelRow, _fitColors, _hwfitColumns, _cachedModelIds, _gpuToggleTotal, _resetGpuToggleState } from './cookbook-hwfit.js';
 
 // Sub-modules
@@ -21,6 +22,7 @@ import {
   _startBackgroundMonitor, _syncFromServer,
   _retryDownload, _nextAvailablePort, _processQueue,
   _selfHealStaleTasks,
+  _managedModelTasks, _stopManagedModels,
 } from './cookbookRunning.js';
 
 import {
@@ -1075,6 +1077,8 @@ async function _fetchDependencies({ showIssues = false } = {}) {
   if (!list) return;
   const checkSeq = ++_dependencyCheckSeq;
   const checkButton = document.getElementById('cookbook-check-dependencies');
+  const managePackages = document.getElementById('cookbook-manage-packages');
+  if (managePackages) managePackages.disabled = true;
   const checkStatus = document.getElementById('cookbook-deps-check-status');
   if (checkButton) { checkButton.disabled = true; checkButton.textContent = 'Checking…'; }
   if (checkStatus) checkStatus.textContent = 'Checking installed packages and their dependencies…';
@@ -1426,7 +1430,7 @@ async function _fetchDependencies({ showIssues = false } = {}) {
     // Shared install/update routine — used by the Install button and the
     // "Update" item in an installed package's ⋮ menu. `upgrade` adds pip -U;
     // `statusEl`, when given, shows "Installing…/Updating…" and is disabled.
-    async function _installDep(pipName, pkgName, isLocalOnly, upgrade, statusEl, checkedOverride = null, atomicRequirement = false) {
+    async function _installDep(pipName, pkgName, isLocalOnly, upgrade, statusEl, checkedOverride = null, atomicRequirement = false, reinstall = false) {
       let targetServer = null;
       if (checkedOverride) {
         // A findings popup may outlive a server-selector change. Keep its
@@ -1479,7 +1483,7 @@ async function _fetchDependencies({ showIssues = false } = {}) {
         .map(_shellQuote)
         .join(' ');
       const depTaskId = String(pkgName || pipName || 'dependency').trim().replace(/\s+/g, '_');
-      const cmd = `${_py} -m pip install${upgrade ? ' -U' : ''}${_pipFlags} ${pipArgs}`;
+      const cmd = `${_py} -m pip install${reinstall ? ' --force-reinstall --no-deps' : upgrade ? ' -U' : ''}${_pipFlags} ${pipArgs}`;
       let envPrefix = '';
       if (_targetWindows) {
         if (targetEnv === 'venv' && targetEnvPath) {
@@ -1539,6 +1543,14 @@ async function _fetchDependencies({ showIssues = false } = {}) {
         });
         return false;
       }
+    }
+
+    const manageButton = document.getElementById('cookbook-manage-packages');
+    if (manageButton) {
+      manageButton.disabled = false;
+      manageButton.onclick = () => showEnvironmentPackages(checkedTarget, (pkg, repair, target) =>
+        _installDep(repair ? `${pkg.name}==${pkg.version}` : pkg.name, pkg.name, !target.host,
+          !repair, null, target, true, repair), manageButton);
     }
 
     // Wire install buttons (not-installed packages)
@@ -2254,6 +2266,13 @@ function _wireTabEvents(body) {
 
   const depsServer = document.getElementById('hwfit-deps-server');
   document.getElementById('cookbook-check-dependencies')?.addEventListener('click', () => _fetchDependencies({ showIssues: true }));
+  document.getElementById('cookbook-clear-vram')?.addEventListener('click', event => {
+    const server = _selectedServer();
+    const host = server ? (_isLocalEntry(server) ? '' : server.host) : (_envState.remoteHost || '');
+    const target = { host, sshPort: server?.port || _getPort(host) || '' };
+    showClearVram({ target, models: _managedModelTasks(target), stopModels: _stopManagedModels,
+      refresh: () => _renderRunningTab() }, event.currentTarget);
+  });
   if (depsServer) {
     depsServer.addEventListener('change', () => {
       _applyServerSelection(depsServer.value);
@@ -3064,6 +3083,7 @@ function _renderRecipes() {
 
   // Tabs
   html += '<div class="cookbook-tabs">';
+  html += '<button type="button" class="memory-toolbar-btn" id="cookbook-clear-vram" style="order:10;margin-left:auto;flex-shrink:0;">Clear VRAM</button>';
   html += '<button class="cookbook-tab" data-backend="Serve"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none" style="vertical-align:-1px;margin-right:3px;"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Launch</button>';
   html += '<button class="cookbook-tab active" data-backend="Search"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:-1px;margin-right:3px;"><polyline points="7 14 12 19 17 14"/><line x1="12" y1="19" x2="12" y2="5"/><line x1="5" y1="21" x2="19" y2="21"/></svg>Download</button>';
   html += '<button class="cookbook-tab" data-backend="Dependencies"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:-1px;margin-right:3px;"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>Dependencies</button>';
@@ -3295,6 +3315,7 @@ function _renderRecipes() {
   html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">';
   html += '<h2 style="margin:0;padding:0;line-height:1;">Dependencies</h2>';
   html += '<button type="button" class="memory-toolbar-btn" id="cookbook-check-dependencies">Check dependencies</button>';
+  html += '<button type="button" class="memory-toolbar-btn" id="cookbook-manage-packages" disabled>Manage packages</button>';
   // Rebuild llama.cpp button moved into the llama_cpp dep row (see _depRow);
   // having it in the title polluted the section header.
   html += '<span style="font-size:10px;opacity:0.5;margin-left:auto;">Server</span>';

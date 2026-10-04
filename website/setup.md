@@ -401,6 +401,19 @@ The desktop profile is stored in `%USERPROFILE%\.odysseus\data`, including
 profiles restored from another computer. The older frozen portable build cannot
 install local Python dependencies; use this launcher for Cookbook and editor tools.
 
+Use **Cookbook → Dependencies → Manage packages** to check versions and update
+any installed Python package, including pip, setuptools, and wheel. **Repair**
+reinstalls the current package version. Operations appear in **Active**, and
+the package list refreshes when they finish. Local actions use Odysseus's
+private environment; remote actions use the server and environment selected
+when the package manager was opened.
+
+**Clear VRAM** in the Cookbook toolbar can release unused GPU cache while
+keeping models loaded, or unload the listed model servers and cached editor
+models. Unloading stops their current generations. Cache clearing runs in the
+local app process; remote model memory is released by stopping its managed
+servers. Other applications and downloads are left running.
+
 Or do it by hand:
 
 ```powershell

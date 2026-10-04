@@ -63,7 +63,7 @@ doc = {
   querySelectorAll: selector => doc.body.querySelectorAll(selector),
   querySelector: selector => doc.body.querySelector(selector),
 };
-for (const id of ['cookbook-deps-list', 'cookbook-check-dependencies', 'cookbook-deps-check-status', 'hwfit-deps-server']) {
+for (const id of ['cookbook-deps-list', 'cookbook-check-dependencies', 'cookbook-deps-check-status', 'hwfit-deps-server', 'cookbook-manage-packages']) {
   const element = new Element(id === 'cookbook-check-dependencies' ? 'button' : 'div');
   ids.set(id, element); doc.body.appendChild(element);
 }
@@ -83,6 +83,7 @@ let packages = [broken,
   { name: 'existing-feature', pip: 'existing', category: 'LLM', target: 'remote', installed: true, install_supported: false },
 ];
 const store = new Map();
+let inventory = { python_version: '3.14', executable: 'C:/Odysseus/venv/Scripts/python.exe', packages: [{ name: 'pip', version: '26.2' }, { name: 'setuptools', version: '84.0' }], updates_checked: false };
 const context = vm.createContext({
   console, document: doc, URLSearchParams,
   window: {
@@ -94,6 +95,8 @@ const context = vm.createContext({
   fetch: async (url, options) => {
     requests.push({ url, body: options?.body ? JSON.parse(options.body) : null });
     if (url.startsWith('/api/cookbook/packages')) return { ok: true, json: async () => ({ packages }) };
+    if (url.startsWith('/api/cookbook/environment-packages')) return { ok: true, json: async () => inventory };
+    if (url === '/api/cookbook/clear-vram') return { ok: true, json: async () => ({ message: 'Released 15 MB of unused GPU cache.', errors: [] }) };
     if (url === '/api/cookbook/install-system-deps') return { ok: true, json: async () => ({ ok: true }) };
     assert.equal(url, '/api/model/serve');
     return failInstall
@@ -102,7 +105,7 @@ const context = vm.createContext({
   },
 });
 const jsRoot = path.resolve('static/js');
-const real = new Set(['cookbook.js', 'cookbook-deps-recipes.js', 'cookbookDependencyHealth.js', 'escMenuStack.js']);
+const real = new Set(['cookbook.js', 'cookbook-deps-recipes.js', 'cookbookDependencyHealth.js', 'cookbookMaintenance.js', 'escMenuStack.js']);
 const allowedStubs = new Set(['ui.js', 'spinner.js', 'providers.js', 'windowDrag.js', 'cookbook-diagnosis.js',
   'cookbook-hwfit.js', 'cookbookRunning.js', 'cookbookDownload.js', 'cookbookServe.js', 'toolWindowZOrder.js', 'modalManager.js']);
 const source = fs.readFileSync(path.join(jsRoot, 'cookbook.js'), 'utf8');
@@ -248,6 +251,60 @@ await systemButton.events.click({ stopPropagation() {} });
 const systemRequest = requests.findLast(r => r.url === '/api/cookbook/install-system-deps').body;
 assert.equal(systemRequest.remote_host, 'linux-box');
 assert.ok(!systemRequest.platform, 'Unknown remote OS must not inherit the Windows client OS');
+
+// The real package manager uses the install coordinator, including its
+// frozen target and the same Running-task completion events as other installs.
+const settle = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+const findButton = (parent, label) => parent.querySelectorAll('button').find(b => b.attributes['aria-label'] === label || b.textContent === label);
+const manager = ids.get('cookbook-manage-packages').onclick();
+await settle();
+assert.match(requests.at(-1).url, /host=linux-box/);
+ids.get('hwfit-deps-server').value = 'local';
+Object.assign(app._envState, { remoteHost: '', platform: 'windows' });
+await findButton(manager, 'Update pip').events.click();
+assert.equal(requests.at(-1).body.remote_host, 'linux-box');
+assert.match(requests.at(-1).body.cmd, /pip install -U .*'pip'$/);
+assert.ok(startedTasks.at(-1)[3]._dep);
+listeners.get('cookbook:dependency-finished')({ detail: { remoteHost: 'linux-box', payload: { repo_id: 'pip' } } });
+await settle();
+assert.equal(findButton(manager, 'Update pip').disabled, false, 'Completed update releases the action');
+await findButton(manager, 'Repair setuptools').events.click();
+assert.match(requests.at(-1).body.cmd, /pip install --force-reinstall --no-deps .*'setuptools==84.0'$/);
+listeners.get('cookbook:dependency-finished')({ detail: { remoteHost: 'linux-box', payload: { repo_id: 'setuptools' } } });
+await settle();
+inventory = { ...inventory, updates_checked: true, packages: [{ name: 'pip', version: '26.2', latest_version: '26.3', update_available: true }] };
+await findButton(manager, 'Check for updates').events.click();
+assert.match(requests.at(-1).url, /check_updates=true/);
+assert.match(allText(manager), /26.2 → 26.3/);
+assert.ok(findButton(manager, 'Install setuptools'), 'Missing package tools can be restored inside the app');
+findButton(manager, 'Close').events.click();
+assert.equal(listeners.has('cookbook:dependency-finished'), false);
+
+await app._fetchDependencies();
+const localManager = ids.get('cookbook-manage-packages').onclick();
+await settle();
+assert.ok(!new URLSearchParams(requests.at(-1).url.split('?')[1]).has('host'));
+await findButton(localManager, 'Update pip').events.click();
+assert.equal(requests.at(-1).body.remote_host, undefined);
+assert.equal(requests.at(-1).body.platform, 'windows');
+assert.match(requests.at(-1).body.cmd, /^python -m pip install -U 'pip'$/);
+findButton(localManager, 'Close').events.click();
+
+const maintenance = modules.get(path.join(jsRoot, 'cookbookMaintenance.js')).namespace;
+let stops = 0;
+const vram = maintenance.showClearVram({ target: {}, models: [{ name: 'Owned model' }], stopModels: async models => { stops++; return { stopped: models.map(m => m.name), errors: [] }; } });
+await findButton(vram, 'Clear unused cache').events.click();
+assert.equal(stops, 0, 'Cache-only must not stop a loaded model');
+assert.deepEqual(requests.at(-1).body, { unload_models: false });
+assert.match(allText(vram), /Released 15 MB/);
+await findButton(vram, 'Unload models and clear').events.click();
+assert.equal(stops, 1);
+assert.deepEqual(requests.at(-1).body, { unload_models: true });
+findButton(vram, 'Close').events.click();
+const remoteVram = maintenance.showClearVram({ target: { host: 'remote' }, models: [], stopModels: async () => { throw new Error('Must not run'); } });
+assert.equal(findButton(remoteVram, 'Clear unused cache').disabled, true);
+assert.equal(findButton(remoteVram, 'Unload models and clear').disabled, true);
+findButton(remoteVram, 'Close').events.click();
 """
     result = subprocess.run(
         ["node", "--experimental-vm-modules", "--input-type=module"],
