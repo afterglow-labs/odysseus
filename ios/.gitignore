@@ -1,0 +1,12 @@
+build/
+device-build/
+export/
+DerivedData/
+*.xcresult/
+*.xcarchive/
+*.ipa
+*.dSYM/
+xcuserdata/
+*.xcuserstate
+.fixture.pid
+!Odysseus/Resources/OdysseusIcon.png

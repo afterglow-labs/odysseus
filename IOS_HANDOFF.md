@@ -2,7 +2,7 @@
 
 Prepared for Corey on October 4, 2026. Build a native SwiftUI remote client for the existing Odysseus desktop server, using the existing interface as the visual and workflow guide. Corey explicitly selected a native client instead of a web view wrapper.
 
-The iOS implementation has **not started**. There is no iOS Xcode project, simulator build, signed app, or device test yet. The only existing Swift package, `swift/odysseus-mlx-image-bridge`, serves desktop MLX image tools; it is not an iOS client. This handoff records the API investigation and the desktop fixes the client must preserve.
+The first native client is implemented under `ios/`, with a checked-in Xcode project and shared scheme. It builds on Corey's Mac through SSH from WSL; a development-signed device archive and simulator builds have succeeded. Chat, Agent, model controls, personas, attachments, and connection/account screens are native SwiftUI. The remaining desktop workspaces still need native screens. Read [ios/README.md](ios/README.md) for reproducible build/test commands and current limits. The separate `swift/odysseus-mlx-image-bridge` package serves desktop MLX tools and is unrelated to this client.
 
 ## Continue on the Mac
 
@@ -17,9 +17,13 @@ For an existing clean checkout of that repository, use `git switch dev` followed
 
 Open this directory in Codex on the Mac and give it this instruction:
 
-> Read IOS_HANDOFF.md and CONTRIBUTING.md, then build the native SwiftUI iOS client described here. Use the existing Odysseus interface as the guide. The iPhone is a remote client for my existing Ubuntu WSL2 Odysseus server. Start with connection setup, login, chat history, streaming Chat and Agent mode, model selection and controls, attachments including images and video, and personas. Implement and test the app in Xcode; do not stop at a plan or substitute a WKWebView wrapper. Preserve the existing desktop changes. Show the connected server clearly and verify stream reconnection and Thinking Off. Continue with the other existing workflows in stages and report any remaining gaps honestly.
+> Read IOS_HANDOFF.md, ios/README.md, and CONTRIBUTING.md, then continue the native SwiftUI iOS client under ios/. Use the existing Odysseus interface as the guide. The iPhone is a remote client for my existing Ubuntu WSL2 Odysseus server. Preserve the implemented connection, chat, controls, personas, and attachment workflows and the existing desktop fixes. Verify the actual phone connection, permissions, image/video inference, and Thinking Off with the intended WSL server. Continue the remaining desktop workflows as native screens in stages and report any remaining gaps honestly.
 
-On the Mac, check the installed Xcode SDK and available simulators before choosing the deployment target. Use the available SwiftUI and iOS build/debug skills if installed. Create the app under a new `ios/` directory, keep a shared build scheme, and document the exact build and test commands. An Apple signing team and a reachable desktop URL are still needed for a physical-device installation and live connection. Neither is embedded in this handoff.
+The client targets iOS 17+. The Mac has Xcode 27 beta and iOS 27.0 and 18.5 simulator runtimes. WSL's `ssh afterglow-mac` now uses a dedicated local key; the private key stays outside the repository. The isolated Mac build copy is `/Users/coreyhamilton/Projects/odysseus-ios-build/ios`; the existing Mac Odysseus checkout was preserved. Automatic signing uses the Mac's existing Apple development identity. Signing over SSH needed execution in the logged-in GUI session because background SSH could not access the login Keychain. No signing keys or passwords were exported.
+
+The phone still needs a reachable desktop URL and installation onto a provisioned device. Tailscale Serve was disabled on the tailnet at build time; its enablement prompt was sent to Corey. Do not treat a simulator fixture test or a signed archive as proof of a live phone connection.
+
+Build verification: 14 protocol/API tests and 3 native UI tests passed on iOS 18.5; core chat and controls flows also passed on iOS 27.0, and the controls/chat/stop flow passed on an iPad simulator. A development IPA was exported using the Mac's existing profile. Artifacts are kept outside Git; see the build scripts in `ios/scripts/` to reproduce them. Photo-library permissions, physical-device installation, and native-to-live-server image/video inference remain acceptance work.
 
 ## Product and interface
 
