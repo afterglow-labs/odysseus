@@ -791,6 +791,33 @@ def test_validate_serve_cmd_accepts_llama_mmproj_printf_format():
     assert _validate_serve_cmd(cmd) == cmd
 
 
+@pytest.mark.parametrize("cmd", [
+    'llama-server --model "/models/mmproj-F32.gguf"',
+    'llama-server -m "/models/Qwen-mmproj-F16.gguf"',
+    'CUDA_VISIBLE_DEVICES=0 llama-server --model=/models/MMPROJ-F32.GGUF',
+    'python3 -m llama_cpp.server --model "/models/mmproj-F32.gguf"',
+    'llama-server.exe --model "C:\\AI Models\\mmproj-F32.gguf"',
+    'llama-server --model "$(printf %s \'/models with spaces/mmproj-F32.gguf\')"',
+    'llama-server --model "$(printf %s ${HOME}\'/models/mmproj-F32.gguf\')"',
+    'llama-server --model "$(find \'/models\' -iname \'mmproj*.gguf\' 2>/dev/null | sort | head -1)"',
+])
+def test_validate_serve_cmd_rejects_projector_as_main_model(cmd):
+    with pytest.raises(HTTPException) as error:
+        _validate_serve_cmd(cmd)
+    assert error.value.status_code == 400
+    assert "is a vision projector" in error.value.detail
+    assert "--mmproj" in error.value.detail
+
+
+@pytest.mark.parametrize("cmd", [
+    'llama-server --model "/models/model-F32.gguf" --mmproj "/models/mmproj-F32.gguf"',
+    'llama-server --model "/mmproj-tools/models/model-Q8_0.gguf"',
+    'python3 -m llama_cpp.server --model model-Q4_K_M.gguf --clip_model_path mmproj-F16.gguf',
+])
+def test_validate_serve_cmd_accepts_primary_weights_and_separate_projector(cmd):
+    assert _validate_serve_cmd(cmd) == cmd
+
+
 def test_normalize_llama_cpp_python_cache_types_for_stale_client_cmd():
     cmd = (
         "python -m llama_cpp.server --model model.gguf --host 0.0.0.0 --port 8000 "
@@ -1151,6 +1178,45 @@ def test_cached_model_scan_runs_additional_hf_cache(tmp_path):
     assert rec["size_bytes"] == len(b"abc123")
     assert rec["has_incomplete"] is False
     assert rec["is_diffusion"] is False
+
+
+def test_cached_model_scan_custom_hubs_keep_distinct_copies(tmp_path, monkeypatch, capsys):
+    """A Windows hub added in Settings must coexist with a Linux copy of its repo."""
+    import shutil
+    import urllib.request
+
+    linux_cache = tmp_path / "linux" / "hub"
+    windows_cache = tmp_path / "windows" / "hub"
+    repo = "scanner-regression/dual-cache-model"
+    model_dir = "models--scanner-regression--dual-cache-model"
+    for cache, filename in ((linux_cache, "model-Q5_K_M.gguf"), (windows_cache, "model-Q4_K_M.gguf")):
+        snapshot = cache / model_dir / "snapshots" / "rev"
+        snapshot.mkdir(parents=True)
+        (snapshot / filename).write_bytes(b"GGUF weights")
+    (windows_cache / model_dir / "snapshots" / "rev" / "mmproj-F16.gguf").write_bytes(b"projector")
+    monkeypatch.setenv("HF_HOME", str(linux_cache.parent))
+    monkeypatch.setenv("HF_HUB_CACHE", str(linux_cache))
+    monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(linux_cache))
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+
+    def offline(*args, **kwargs):
+        raise OSError("No Ollama service in this test")
+
+    monkeypatch.setattr(urllib.request, "urlopen", offline)
+    # Repeated/aliased roots should not duplicate either card. Custom hubs and
+    # ordinary model folders share the same Settings field and scan endpoint.
+    script = _cached_model_scan_script([str(windows_cache), str(linux_cache), str(windows_cache / ".")])
+    exec(compile(script, "<cache-scanner>", "exec"), {})
+    models = [m for m in json.loads(capsys.readouterr().out) if m["repo_id"] == repo]
+    assert len(models) == 2
+    by_path = {m["path"]: m for m in models}
+    assert [f["name"] for f in by_path[str(linux_cache)]["gguf_files"]] == ["model-Q5_K_M.gguf"]
+    windows = by_path[str(windows_cache)]
+    assert [(f["name"], f["role"]) for f in windows["gguf_files"]] == [
+        ("model-Q4_K_M.gguf", "model"), ("mmproj-F16.gguf", "projector"),
+    ]
+    assert windows["size_bytes"] == len(b"GGUF weightsprojector")
+    assert windows["has_incomplete"] is False
 
 
 def test_validate_serve_cmd_accepts_find_subshell_for_mmproj():

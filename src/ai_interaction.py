@@ -188,6 +188,16 @@ def _resolve_model(spec: str, owner: Optional[str] = None, model_type: Optional[
                     if mid.lower() == model_name.lower():
                         return build_chat_url(base), mid, headers
 
+                # Native llama.cpp advertises the GGUF path, while Cookbook
+                # and Vision settings store the HF repo id. Match the exact
+                # cache directory identity without guessing a different model.
+                for mid in model_ids:
+                    cache_parts = str(mid).replace('\\', '/').split('/')
+                    repo_ids = {part[len('models--'):].replace('--', '/', 1).lower()
+                                for part in cache_parts if part.startswith('models--')}
+                    if model_name.lower() in repo_ids:
+                        return build_chat_url(base), mid, headers
+
                 # Partial match
                 for mid in model_ids:
                     if model_name.lower() in mid.lower() or mid.lower() in model_name.lower():

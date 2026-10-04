@@ -486,12 +486,14 @@ def _cached_model_scan_script(model_dirs: list[str] | None = None, add_hf_cache:
         "    files.sort(key=lambda f: (f.get('role') != 'model', f.get('rel_path', '')))",
         "    return files",
         "def scan_hf(cache):",
-        "    if not os.path.isdir(cache): return",
+        "    cache = os.path.realpath(os.path.expanduser(cache))",
+        "    if not os.path.isdir(cache) or not safe_path(cache): return",
         "    for d in sorted(os.listdir(cache)):",
         "        if not d.startswith('models--'): continue",
         "        rid = d.replace('models--','').replace('--','/')",
-        "        if rid in seen: continue",
-        "        seen.add(rid)",
+        "        key = ('hf', os.path.normcase(cache), rid)",
+        "        if key in seen: continue",
+        "        seen.add(key)",
         "        blobs = os.path.join(cache, d, 'blobs')",
         "        sz, nf, ic = 0, 0, False",
         "        if os.path.isdir(blobs):",
@@ -545,6 +547,7 @@ def _cached_model_scan_script(model_dirs: list[str] | None = None, add_hf_cache:
         "        if not p: return",
         "        p = os.path.expanduser(p)",
         "        if p not in candidates: candidates.append(p)",
+        "    add(os.environ.get('HF_HUB_CACHE'))",
         "    add(os.environ.get('HUGGINGFACE_HUB_CACHE'))",
         "    hf_home = os.environ.get('HF_HOME')",
         "    if hf_home: add(os.path.join(hf_home, 'hub'))",
@@ -636,6 +639,7 @@ def _cached_model_scan_script(model_dirs: list[str] | None = None, add_hf_cache:
         "scan_ollama()",
     ]
     for model_dir in model_dirs or []:
+        lines.append(f"scan_hf(normalize_model_dir({model_dir!r}))")
         lines.append(f"scan_dir({model_dir!r})")
     lines.append("print(json.dumps(models))")
     return "\n".join(lines) + "\n"
@@ -801,6 +805,52 @@ def _is_safe_serve_subshell(subshell: str) -> bool:
     )
 
 
+def _reject_projector_main_model(cmd: str) -> None:
+    """Check literal GGUF arguments without executing path substitutions.
+
+    This also covers retries from old clients and manually edited commands.
+    Projectors are valid for --mmproj/--clip_model_path, never --model/-m.
+    """
+    paths: dict[str, str] = {}
+
+    def substitute(match: re.Match[str]) -> str:
+        value = match.group(0)
+        if _SAFE_PRINTF_SUBSHELL_RE.fullmatch(value):
+            value = shlex.split(value[2:-1])[2]
+        elif _SAFE_FIND_MMPROJ_SUBSHELL_RE.fullmatch(value):
+            value = "mmproj.gguf"
+        else:
+            return match.group(0)
+        placeholder = f"__ODYSSEUS_GGUF_PATH_{len(paths)}__"
+        paths[placeholder] = value
+        return placeholder
+
+    try:
+        parts = shlex.split(re.sub(r"\$\([^()]*\)", substitute, cmd))
+    except ValueError:
+        return  # The existing command validator handles malformed commands.
+    if not any(
+        part.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        in {"llama-server", "llama-server.exe", "llama_server", "llama.cpp", "llama_cpp.server"}
+        for part in parts
+    ):
+        return
+    for i, part in enumerate(parts):
+        flag, sep, value = part.partition("=")
+        if flag not in {"--model", "-m"}:
+            continue
+        if not sep:
+            value = parts[i + 1] if i + 1 < len(parts) else ""
+        value = paths.get(value, value)
+        name = value.replace("\\", "/").rsplit("/", 1)[-1]
+        if "mmproj" in name.lower() and name.lower().endswith(".gguf"):
+            raise HTTPException(
+                400,
+                f"{name} is a vision projector. Select the main model GGUF "
+                "for --model and use --mmproj for the projector.",
+            )
+
+
 def _validate_serve_cmd(v: str | None) -> str | None:
     """Reject serve commands that aren't in the allowlist or contain shell metachars.
 
@@ -830,6 +880,7 @@ def _validate_serve_cmd(v: str | None) -> str | None:
         # rest is `[ENV=…] python3 -m llama_cpp.server … || [ENV=…] llama-server …`
         for part in rest.split("||"):
             _check_serve_binary(part.strip())
+        _reject_projector_main_model(rest)
         return v
 
     # Otherwise: a single invocation — no shell metacharacters allowed. Replace
@@ -846,6 +897,7 @@ def _validate_serve_cmd(v: str | None) -> str | None:
     if any(c in cleaned_v for c in (";", "&&", "||", "$(")):
         raise HTTPException(400, "Invalid characters in cmd")
     _check_serve_binary(v)
+    _reject_projector_main_model(v)
     return v
 
 
@@ -901,6 +953,44 @@ def _append_serve_exit_code_lines(
     else:
         runner_lines.append('echo ""; echo "=== Process exited with code $ODYSSEUS_CMD_EXIT ==="')
         runner_lines.append('exit "$ODYSSEUS_CMD_EXIT"')
+
+
+def _append_llama_cpp_capability_preflight_lines(runner_lines: list[str], cmd: str) -> None:
+    """Reject an incompatible fallback before loading multi-gigabyte weights."""
+    parts = shlex.split(cmd or "")
+    if "llama-server" not in parts:
+        return
+    gpu_layers = None
+    mtp = False
+    for i, part in enumerate(parts):
+        flag, sep, value = part.partition("=")
+        if not sep and i + 1 < len(parts):
+            value = parts[i + 1]
+        if flag in {"-ngl", "--gpu-layers", "--n-gpu-layers"}:
+            try:
+                gpu_layers = int(value)
+            except ValueError:
+                pass
+        if flag == "--spec-type" and "draft-mtp" in value.split(","):
+            mtp = True
+    if mtp:
+        runner_lines.extend([
+            'if ! llama-server --help 2>&1 | grep -q -- "draft-mtp"; then',
+            '  echo "ERROR: MTP requires a native llama.cpp server with draft-mtp support. The selected runtime is incompatible; Python fallback cannot provide MTP."',
+            '  ODYSSEUS_PREFLIGHT_EXIT=78',
+            'fi',
+        ])
+    if gpu_layers is not None and gpu_layers != 0:
+        runner_lines.extend([
+            '_ODY_LLAMA_DEVICES="$(llama-server --list-devices 2>&1)"',
+            'if ! printf "%s\\n" "$_ODY_LLAMA_DEVICES" | grep -Eq "^[[:space:]]+[^[:space:]]+:"; then',
+            '  echo "ERROR: GPU layers were requested, but the selected llama.cpp runtime exposes no GPU devices. Install a native GPU build; refusing a silent CPU fallback."',
+            '  ODYSSEUS_PREFLIGHT_EXIT=78',
+            'else',
+            '  printf "[odysseus] Native GPU runtime: %s\\n" "$(command -v llama-server)"',
+            '  printf "%s\\n" "$_ODY_LLAMA_DEVICES"',
+            'fi',
+        ])
 
 
 def _append_llama_cpp_linux_accel_build_lines(runner_lines: list[str]) -> None:
@@ -1186,6 +1276,8 @@ def _parse_serve_phase(snapshot: str, task_type: str = "serve") -> dict:
         }
     if "Application startup complete" in flat:
         return {"phase": "ready", "status": "ready"}
+    if re.search(r'llama_server:\s*listening on https?://|server is listening on https?://', flat, re.I):
+        return {"phase": "ready", "status": "ready"}
     if re.search(r'Ollama API ready on port\s+\d+', flat, re.I):
         return {"phase": "ready", "status": "ready"}
     # HTTP access logs (e.g. GET /v1/models 200 OK) mean the server is up and serving
@@ -1202,6 +1294,8 @@ def _parse_serve_phase(snapshot: str, task_type: str = "serve") -> dict:
     if dl_matches:
         pct = int(dl_matches[-1])
         return {"phase": f"downloading {pct}%", "status": "running", "pct": pct}
+    if re.search(r'load_model:\s*loading model|load_tensors:|model has unused tensor', flat, re.I):
+        return {"phase": "loading model", "status": "running"}
     return {}
 
 
@@ -1338,7 +1432,7 @@ def _diagnose_serve_output(text: str) -> dict | None:
             ],
         ),
         (
-            r"not divisib|must be divisible|attention heads.*divisible",
+            r"not divisib(?!le by n_seq_max)|must be divisible|attention heads.*divisible",
             "Tensor parallel size is incompatible with the model.",
             [
                 {"label": "retry with tensor parallel size 1", "op": "replace", "flag": "--tensor-parallel-size", "value": "1"},

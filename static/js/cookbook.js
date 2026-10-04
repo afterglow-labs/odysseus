@@ -1061,10 +1061,10 @@ function _readStoredEnvState() {
   return stored;
 }
 
-export function _persistEnvState() {
+export function _persistEnvState(options) {
   try { localStorage.setItem(LAST_STATE_KEY, JSON.stringify(_envStateForStorage())); }
   catch (_) {}
-  _saveTasks(_loadTasks());
+  return _saveTasks(_loadTasks(), options);
 }
 
 // ── Dependencies ──
@@ -1167,6 +1167,9 @@ async function _fetchDependencies({ showIssues = false } = {}) {
       if (pkg.installed && pkg.pip_update_available === false && pkg.name !== 'llama_cpp') {
         const tip = esc(pkg.update_note || pkg.status_note || 'Found externally; update outside Odysseus.');
         return `<span class="cookbook-dep-tag cookbook-dep-installed" title="${tip}">Installed</span>`;
+      }
+      if (pkg.installed && pkg.name === 'pip') {
+        return `<button type="button" class="cookbook-dep-tag cookbook-dep-install" data-dep-pip="pip" data-dep-target="${isLocal ? 'local' : 'remote'}" data-upgrade="1" title="Update pip in the selected Python environment">Update pip</button>`;
       }
       if (pkg.installed) return `<button class="cookbook-dep-tag cookbook-dep-installed cookbook-dep-installed-btn" title="Installed — click for actions"><span class="cookbook-dep-installed-label">Installed</span><span class="cookbook-dep-caret">&#9662;</span></button>`;
       if (isSystemDep) {
@@ -1339,7 +1342,7 @@ async function _fetchDependencies({ showIssues = false } = {}) {
       items.length ? _sectionHeader(title, note) + _rowsHtml(items) : '';
     const _pkgOrder = {
       System: ['tmux', 'docker'],
-      Tools: ['hf_transfer'],
+      Tools: ['pip', 'hf_transfer'],
       LLM: ['llama_cpp', 'sglang', 'vllm', 'mlx_lm'],
       Image: ['diffusers', 'krea_diffusers', 'transformers', 'sam_mask', 'mflux', 'boogu_image_mlx', 'mlx_vlm'],
     };
@@ -2389,15 +2392,14 @@ function _wireTabEvents(body) {
     document.getElementById('serve-bulk-delete')?.addEventListener('click', async () => {
       const checked = document.querySelectorAll('.serve-select-cb.selected');
       if (!checked.length) return;
-      const repos = [];
+      const items = [];
       checked.forEach(dot => {
         const item = dot.closest('.memory-item[data-repo]');
-        if (item?.dataset.repo) repos.push(item.dataset.repo);
+        if (item?.dataset.repo) items.push(item);
       });
-      if (!(await uiModule.styledConfirm(`Delete ${repos.length} model(s)? This removes cached files.`, { confirmText: 'Delete', danger: true }))) return;
-      for (const repo of repos) {
-        const item = document.querySelector(`.memory-item[data-repo="${repo}"]`);
-        if (item) await _deleteCachedModel(repo, item, true);
+      if (!(await uiModule.styledConfirm(`Delete ${items.length} model(s)? This removes cached files.`, { confirmText: 'Delete', danger: true }))) return;
+      for (const item of items) {
+        await _deleteCachedModel(item.dataset.repo, item, true);
       }
       selectBtn.classList.remove('active');
       selectBtn.textContent = 'Select';  // same reset as bulk-cancel
@@ -2947,12 +2949,19 @@ function _wireTabEvents(body) {
   if (hfInput) {
     hfInput.addEventListener('change', async () => {
       const val = hfInput.value.trim();
+      if (!val) return;
       _envState.hfToken = val;
-      try { await _persistEnvState(); } catch {}
+      hfInput.disabled = true;
+      try {
+        await _persistEnvState({ immediate: true });
+      } catch (err) {
+        uiModule.showToast('HF token was not saved. ' + err.message, 6000);
+        return;
+      } finally {
+        hfInput.disabled = false;
+      }
       if (val) {
-        _envState.hfTokenConfigured = true;
-        const masked = val.length > 6 ? val.slice(0, 3) + '…' + val.slice(-3) : '••••';
-        _envState.hfTokenMasked = masked;
+        const masked = _envState.hfTokenMasked;
         hfInput.placeholder = `Stored (${masked}) - enter a new token to replace`;
         hfInput.value = '';
         let check = hfInput.parentNode.querySelector('.hwfit-hf-check');

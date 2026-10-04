@@ -23,6 +23,8 @@ MEDIA_BLOCK_TYPES = {
     "input_image",
     "audio",
     "input_audio",
+    "input_video",
+    "video_url",
     "file",
 }
 

@@ -9,6 +9,7 @@ import tempfile
 from typing import List, Dict, Any
 
 from src.llm_core import llm_call
+from src.video_input import is_video_file, video_content_part
 
 logger = logging.getLogger(__name__)
 
@@ -342,7 +343,9 @@ def analyze_image_with_vl_result(image_path: str, owner: str | None = None) -> d
         try:
             url, model_id, headers = _resolve_vl_model(vl_model, owner=owner)
         except ValueError:
-            return {"text": "[No vision model configured — set one in Settings → Vision]", "model": vl_model or ""}
+            message = ("[Configured vision model could not be resolved — check its endpoint and model selection in Settings → Vision]"
+                       if vl_model else "[No vision model available — select one in Settings → Vision]")
+            return {"text": message, "model": vl_model or ""}
 
         with open(image_path, "rb") as f:
             img_data = base64.b64encode(f.read()).decode("utf-8")
@@ -392,6 +395,44 @@ def analyze_image_with_vl(image_path: str, owner: str | None = None) -> str:
     return analyze_image_with_vl_result(image_path, owner=owner).get("text", "")
 
 
+def analyze_video_with_vl_result(video_path: str, owner: str | None = None, prompt: str = "") -> dict:
+    """Route a video to a configured native video model for a text-only chat."""
+    from types import SimpleNamespace
+    from src.chat_helpers import llamacpp_supports_video
+    from src.endpoint_resolver import resolve_vision_fallback_candidates
+    from src.model_generation import capture_generation_options
+
+    settings = _load_vl_settings()
+    if not settings.get("vision_enabled", True):
+        return {"text": "[Vision is disabled — enable it in Settings → Vision]", "model": ""}
+    configured = settings.get("vision_model", "")
+    candidates = []
+    try:
+        candidates.append(_resolve_vl_model(configured, owner=owner))
+    except ValueError:
+        pass
+    candidates.extend(resolve_vision_fallback_candidates(owner=owner))
+    messages = None
+    for url, model, headers in candidates:
+        if llamacpp_supports_video(url, headers=headers) is not True:
+            continue
+        try:
+            if messages is None:
+                messages = [{"role": "user", "content": [
+                    {"type": "text", "text": prompt or "Describe what happens in this video in chronological order."},
+                    video_content_part(video_path),
+                ]}]
+            options = capture_generation_options(SimpleNamespace(endpoint_url=url, model=model), owner)
+            description = llm_call(url, model, messages, headers=headers, timeout=180, generation_options=options)
+            return {"text": description, "model": model}
+        except Exception as exc:
+            logger.warning("Video analysis failed with %s (%s)", model, type(exc).__name__)
+    return {
+        "text": "[Video could not be analyzed. Select a running llama.cpp model with video support in Settings → Vision and ensure FFmpeg and FFprobe are installed in its environment.]",
+        "model": configured or "",
+    }
+
+
 def build_user_content(
     text: str,
     attachment_ids: list[str] | None,
@@ -401,8 +442,10 @@ def build_user_content(
     auto_opened_docs: list[Dict[str, Any]] | None = None,
     owner: str | None = None,
     resolved_uploads: dict[str, Dict[str, Any]] | None = None,
+    native_video: bool = False,
+    video_results: dict[str, Dict[str, Any]] | None = None,
 ) -> str | List[Dict[str, Any]]:
-    """Build user content with attachments (text, images, audio, documents).
+    """Build user content with attachments (text, images, video, audio, documents).
 
     If session_id is provided and an attached PDF contains AcroForm fields,
     a markdown Document is auto-created so the user can edit the form in the
@@ -454,6 +497,17 @@ def build_user_content(
                     content[0]["text"] += "\n\n[Image attached but could not be processed]"
                 else:
                     content.insert(0, {"type": "text", "text": "[Image attached but could not be processed]"})
+
+        elif is_video_file(display_name, mime):
+            if native_video:
+                try:
+                    content.append(video_content_part(path))
+                except OSError:
+                    content[0]["text"] += f"\n\n[Video {display_name} could not be read]"
+            else:
+                result = (video_results or {}).get(fid) or {}
+                description = result.get("text") or "[This endpoint has not reported native video support. Choose a video-capable vision model.]"
+                content[0]["text"] += f"\n\n[Video: {display_name}]\n{description}"
 
         elif upload_handler.is_audio_file(display_name, mime):
             try:
@@ -596,7 +650,7 @@ def build_user_content(
             else:
                 content.insert(0, {"type": "text", "text": "[Attached non-text file]"})
 
-    has_media = any(item.get("type") in ["image_url", "audio"] for item in content if isinstance(item, dict))
+    has_media = any(item.get("type") in ["image_url", "audio", "input_video"] for item in content if isinstance(item, dict))
     if not has_media and content:
         combined_text = ""
         for item in content:

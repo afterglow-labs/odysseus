@@ -10,6 +10,7 @@ import { registerMenuDismiss } from './escMenuStack.js';
 import { computeProgressSignal } from './cookbookProgressSignal.js';
 import { portOf, nextFreePort } from './cookbookPorts.js';
 import { topPortalZ } from './toolWindowZOrder.js';
+import { clearGpuMemory } from './cookbookGpu.js';
 
 // Human-friendly badge label for a task's internal status. Avoids surfacing
 // the word "error" in the sidebar — a server the user stopped or one that
@@ -262,12 +263,12 @@ function _terminalServeDiagnosis(task, outputText) {
     };
   }
   return _diagnose(out) || {
-    message: /Native llama-server not found|building llama-server|llama\.cpp/i.test(out)
+    message: /Native llama-server not found|building llama-server|CMake Error/i.test(out)
       ? 'llama.cpp build stopped before the server became reachable.'
       : 'Serve stopped before the model became reachable.',
-    suggestion: /Native llama-server not found|building llama-server|llama\.cpp/i.test(out)
-      ? 'Suggested action: copy the troubleshooting bundle, then edit serve settings. For the quickest local/CPU path, use Ollama or a prebuilt llama-server; source builds can take several minutes and fail if build dependencies are incomplete.'
-      : 'Suggested action: copy the troubleshooting bundle, then edit serve settings or relaunch with a CPU/backend fallback.',
+    suggestion: /Native llama-server not found|building llama-server|CMake Error/i.test(out)
+      ? 'Suggested action: check the build output or install a prebuilt llama-server with support for your GPU.'
+      : 'Suggested action: check the last process output and exit code, then edit serve settings and relaunch.',
     fixes: [{ label: 'Edit serve', action: (panel) => _openServeEditForTask(task) }],
   };
 }
@@ -467,6 +468,9 @@ export function _parseServePhase(snapshot) {
   if (flat.includes('Application startup complete')) {
     return { phase: 'ready', status: 'ready' };
   }
+  if (/llama_server:\s*listening on https?:\/\/|server is listening on https?:\/\//i.test(flat)) {
+    return { phase: 'ready', status: 'ready' };
+  }
   if (/Ollama API ready on port\s+\d+/i.test(flat)) {
     return { phase: 'ready', status: 'ready' };
   }
@@ -505,6 +509,9 @@ export function _parseServePhase(snapshot) {
   if (dlMatches.length) {
     const pct = parseInt(dlMatches[dlMatches.length - 1][1]);
     return { phase: `downloading ${pct}%`, status: 'running', pct };
+  }
+  if (/load_model:\s*loading model|load_tensors:|model has unused tensor/i.test(flat)) {
+    return { phase: 'loading model', status: 'running' };
   }
   return {};
 }
@@ -749,6 +756,7 @@ function _serveOutputLooksReady(task) {
   const out = String(task?.output || '');
   return !!task?._serveReady
     || /Application startup complete/i.test(out)
+    || /llama_server:\s*listening on https?:\/\/|server is listening on https?:\/\//i.test(out)
     || /Ollama API ready on port\s+\d+/i.test(out)
     || /(?:GET|POST)\s+\/[^\s]*\s+HTTP\/[\d.]+"\s*2\d\d/i.test(out);
 }
@@ -905,9 +913,9 @@ function _stripStateSecrets(state) {
   return safe;
 }
 
-export function _saveTasks(tasks) {
+export function _saveTasks(tasks, options) {
   localStorage.setItem(TASKS_KEY, JSON.stringify((tasks || []).map(_redactTaskForStorage)));
-  _syncToServer();
+  return _syncToServer(options);
 }
 
 export function _addTask(sessionId, name, type, payload) {
@@ -1386,38 +1394,60 @@ function _autoSaveWorkingConfig(task) {
 // ── Cross-device sync ──
 
 let _syncTimer = null;
-function _syncToServer() {
+let _syncQueue = Promise.resolve();
+
+async function _pushStateToServer() {
+  // A missing Local server means GET /state has not hydrated the settings yet.
+  if (!_envState || !Array.isArray(_envState.servers) || _envState.servers.length === 0) {
+    throw new Error('Cookbook settings are still loading.');
+  }
+  const state = _stripStateSecrets({
+    tasks: _loadTasks(),
+    removedTasks: _loadTombstones(),
+    presets: _loadPresets(),
+    env: _envState,
+    serveState: null,
+    serveFavorites: [],
+  });
+  try { state.serveState = JSON.parse(localStorage.getItem(SERVE_STATE_KEY)); } catch {}
+  try {
+    const favorites = JSON.parse(localStorage.getItem(SERVE_FAVORITES_KEY) || '[]');
+    state.serveFavorites = Array.isArray(favorites) ? favorites.filter(Boolean).map(String) : [];
+  } catch {}
+  // Only the server receives a newly entered token, so it can encrypt it.
+  // Browser storage and task payloads must continue to exclude secrets.
+  const token = String(_envState.hfToken || '').trim();
+  if (token) state.env.hfToken = token;
+  const response = await fetch('/api/cookbook/state', {
+    method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(state),
+  });
+  if (!response.ok) throw new Error(`Could not save Cookbook settings (HTTP ${response.status}).`);
+  const result = await response.json();
+  if (!result.ok) throw new Error('The server could not save Cookbook settings.');
+  if (token && String(_envState.hfToken || '').trim() === token) {
+    _envState.hfToken = '';
+    _envState.hfTokenConfigured = true;
+    _envState.hfTokenMasked = token.length > 8 ? `${token.slice(0, 4)}...${token.slice(-4)}` : 'stored';
+    const { hfToken, ...safeEnv } = _envState;
+    localStorage.setItem('cookbook-last-state', JSON.stringify(safeEnv));
+  }
+  return result;
+}
+
+function _queueStateSave() {
+  // Keep an older in-flight save from overwriting a newer token or setting.
+  _syncQueue = _syncQueue.catch(() => {}).then(_pushStateToServer);
+  return _syncQueue;
+}
+
+function _syncToServer({ immediate = false } = {}) {
   // Debounce to coalesce bursts of writes, but keep latency low so the server
   // is effectively authoritative across devices
   clearTimeout(_syncTimer);
-  _syncTimer = setTimeout(async () => {
-    try {
-      // Don't push a not-yet-hydrated state. A legit state always has at
-      // least the "Local" server, so an empty servers list means we loaded
-      // before GET /state populated _envState — syncing it would wipe the
-      // saved servers. (The server has an anti-wipe guard too; this avoids
-      // the needless round-trip.)
-      if (!_envState || !Array.isArray(_envState.servers) || _envState.servers.length === 0) return;
-      const state = {
-        tasks: _loadTasks(),
-        removedTasks: _loadTombstones(),
-        presets: _loadPresets(),
-        env: _envState,
-        serveState: null,
-        serveFavorites: [],
-      };
-      try { state.serveState = JSON.parse(localStorage.getItem(SERVE_STATE_KEY)); } catch {}
-      try {
-        const favorites = JSON.parse(localStorage.getItem(SERVE_FAVORITES_KEY) || '[]');
-        state.serveFavorites = Array.isArray(favorites) ? favorites.filter(Boolean).map(String) : [];
-      } catch {}
-      await fetch('/api/cookbook/state', {
-        method: 'POST', credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(_stripStateSecrets(state)),
-      });
-    } catch {}
-  }, 400);
+  if (immediate) return _queueStateSave();
+  _syncTimer = setTimeout(() => { _queueStateSave().catch(() => {}); }, 400);
 }
 
 document.addEventListener('cookbook:state-dirty', () => {
@@ -2191,7 +2221,7 @@ export function _renderRunningTab() {
   // 'crashed' (before auto-reconnect catches it) would read as "Running 0"
   // even when the model is actively downloading on the host.
   const activeCount = tasks.filter(t =>
-    t.status === 'running'
+    t.status === 'running' || t.status === 'ready'
     || t.status === 'queued'
     || _downloadOutputLooksActive(t)
   ).length;
@@ -2239,6 +2269,7 @@ export function _renderRunningTab() {
     group.innerHTML = '<div class="admin-card" style="display:flex;flex-direction:column;">' +
       '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:2px;">' +
       '<h2 style="margin:0;padding:0;line-height:1;">Active <span id="running-count" class="memory-count" style="font-size:0.6em;opacity:0.6;font-weight:normal">' + activeCount + '</span></h2>' +
+      '<button type="button" class="cookbook-btn cookbook-clear-vram-local" style="margin-left:auto" title="Stop GPU processes on this Odysseus server to release VRAM">Clear VRAM</button>' +
       '</div>' +
       '<p class="memory-desc doclib-desc" style="margin-top:6px;">Active downloads, installs and model launches.</p>' +
       '</div>';
@@ -2248,6 +2279,12 @@ export function _renderRunningTab() {
   }
 
   if (!group) return;
+
+  const clearVram = group.querySelector('.cookbook-clear-vram-local');
+  if (clearVram && !clearVram.dataset.bound) {
+    clearVram.dataset.bound = '1';
+    clearVram.addEventListener('click', () => clearGpuMemory({ button: clearVram, onCleared: () => _pollBackgroundStatus() }));
+  }
 
   const countEl = group.querySelector('#running-count');
   if (countEl) countEl.textContent = activeCount;
@@ -3253,14 +3290,14 @@ async function _reconnectTask(el, task) {
               const diag = _diagnose(lastOutput) || {
                 message: _serveTaskLooksAwqOnLocalBackend(task, lastOutput)
                   ? 'AWQ/GPTQ/FP8 cannot be served through llama.cpp/Ollama unified-memory mode.'
-                  : /Native llama-server not found|building llama-server|llama\.cpp/i.test(lastOutput)
+                  : /Native llama-server not found|building llama-server|CMake Error/i.test(lastOutput)
                   ? 'llama.cpp build stopped before the server became reachable.'
                   : 'Serve stopped before the model became reachable.',
                 suggestion: _serveTaskLooksAwqOnLocalBackend(task, lastOutput)
                   ? 'Suggested action: use vLLM/SGLang on a compatible CUDA/ROCm GPU server, or download a GGUF version for llama.cpp/Ollama/unified-memory serving.'
-                  : /Native llama-server not found|building llama-server|llama\.cpp/i.test(lastOutput)
-                  ? 'Suggested action: copy the troubleshooting bundle, then edit serve settings. For the quickest local/CPU path, use Ollama or a prebuilt llama-server; source builds can take several minutes and fail if build dependencies are incomplete.'
-                  : 'Suggested action: copy the troubleshooting bundle, then edit serve settings or relaunch with a CPU/backend fallback.',
+                  : /Native llama-server not found|building llama-server|CMake Error/i.test(lastOutput)
+                  ? 'Suggested action: check the build output or install a prebuilt llama-server with support for your GPU.'
+                  : 'Suggested action: check the last process output and exit code, then edit serve settings and relaunch.',
                 fixes: [{ label: 'Edit serve', action: (panel) => _openServeEditForTask(task) }],
               };
               _showDiagnosis(el, diag, lastOutput);
@@ -4306,7 +4343,7 @@ async function _pollBackgroundStatus() {
           && !task.payload?._dep
           && String(combinedOutput || '').includes('DOWNLOAD_OK');
         const serveReady = task.type === 'serve'
-          && (live.status === 'ready' || _serveOutputLooksReady({ ...task, output: live.output_tail || task.output || '' }));
+          && (live.status === 'ready' || (live.status === 'running' && _serveOutputLooksReady({ ...task, output: live.output_tail || task.output || '' })));
         const completedByOutput = !failedByExit && (depDone || downloadDone);
         const nextStatus = failedByExit ? 'error' : completedByOutput
           ? 'done'
@@ -4326,6 +4363,7 @@ async function _pollBackgroundStatus() {
         if (serveReady && !task._serveReady) {
           updates._serveReady = true;
         }
+        if (!['running', 'ready'].includes(live.status)) updates._serveReady = false;
         if ((live.status === 'running' || live.status === 'ready') && task.status !== live.status && !serveReady && !completedByOutput && !failedByExit) {
           updates.status = live.status === 'ready' ? 'ready' : 'running';
         }

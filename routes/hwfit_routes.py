@@ -211,7 +211,19 @@ def setup_hwfit_routes():
                 catalog_refresh = refresh_dynamic_catalogs(force=True)
             except Exception as e:
                 catalog_refresh = {"error": str(e)}
-        if not get_models():
+        candidates = list(get_models())
+        search_error = None
+        if search.strip():
+            try:
+                from services.hwfit.hf_discovery import search_hf_models
+                seen = {m.get("name") for m in candidates}
+                for model in search_hf_models(search):
+                    if model["name"] not in seen:
+                        candidates.append(model)
+                        seen.add(model["name"])
+            except Exception as e:
+                search_error = f"Hugging Face search unavailable: {e}"
+        if not candidates:
             return {
                 "system": system,
                 "models": [],
@@ -299,6 +311,7 @@ def setup_hwfit_routes():
             "sort": sort,
             "quant": quant or None,
             "fit_only": fit_only,
+            "candidate_models": candidates,
         }
         if target_context is not None:
             rank_kwargs["target_context"] = target_context
@@ -311,6 +324,10 @@ def setup_hwfit_routes():
             rank_kwargs.pop("fit_only", None)
         results = rank_models(system, **rank_kwargs)
         payload = {"system": system, "models": results}
+        if search_error:
+            payload["search_warning"] = search_error
+            if not results:
+                payload["error"] = search_error
         if catalog_refresh is not None:
             payload["catalog_refresh"] = catalog_refresh
         return payload

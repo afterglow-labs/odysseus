@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from core.models import ChatMessage
 from src.request_models import ChatRequest
+from src.model_generation import capture_generation_options
 from src.llm_core import (
     _normalize_http_status,
     llm_call_async,
@@ -843,6 +844,7 @@ def setup_chat_routes(
             raise HTTPException(400, "Selected model endpoint is not configured")
         daybreak_enabled = _capture_daybreak_enabled(session_manager, sess, chat_request.daybreak_enabled)
         reasoning_effort = _capture_reasoning_effort(session_manager, sess, chat_request.reasoning_effort)
+        generation_options = capture_generation_options(sess, owner, getattr(chat_request, "generation_options", None))
 
         # Same allowed_models + daily-cap gate as chat_stream (mirror so the
         # non-streaming path can't be used to bypass).
@@ -939,8 +941,9 @@ def setup_chat_routes(
             request_messages,
             fallback_statuses=foreground_policy.eligible_statuses,
             candidate_request_factory=candidate_request_factory,
-            temperature=ctx.preset.temperature,
-            max_tokens=ctx.preset.max_tokens,
+            temperature=generation_options.get("temperature", ctx.preset.temperature),
+            max_tokens=generation_options.get("max_tokens", ctx.preset.max_tokens),
+            **({"generation_options": generation_options} if generation_options else {}),
             prompt_type=preset_id,
             session_id=session,
             daybreak_enabled=daybreak_enabled,
@@ -1317,6 +1320,10 @@ def setup_chat_routes(
                 session_manager, sess,
                 form_data.get("reasoning_effort") if "reasoning_effort" in form_data
                 else (body or {}).get("reasoning_effort"),
+            )
+            generation_options = capture_generation_options(
+                sess, owner, form_data.get("generation_options") if "generation_options" in form_data
+                else (body or {}).get("generation_options"),
             )
             if (
                 chat_mode == "chat"
@@ -2033,13 +2040,14 @@ def setup_chat_routes(
                     async for chunk in stream_llm_with_fallback(
                         _foreground_candidates,
                         messages,
-                        temperature=ctx.preset.temperature,
+                        temperature=generation_options.get("temperature", ctx.preset.temperature),
+                        **({"generation_options": generation_options} if generation_options else {}),
                         # Respect the preset; 0/unset = let the server decide (no
                         # cap), matching agent mode. The old hard 4096 fallback
                         # truncated reasoning models mid-<think> — they'd burn the
                         # whole budget thinking and never emit the answer (seen in
                         # Compare on heavy generation prompts).
-                        max_tokens=ctx.preset.max_tokens,
+                        max_tokens=generation_options.get("max_tokens", ctx.preset.max_tokens),
                         prompt_type=preset_id,
                         tools=None,
                         session_id=session,
@@ -2399,8 +2407,9 @@ def setup_chat_routes(
                         sess.model,
                         messages,
                         headers=sess.headers,
-                        temperature=ctx.preset.temperature,
-                        max_tokens=ctx.preset.max_tokens,
+                        temperature=generation_options.get("temperature", ctx.preset.temperature),
+                        max_tokens=generation_options.get("max_tokens", ctx.preset.max_tokens),
+                        **({"generation_options": generation_options} if generation_options else {}),
                         prompt_type=preset_id,
                         max_tool_calls=_tool_budget,
                         max_rounds=_max_rounds,

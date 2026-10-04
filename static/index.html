@@ -1047,6 +1047,8 @@
         </div>
         <!-- Model picker (inside chatbox, top-right) -->
         <div class="model-picker-wrap" id="model-picker-wrap">
+          <button type="button" class="model-picker-btn" id="model-controls-btn" title="Model controls" aria-label="Model controls" aria-haspopup="dialog" aria-expanded="false" aria-controls="model-controls-panel">Controls</button>
+          <section id="model-controls-panel" class="model-controls-panel" role="dialog" aria-label="Model controls" hidden></section>
           <button type="button" class="model-picker-btn" id="model-picker-btn" title="Switch model"><span id="model-picker-label">Select model</span> <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 15 12 9 18 15"/></svg></button>
           <div class="model-picker-reasoning" id="model-picker-reasoning-row" hidden>
             <label for="model-picker-reasoning" class="a11y-visually-hidden">Reasoning effort</label>

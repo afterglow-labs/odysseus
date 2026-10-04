@@ -56,6 +56,7 @@ const collaborators = {
   './cookbookProgressSignal.js': { computeProgressSignal() {} },
   './cookbookPorts.js': { portOf() {}, nextFreePort() {} },
   './toolWindowZOrder.js': { topPortalZ() {} },
+  './cookbookGpu.js': { clearGpuMemory() {} },
 };
 // Load the complete production module. Expose private entry points only to this
 // VM so reconciliation and storage normalization execute together unchanged.

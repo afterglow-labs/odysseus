@@ -15,6 +15,7 @@ class ChatRequest(BaseModel):
     selected_endpoint_id: Optional[str] = Field(default=None, description="Selected model endpoint ID")
     daybreak_enabled: Optional[StrictBool] = Field(default=None, description="Daybreak preference; omitted uses the saved session setting")
     reasoning_effort: Optional[str] = Field(default=None, description="Reasoning effort; omitted uses the session choice, empty string selects provider default")
+    generation_options: Optional[Dict[str, Any]] = None
     
     @field_validator('message')
     @classmethod

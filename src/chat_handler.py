@@ -14,8 +14,9 @@ from src.constants import (
     UPLOAD_DIR,
 )
 from core.models import ChatMessage
-from src.chat_helpers import extract_urls, model_supports_vision
-from src.document_processor import build_user_content, analyze_image_with_vl_result
+from src.chat_helpers import extract_urls, model_supports_vision, llamacpp_supports_video
+from src.document_processor import build_user_content, analyze_image_with_vl_result, analyze_video_with_vl_result
+from src.video_input import is_video_file
 from src.youtube_handler import (
     is_youtube_url,
     extract_youtube_id,
@@ -210,6 +211,7 @@ class ChatHandler:
                     model_supports_vision,
                     sess.model or "",
                     getattr(sess, "endpoint_url", "") or "",
+                    **({"headers": sess.headers} if getattr(sess, "headers", None) else {}),
                 )
 
         if effective_att_ids and vision_enabled:
@@ -281,12 +283,43 @@ class ChatHandler:
                             _m["vision"] = vl_desc
                             _m["vision_model"] = vl_model
 
+        video_ids = [fid for fid, fi in files_by_id.items()
+                     if is_video_file(fi.get("name", ""), fi.get("mime", ""))]
+        native_video = False
+        video_results = {}
+        if video_ids:
+            if vision_enabled and main_is_vision:
+                native_video = await asyncio.to_thread(
+                    llamacpp_supports_video, getattr(sess, "endpoint_url", "") or "",
+                    headers=getattr(sess, "headers", None),
+                ) is True
+            meta_by_id = {m["id"]: m for m in attachment_meta}
+            for fid in video_ids:
+                fi = files_by_id[fid]
+                if native_video:
+                    enhanced_message += f"\n\n[Video attached: {fi['name']}]"
+                    meta_by_id[fid]["vision_model"] = sess.model or ""
+                elif vision_enabled:
+                    # Resolve_upload enforces ownership; recheck the path before
+                    # a separate vision request opens the upload bytes.
+                    path = fi.get("path", "")
+                    inside = getattr(self.upload_handler, "_inside_upload_dir", None) or getattr(self.upload_handler, "inside_base_dir", None)
+                    if path and os.path.isfile(path) and inside and inside(path):
+                        result = await asyncio.to_thread(analyze_video_with_vl_result, path, owner=owner, prompt=message)
+                        video_results[fid] = result
+                        meta_by_id[fid]["vision"] = result.get("text", "")
+                        meta_by_id[fid]["vision_model"] = result.get("model", "")
+                else:
+                    video_results[fid] = {"text": "[Vision is disabled — enable it in Settings → Vision]"}
+
         user_content = build_user_content(
             enhanced_message, effective_att_ids, UPLOAD_DIR, self.upload_handler,
             session_id=getattr(sess, "id", None),
             auto_opened_docs=auto_opened_docs,
             owner=owner,
             resolved_uploads=files_by_id,
+            native_video=native_video,
+            video_results=video_results,
         )
 
         # Strip image_url entries for text-only models (VL description is already in the text)

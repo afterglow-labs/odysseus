@@ -1,4 +1,5 @@
 // Account/model options for the ChatGPT subscription picker and request route.
+import { initModelGenerationControls, updateModelGenerationControls } from './modelGeneration.js';
 const PREFERENCE_KEY = 'odysseus-model-daybreak';
 const REASONING_PREFERENCE_KEY = 'odysseus-model-reasoning-effort';
 const patches = new Map();
@@ -306,6 +307,7 @@ export function updateDaybreakPicker() {
   const checkbox = document.getElementById('model-picker-daybreak');
   if (!row || !checkbox) return;
   const selection = captureChatRoute(pickerDeps);
+  updateModelGenerationControls(selection);
   updateReasoningPicker(selection);
   const capability = daybreakCapability(selection);
   row.hidden = !selection.model || !isDaybreakSupported(selection.endpoint_url);
@@ -321,6 +323,7 @@ export function updateDaybreakPicker() {
 
 export function initDaybreakPicker(deps, showError) {
   pickerDeps = deps;
+  initModelGenerationControls(() => captureChatRoute(deps));
   initReasoningPicker(deps, showError);
   const checkbox = document.getElementById('model-picker-daybreak');
   if (!checkbox || checkbox.dataset.daybreakBound) return;

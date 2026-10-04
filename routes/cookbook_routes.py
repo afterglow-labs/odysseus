@@ -53,6 +53,7 @@ from routes.cookbook_helpers import (
     _ps_squote, _bash_squote, _validate_serve_cmd, _parse_serve_phase, OLLAMA_MISSING_HINT,
     _safe_env_prefix, _local_windows_bash_env_prefix, _local_tooling_path_export, _append_serve_preflight_exit_lines,
     _append_serve_exit_code_lines, _append_llama_cpp_linux_accel_build_lines, _cached_model_scan_script,
+    _append_llama_cpp_capability_preflight_lines,
     load_stored_hf_token,
     _append_vllm_linux_preflight_lines, _ollama_bind_from_cmd, _pip_install_fallback_chain,
     _pip_install_no_cache, _user_shell_path_bootstrap, _venv_safe_local_pip_install_cmd,
@@ -459,7 +460,7 @@ def setup_cookbook_routes() -> APIRouter:
                 ],
             ),
             (
-                r"not divisib|must be divisible|attention heads.*divisible",
+                r"not divisib(?!le by n_seq_max)|must be divisible|attention heads.*divisible",
                 "Tensor parallel size is incompatible with the model.",
                 [
                     {"label": "retry with tensor parallel size 1", "op": "replace", "flag": "--tensor-parallel-size", "value": "1"},
@@ -1113,6 +1114,10 @@ def setup_cookbook_routes() -> APIRouter:
         # No script/tee needed — we'll use tmux capture-pane to read output
         lines = ["#!/bin/bash"]
         lines.extend(_user_shell_path_bootstrap())
+        # Cookbook reads these bars from the runner output. Recent HF CLIs
+        # otherwise suppress them when Odysseus inherits an agent environment.
+        if not is_ollama_download:
+            lines.extend(["export HF_HUB_DISABLE_PROGRESS_BARS=0", "export TQDM_DISABLE=0"])
         if req.hf_token:
             lines.append(f"export HF_TOKEN='{_bash_squote(req.hf_token)}'")
         if _dl_hf_home_shell and not is_ollama_download:
@@ -1169,6 +1174,8 @@ def setup_cookbook_routes() -> APIRouter:
             # ── Windows remote: generate .ps1 runner, use Start-Process for background ──
             remote_runner = f".{session_id}_run.ps1"
             ps_lines = []
+            if not is_ollama_download:
+                ps_lines.extend(['$env:HF_HUB_DISABLE_PROGRESS_BARS = "0"', '$env:TQDM_DISABLE = "0"'])
             ps_lines.append('$sessionDir = "$env:TEMP\\odysseus-sessions"')
             ps_lines.append('New-Item -ItemType Directory -Force -Path $sessionDir | Out-Null')
             if req.hf_token:
@@ -1239,6 +1246,8 @@ def setup_cookbook_routes() -> APIRouter:
             remote_runner = f".{session_id}_run.sh"
             runner_lines = ["#!/bin/bash"]
             runner_lines.extend(_user_shell_path_bootstrap())
+            if not is_ollama_download:
+                runner_lines.extend(["export HF_HUB_DISABLE_PROGRESS_BARS=0", "export TQDM_DISABLE=0"])
             runner_lines.append("# Auto-detect environment")
             runner_lines.append("deactivate 2>/dev/null; hash -r")
             if req.hf_token:
@@ -1424,20 +1433,18 @@ def setup_cookbook_routes() -> APIRouter:
                     model_dirs.append(d)
         paths_code = _cached_model_scan_script(model_dirs)
 
-        scan_py = TMUX_LOG_DIR / "scan_cache.py"
-        scan_py.write_text(paths_code, encoding="utf-8")
-
         async def _run_cached_scan_once():
             if host:
                 _ssh_opts = "-o BatchMode=yes -o ConnectTimeout=8 -o ServerAliveInterval=4 -o ServerAliveCountMax=1 "
                 _pf = f"-p {ssh_port} " if ssh_port and ssh_port != "22" else ""
                 if platform == "windows":
                     # Windows: use 'python' and pipe via stdin with double-quote wrapping
-                    cmd = f'ssh {_ssh_opts}{_pf}{host} "python -" < \'{scan_py}\''
+                    cmd = f'ssh {_ssh_opts}{_pf}{host} "python -"'
                 else:
-                    cmd = f"ssh {_ssh_opts}{_pf}{host} 'python3 -' < '{scan_py}'"
+                    cmd = f"ssh {_ssh_opts}{_pf}{host} 'python3 -'"
                 proc = await asyncio.create_subprocess_shell(
                     cmd,
+                    stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=str(Path.home()),
@@ -1455,12 +1462,21 @@ def setup_cookbook_routes() -> APIRouter:
                     or which_tool("py") or "python"
                 )
                 proc = await asyncio.create_subprocess_exec(
-                    local_py, str(scan_py),
+                    local_py, "-",
+                    stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=str(Path.home()),
                 )
-            return await asyncio.wait_for(proc.communicate(), timeout=60), proc.returncode
+            # Each scan owns its stdin. A shared scan_cache.py let concurrent
+            # hardware/Launch scans overwrite each other's custom directories.
+            try:
+                output = await asyncio.wait_for(proc.communicate(paths_code.encode("utf-8")), timeout=60)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.communicate()
+                raise
+            return output, proc.returncode
 
         (stdout_b, stderr_b), returncode = await _run_cached_scan_once()
         stderr_txt = stderr_b.decode(errors="replace").strip()
@@ -2197,7 +2213,7 @@ def setup_cookbook_routes() -> APIRouter:
                 # Include the Homebrew bin dirs so a brew-installed llama-server /
                 # ollama is found (otherwise macOS falls back to a slow source build).
                 # /opt/homebrew = Apple Silicon, /usr/local = Intel; harmless on Linux.
-                runner_lines.append('export PATH="$HOME/.local/bin:$HOME/bin:$HOME/llama.cpp/build/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"')
+                runner_lines.append('export PATH="${VIRTUAL_ENV:+$VIRTUAL_ENV/bin:}$HOME/.local/bin:$HOME/bin:$HOME/llama.cpp/build/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"')
                 runner_lines.append('if [ -d /data/data/com.termux ]; then')
                 runner_lines.append('  # Termux: no native build — use the Python bindings (CPU).')
                 runner_lines.append('  if ! python3 -c "import llama_cpp" 2>/dev/null; then')
@@ -2708,6 +2724,8 @@ def setup_cookbook_routes() -> APIRouter:
                 runner_lines.append('exec bash -i')
 
             if not handled_ollama_serve and not handled_ollama_sidecar_probe:
+                if not local_windows:
+                    _append_llama_cpp_capability_preflight_lines(runner_lines, req.cmd)
                 _append_serve_preflight_exit_lines(
                     runner_lines,
                     keep_shell_open=not local_windows,
@@ -3228,9 +3246,12 @@ def setup_cookbook_routes() -> APIRouter:
                     try:
                         pid = int(parts[0])
                         pname = parts[2]
-                        pmem = int(float(parts[3]))
                     except (ValueError, IndexError):
                         continue
+                    try:
+                        pmem = int(float(parts[3]))
+                    except ValueError:
+                        pmem = None  # WSL reports N/A; the process still holds VRAM.
                     idx = uuid_to_idx.get(parts[1])
                     if idx is None or idx not in gpus_by_idx:
                         continue
@@ -3241,7 +3262,18 @@ def setup_cookbook_routes() -> APIRouter:
             pass
 
         if gpus:
-            return {"ok": True, "gpus": gpus, "backend": "cuda", "source": "nvidia-smi"}
+            unassigned = []
+            if not host and Path('/dev/dxg').exists():
+                from src.cookbook_gpu import wsl_gpu_processes
+                holders = {p['pid']: p for p in await asyncio.to_thread(wsl_gpu_processes)}
+                assigned = set()
+                for gpu in gpus:
+                    # NVML may return Windows host PIDs. Only verified Linux
+                    # holders can be signalled by this WSL instance.
+                    gpu['processes'] = [{**p, **holders[p['pid']]} for p in gpu['processes'] if p['pid'] in holders]
+                    assigned.update(p['pid'] for p in gpu['processes'])
+                unassigned = [p for pid, p in holders.items() if pid not in assigned]
+            return {"ok": True, "gpus": gpus, "backend": "cuda", "source": "nvidia-smi", "unassigned_processes": unassigned}
 
         # Local Apple Silicon / Metal fallback. macOS has no nvidia-smi and no
         # Linux /sys/class/drm tree, but services.hwfit.hardware already knows
@@ -3328,6 +3360,8 @@ def setup_cookbook_routes() -> APIRouter:
         host: str | None = None
         ssh_port: str | None = None
         signal: str = "TERM"  # TERM (graceful) or KILL (force)
+        start_time: str | None = None
+        gpu_only: bool = False
 
     @router.post("/api/cookbook/kill-pid")
     async def kill_pid(request: Request, req: KillPidRequest):
@@ -3345,6 +3379,16 @@ def setup_cookbook_routes() -> APIRouter:
             raise HTTPException(400, "signal must be TERM, KILL, or INT")
         host = validate_remote_host(req.host)
         req.ssh_port = validate_ssh_port(req.ssh_port)
+        if not host and not IS_WINDOWS:
+            from src.cookbook_gpu import process_start_time, wsl_gpu_processes
+            if req.pid == os.getpid():
+                raise HTTPException(400, "Cannot stop the Odysseus app through GPU cleanup")
+            if req.start_time and process_start_time(req.pid) != req.start_time:
+                return {"ok": False, "error": "Process changed or already exited; refresh GPU processes"}
+            if req.gpu_only and Path('/dev/dxg').exists():
+                holders = await asyncio.to_thread(wsl_gpu_processes)
+                if req.pid not in {p['pid'] for p in holders}:
+                    return {"ok": False, "error": "Process is no longer a Linux GPU process"}
         kill_cmd = f"kill -{sig} {req.pid}"
         try:
             if host:
@@ -4461,7 +4505,7 @@ def setup_cookbook_routes() -> APIRouter:
                     and bool(full_snapshot)
                     and _parse_serve_phase(full_snapshot, task_type).get("status") == "ready"
                 )
-                if _task_status in {"stopped", "done", "completed",
+                if remote and _task_status in {"stopped", "done", "completed",
                                     "crashed", "error", "failed",
                                     "ended", "killed"} and not _persisted_serve_ready:
                     is_alive = False
@@ -4523,7 +4567,7 @@ def setup_cookbook_routes() -> APIRouter:
                         status = "completed" if exit_code == 0 else "error"
                 elif has_exit and "unrecognized arguments" in lower:
                     status = "error"
-                elif has_error and not ("application startup complete" in lower):
+                elif has_error and task_type != "serve" and not ("application startup complete" in lower):
                     status = "error"
                 elif task_type == "download" and download_has_ok:
                     if re.search(r"Fetching\s+0\s+files", full_snapshot, re.IGNORECASE):

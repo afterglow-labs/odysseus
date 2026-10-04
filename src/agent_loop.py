@@ -3456,6 +3456,7 @@ async def stream_agent_loop(
     defer_context_shaping: bool = False,
     daybreak_enabled: bool = False,
     reasoning_effort: Optional[str] = None,
+    generation_options: Optional[Dict] = None,
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop generator.
 
@@ -3709,6 +3710,7 @@ async def stream_agent_loop(
                 candidate_request_factory=_direct_candidate_request,
                 candidate_route_descriptors=route_descriptors,
                 daybreak_enabled=daybreak_enabled,
+                **({"generation_options": generation_options} if generation_options else {}),
                 **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
             ):
                 if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
@@ -4966,6 +4968,7 @@ async def stream_agent_loop(
             candidate_request_factory=_candidate_request,
             candidate_route_descriptors=_candidate_route_descriptors,
             daybreak_enabled=daybreak_enabled,
+            **({"generation_options": generation_options} if generation_options else {}),
             **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
         ):
             if not _round_first_event_logged:
@@ -5372,6 +5375,7 @@ async def stream_agent_loop(
                         url=endpoint_url, model=model, messages=_synth_messages,
                         headers=headers, temperature=0.3, max_tokens=max_tokens, timeout=60,
                         daybreak_enabled=daybreak_enabled,
+                        **({"generation_options": generation_options} if generation_options else {}),
                         **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
                     )
                     _raw_text = _raw or ""

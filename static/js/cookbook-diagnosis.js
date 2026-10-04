@@ -366,7 +366,7 @@ export const ERROR_PATTERNS = [
     ],
   },
   {
-    pattern: /not divisib|must be divisible|attention heads.*divisible/i,
+    pattern: /not divisib(?!le by n_seq_max)|must be divisible|attention heads.*divisible/i,
     message: 'Tensor parallel size incompatible with model dimensions.',
     fixes: [
       { label: 'Retry with TP=1', action: (panel) => _serveAutoRetryReplace(panel, '--tensor-parallel-size', '1') },

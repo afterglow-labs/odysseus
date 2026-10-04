@@ -3197,6 +3197,32 @@ body.bg-pattern-sparkles {
       background: color-mix(in srgb, var(--accent) 18%, transparent);
     }
     /* Model picker — input bar drop-up */
+    .model-controls-panel {
+      position: absolute; bottom: 28px; right: 0; z-index: 200;
+      width: 410px; max-width: calc(100vw - 28px); max-height: min(650px, 74vh);
+      overflow-y: auto; overscroll-behavior: contain; padding: 16px;
+      background: var(--panel, var(--bg)); color: var(--fg); border: 1px solid var(--border);
+      border-radius: 12px; box-shadow: 0 12px 40px #0006; font-size: 12px;
+      text-align: left; box-sizing: border-box;
+    }
+    .model-controls-panel[hidden] { display: none; }
+    .model-controls-heading, .model-controls-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .model-controls-heading { font-size: 14px; }
+    .model-controls-model { margin-top: 8px; overflow-wrap: anywhere; font-size: 11px; opacity: .75; }
+    .model-controls-panel p { font-size: 11px; line-height: 1.5; opacity: .75; margin: 10px 0; }
+    .model-controls-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; }
+    .model-controls-panel label { display: flex; flex-direction: column; gap: 5px; min-width: 0; margin: 0; }
+    .model-controls-panel input, .model-controls-panel select, .model-controls-panel textarea {
+      box-sizing: border-box; width: 100%; min-width: 0; padding: 7px 8px;
+      border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit;
+    }
+    .model-controls-panel textarea { resize: vertical; }
+    .model-controls-panel details { margin: 14px 0; }
+    .model-controls-panel summary { cursor: pointer; }
+    .model-controls-panel details > label { margin-top: 10px; }
+    .model-controls-panel button { font: inherit; border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; background: var(--bg); color: var(--fg); cursor: pointer; }
+    .model-controls-panel [data-action="save"] { background: var(--accent); color: var(--bg); font-weight: 600; }
+    .model-controls-panel [role="status"] { margin-top: 8px; min-height: 16px; line-height: 1.5; }
     .model-picker-wrap {
       position: relative;
       flex-shrink: 0;

@@ -51,7 +51,7 @@ def _parse_msg_content(raw):
             # silently parsed back into a list, destroying the original string.
             _BLOCK_TYPES = {
                 "text", "image", "image_url", "audio", "input_audio",
-                "input_image", "document", "file",
+                "input_image", "input_video", "video_url", "document", "file",
             }
             if (isinstance(parsed, list) and parsed
                     and all(isinstance(p, dict) and p.get("type") in _BLOCK_TYPES

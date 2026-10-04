@@ -156,15 +156,47 @@ def lmstudio_supports_vision(url: str, model: str) -> Optional[bool]:
     return None
 
 
-def model_supports_vision(model_name: str, endpoint_url: str = "") -> bool:
+def _llamacpp_supports_modality(url: str, modality: str, headers: Optional[dict] = None) -> Optional[bool]:
+    """Read the loaded model's capabilities; don't infer video from image support."""
+    parsed = urlparse(url)
+    if not _is_local_host(parsed.hostname):
+        return None
+    path = re.sub(r'/(?:v1(?:/chat/completions)?|chat/completions)/?$', '', parsed.path.rstrip('/'))
+    probe_url = parsed._replace(path=path + '/props', query='', fragment='').geturl()
+    kwargs = {'timeout': 1.0}
+    if headers:
+        kwargs['headers'] = headers
+    try:
+        response = httpx.get(probe_url, **kwargs)
+        data = response.json() if response.is_success else {}
+        modalities = data.get('modalities') or {}
+        if isinstance(modalities.get(modality), bool):
+            return modalities[modality]
+    except Exception:
+        pass
+    return None
+
+
+def llamacpp_supports_vision(url: str, headers: Optional[dict] = None) -> Optional[bool]:
+    return _llamacpp_supports_modality(url, 'vision', headers)
+
+
+def llamacpp_supports_video(url: str, headers: Optional[dict] = None) -> Optional[bool]:
+    return _llamacpp_supports_modality(url, 'video', headers)
+
+
+def model_supports_vision(model_name: str, endpoint_url: str = "", headers: Optional[dict] = None) -> bool:
     """Whether a model accepts images, using the endpoint's reported
-    capability when available (LM Studio) and falling back to name-based
+    capability when available (LM Studio or llama.cpp) and falling back to name-based
     detection otherwise."""
     if endpoint_url:
         try:
             advertised = lmstudio_supports_vision(endpoint_url, model_name or "")
         except Exception:
             advertised = None
+        if advertised is not None:
+            return advertised
+        advertised = llamacpp_supports_vision(endpoint_url, headers=headers)
         if advertised is not None:
             return advertised
     return is_vision_model(model_name)

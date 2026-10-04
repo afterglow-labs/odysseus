@@ -12,6 +12,7 @@ import { bindMenuDismiss, dismissOrRemove } from './escMenuStack.js';
 import { openCookbookDependencies } from './cookbook-diagnosis.js';
 import { _hwfitCache } from './cookbook-hwfit.js';
 import { topPortalZ } from './toolWindowZOrder.js';
+import { clearGpuMemory } from './cookbookGpu.js';
 
 // Shared state/functions injected by init()
 let _envState;
@@ -46,8 +47,8 @@ const SERVE_STATE_KEY = 'cookbook-serve-state';
 const SERVE_FAVORITES_KEY = 'cookbook-serve-favorite-models';
 
 let _cachedAllModels = [];
-const _CACHED_MODELS_SCAN_KEY = 'cookbook_cached_models_scan_v3_ltx_video';
-const _CACHED_MODELS_SCAN_TTL = 6 * 3600 * 1000;
+const _CACHED_MODELS_SCAN_KEY = 'cookbook_cached_models_scan_v4_multiple_caches';
+const _CACHED_MODELS_SCAN_TTL = 30 * 1000;
 
 function _normalizeCookbookModelDir(dir) {
   const d = String(dir || '').replaceAll('✕', '').replaceAll('✖', '').trim();
@@ -925,9 +926,15 @@ function _ggufFilesForModel(model) {
 }
 
 function _runnableGgufFiles(model) {
-  const files = _ggufFilesForModel(model);
-  const primary = files.filter(f => (f.role || 'model') === 'model');
-  return primary.length ? primary : files;
+  // A projector-only download is incomplete as a language model. Never fall
+  // back to it, including older scans that omitted or mislabelled the role.
+  return _ggufFilesForModel(model)
+    .filter(f => (f.role || 'model') === 'model' && !_isProjectorGguf(f));
+}
+
+function _isProjectorGguf(file) {
+  const name = String(file.rel_path || file.name || '').replace(/\\/g, '/').split('/').pop();
+  return file.role === 'projector' || /mmproj/i.test(name);
 }
 
 function _selectedGgufSizeGb(model, relPath) {
@@ -939,7 +946,7 @@ function _selectedGgufSizeGb(model, relPath) {
 
 function _projectorGgufFiles(model) {
   return _ggufFilesForModel(model)
-    .filter(f => (f.role || '') === 'projector' || /(^|\/)mmproj[^/]*\.gguf$/i.test(f.rel_path || f.name || ''))
+    .filter(_isProjectorGguf)
     .sort((a, b) => String(a.rel_path || a.name || '').localeCompare(String(b.rel_path || b.name || '')));
 }
 
@@ -1097,6 +1104,21 @@ function _ggufSearchDirExpr(model, repo) {
   return `"$HOME/.cache/huggingface/hub/models--${repo.replace(/\//g, '--')}/snapshots"`;
 }
 
+function _mainGgufPathExpr(model, repo, relPath) {
+  const selected = _runnableGgufFiles(model).find(f => f.rel_path === relPath);
+  if (selected) return _selectedGgufExpr(model, repo, selected.rel_path);
+  // Older scans lack file metadata. Resolve the first split or single model
+  // on the target host, excluding projectors even when no model exists yet.
+  const dir = _ggufSearchDirExpr(model, repo);
+  return `$({ find ${dir} -iname '*-00001-of-*.gguf' ! -iname '*mmproj*' 2>/dev/null | sort; find ${dir} -iname '*.gguf' ! -iname '*mmproj*' 2>/dev/null | sort; } | head -1)`;
+}
+
+function _modelForCachedCard(models, repo, item) {
+  const cachePath = item?.dataset.cachePath;
+  return models.find(m => m.repo_id === repo
+    && (cachePath === undefined || String(m.path || '') === cachePath));
+}
+
 function _rerenderCachedModels() {
   const list = document.getElementById('hwfit-cached-list');
   const tagContainer = document.getElementById('serve-tags');
@@ -1145,7 +1167,7 @@ function _rerenderCachedModels() {
     const _isDlActive = _isDownloading ? _isActivelyDownloading(m.repo_id) : false;
     const _isFavorite = favorites.has(String(m.repo_id || ''));
     const isSelectMode = document.getElementById('hwfit-cache-select')?.classList.contains('active');
-    html += `<div class="doclib-card memory-item${_isFavorite ? ' memory-pinned cookbook-serve-favorite-model' : ''}" data-repo="${esc(m.repo_id)}" data-tag="${m._tag || ''}" data-family="${m._family || ''}" style="cursor:pointer;">`;
+    html += `<div class="doclib-card memory-item${_isFavorite ? ' memory-pinned cookbook-serve-favorite-model' : ''}" data-repo="${esc(m.repo_id)}" data-cache-path="${esc(m.path || '')}" data-tag="${m._tag || ''}" data-family="${m._family || ''}" style="cursor:pointer;">`;
     html += `<span class="serve-select-cb memory-select-dot" style="display:${isSelectMode ? 'inline-block' : 'none'};cursor:pointer;"></span>`;
     html += `<div style="flex:1;min-width:0;">`;
     const _mc = modelColor(m.repo_id) || '';
@@ -1224,7 +1246,7 @@ function _rerenderCachedModels() {
       const item = btn.closest('.memory-item');
       const repo = item?.dataset.repo;
       if (!repo) return;
-      const m = allModels.find(x => x.repo_id === repo);
+      const m = _modelForCachedCard(allModels, repo, item);
 
       const dropdown = document.createElement('div');
       dropdown.className = 'hwfit-cached-dropdown';
@@ -1339,7 +1361,7 @@ function _rerenderCachedModels() {
       if (document.getElementById('hwfit-cache-select')?.classList.contains('active')) return;
       const repo = item.dataset.repo;
       if (!repo) return;
-      const m = allModels.find(x => x.repo_id === repo);
+      const m = _modelForCachedCard(allModels, repo, item);
       if (!m) return;
       if (m.status !== 'ready') {
         if (m.status === 'downloading' && _isActivelyDownloading(m.repo_id)) {
@@ -1502,6 +1524,7 @@ function _rerenderCachedModels() {
         panelHtml += `<div class="hwfit-serve-warn" style="margin:0 0 8px;padding:6px 10px;border-radius:5px;font-size:11px;background:color-mix(in srgb, var(--color-warning, #f0ad4e) 14%, transparent);border:1px solid color-mix(in srgb, var(--color-warning, #f0ad4e) 40%, transparent);color:var(--color-warning, #f0ad4e);display:flex;gap:6px;align-items:flex-start;line-height:1.4;"><span aria-hidden="true">⚠</span><span>${_warnText}</span></div>`;
       }
       panelHtml += `<div class="hwfit-serve-vision-warn" style="display:none;margin:0 0 8px;padding:6px 10px;border-radius:5px;font-size:11px;background:color-mix(in srgb, var(--color-warning, #f0ad4e) 14%, transparent);border:1px solid color-mix(in srgb, var(--color-warning, #f0ad4e) 40%, transparent);color:var(--color-warning, #f0ad4e);gap:6px;align-items:flex-start;line-height:1.4;"><span aria-hidden="true">⚠</span><span>Vision is enabled, but no mmproj GGUF projector was found in the cached model scan. Download an mmproj-*.gguf for this model, then refresh the cached model list before launching.</span></div>`;
+      panelHtml += `<div class="hwfit-serve-main-model-warn" role="alert" style="display:none;margin:0 0 8px;color:var(--color-warning, #f0ad4e);">Only vision projectors were found. Download the main model GGUF, then refresh the cached model list before launching.</div>`;
       // Row 1: Engine + Server + Env
       panelHtml += `<div class="hwfit-serve-row">`;
       const backendOpts = _backendChoices.map(([v,l]) => `<option value="${v}"${defaultBackend===v?' selected':''}>${l}</option>`).join('');
@@ -1557,7 +1580,7 @@ function _rerenderCachedModels() {
       panelHtml += _gpusLabelHtml;
       panelHtml += `</div>`;
       // (hwfit-serve-runtime-note moved to the top of the panel — see above.)
-      if (_ggufChoices.length > 1) {
+      if (_ggufChoices.length) {
         // Show the GGUF File dropdown for BOTH llama.cpp and Ollama — Ollama
         // also needs to know which exact .gguf to import via the new
         // `docker exec ollama-test ollama-import` auto-fill (otherwise the
@@ -1566,8 +1589,6 @@ function _rerenderCachedModels() {
         panelHtml += `<div class="hwfit-serve-row hwfit-backend-llamacpp hwfit-backend-ollama">`;
         panelHtml += `<label class="hwfit-backend-llamacpp hwfit-backend-ollama">${_l('GGUF File','Choose the exact GGUF artifact to serve from this cached model folder.')}<select class="hwfit-sf hwfit-sf-wide" data-field="gguf_file">${_ggufOptions}</select></label>`;
         panelHtml += `</div>`;
-      } else if (_defaultGguf) {
-        panelHtml += `<input type="hidden" class="hwfit-sf" data-field="gguf_file" value="${esc(_defaultGguf)}" />`;
       }
       // Row 2: Core settings — the handful you actually touch every launch.
       // TP / Context / GPU / GPU Mem / Max Seqs / Dtype. Everything else
@@ -1809,7 +1830,7 @@ function _rerenderCachedModels() {
       // Copy moved inside the command textarea (top-right). Spacer then
       // pushes Clear Server + Launch to the right.
       panelHtml += `<span class="hwfit-serve-actions-spacer"></span>`;
-      panelHtml += `<button class="cookbook-btn cookbook-gpu-clear" style="display:none;" title="Clear server GPU memory by stopping processes that hold VRAM (SIGTERM first)">Clear Server</button>`;
+      panelHtml += `<button type="button" class="cookbook-btn cookbook-gpu-clear" title="Stop GPU processes on the selected server to release VRAM">Clear VRAM</button>`;
       panelHtml += `<button class="cookbook-btn cookbook-gpu-probe" style="display:none;" title="Probe GPU memory and running GPU processes">Probe GPUs</button>`;
       // Launch + a small ^ that opens an inline schedule form. The form
       // creates a ScheduledTask (action=cookbook_serve), so the schedule
@@ -1861,23 +1882,18 @@ function _rerenderCachedModels() {
         if (hostField) hostField.value = f.host;
         const backend = f.backend || 'vllm';
         const serveModel = (f.model_path || '').trim() || (m.is_local_dir && m.path ? `${m.path}/${repo}` : repo);
+        if (backend === 'llamacpp' || backend === 'ollama') {
+          const choices = _runnableGgufFiles(m);
+          // Loading an old preset can reintroduce a projector selection. Keep
+          // the form, task label, and launch command on the same main file.
+          if (!choices.some(file => file.rel_path === f.gguf_file)) {
+            f.gguf_file = choices[0]?.rel_path || '';
+            const field = panel.querySelector('[data-field="gguf_file"]');
+            if (field) field.value = f.gguf_file;
+          }
+        }
         if (backend === 'llamacpp') {
-          const ggufChoices = _runnableGgufFiles(m);
-          const selectedGguf = ggufChoices.find(file => file.rel_path === f.gguf_file);
-          // For multi-part GGUFs, llama.cpp requires the first split
-          // (-00001-of-NNNNN.gguf). Prefer it (sorted, so UD-IQ4_XS/001 comes
-          // before Q4_K_M/001 etc); fall back to any single GGUF sorted.
-          const dir = _ggufSearchDirExpr(m, repo);
-          // GGUF needs the actual .gguf FILE, not the folder. For a custom-dir
-          // model the file lives under "<path>/<repo>" — search there just like we
-          // search the HF snapshots dir, so serving a GGUF from a custom dir works
-          // instead of handing llama.cpp a directory (which fails).
-          const _ldir = m.path ? _shellQuote(`${m.path}/${repo}`) : '""';
-          f._gguf_path = selectedGguf
-            ? _selectedGgufExpr(m, repo, selectedGguf.rel_path)
-            : m.is_local_dir && m.path
-            ? `$({ find ${_ldir} -name '*-00001-of-*.gguf' 2>/dev/null | sort; find ${_ldir} -name '*.gguf' 2>/dev/null | sort; } | head -1)`
-            : `$({ find ${dir} -name '*-00001-of-*.gguf' 2>/dev/null | sort; find ${dir} -name '*.gguf' 2>/dev/null | sort; } | head -1)`;
+          f._gguf_path = _mainGgufPathExpr(m, repo, f.gguf_file);
           // Vision: use the scanned projector (CLIP/mmproj) file when present.
           // Keeping this as a printf path avoids generating a command substitution
           // that the backend serve-command validator must reject as unsafe.
@@ -1898,6 +1914,10 @@ function _rerenderCachedModels() {
         }
         let cmd = _buildServeCmd(f, serveModel, backend);
         if (f.extra && f.extra.trim()) cmd += ' ' + f.extra.trim();
+        panel._missingMainGguf = (backend === 'llamacpp' || backend === 'ollama')
+          && _ggufFilesForModel(m).length > 0 && !_runnableGgufFiles(m).length;
+        const mainWarn = panel.querySelector('.hwfit-serve-main-model-warn');
+        if (mainWarn) mainWarn.style.display = panel._missingMainGguf ? 'block' : 'none';
         const missingVisionProjector = backend === 'llamacpp' && !!f.vision && !f._mmproj_path;
         panel._visionMissingProjector = missingVisionProjector;
         const _visionWarn = panel.querySelector('.hwfit-serve-vision-warn');
@@ -2719,7 +2739,7 @@ function _rerenderCachedModels() {
             direct.__openScheduleDirect = true;
             _launchMoreBtn.dispatchEvent(direct);
           }));
-          menu.appendChild(mk('Clear Server', 'cookbook-dropdown-danger', () => _clearBtn?.click()));
+          menu.appendChild(mk('Clear VRAM', 'cookbook-dropdown-danger', () => _clearBtn?.click()));
           menu.appendChild(mk('Cancel', 'dropdown-cancel-mobile', () => {}));
           const r = _launchMoreBtn.getBoundingClientRect();
           menu.style.position = 'fixed';
@@ -3030,63 +3050,12 @@ function _rerenderCachedModels() {
         _runProbe(true).catch(() => {});
 
         if (_clearBtn) {
-          _clearBtn.addEventListener('click', async () => {
-            try {
-              await _withSpinner(_clearBtn, async () => {
-                // Always probe first so we have fresh PID list
-                const data = await _runProbe();
-                if (!data) return;
-                const pids = [];
-                for (const g of data.gpus) {
-                  for (const p of (g.processes || [])) pids.push({ pid: p.pid, name: p.name });
-                }
-                if (pids.length === 0) {
-                  uiModule.showToast('No GPU processes to clear', 3000);
-                  return;
-                }
-                const summary = pids.map(p => `${p.pid} (${p.name})`).join(', ');
-                if (!await window.styledConfirm(`Clear server GPU memory by sending SIGTERM to ${pids.length} process(es)?\n\n${summary}\n\nIf any survive, the next prompt can force-kill them with SIGKILL.`, { confirmText: 'SIGTERM', danger: true })) return;
-                // First pass: SIGTERM
-                const hostVal = panel._gpuProbe.host;
-                const results = await Promise.all(pids.map(p =>
-                  fetch('/api/cookbook/kill-pid', {
-                    method: 'POST', credentials: 'same-origin',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ pid: p.pid, signal: 'TERM', host: hostVal || null }),
-                  }).then(r => r.json()).catch(e => ({ ok: false, error: e.message }))
-                ));
-                const okCount = results.filter(r => r.ok).length;
-                uiModule.showToast(`SIGTERM → ${okCount}/${pids.length} processes`, 5000);
-                // Wait, then re-probe; if survivors, offer SIGKILL
-                await new Promise(r => setTimeout(r, 1500));
-                const after = await _runProbe();
-                if (!after) return;
-                const survivors = [];
-                for (const g of after.gpus) {
-                  for (const p of (g.processes || [])) {
-                    if (pids.some(orig => orig.pid === p.pid)) survivors.push(p);
-                  }
-                }
-                if (survivors.length === 0) {
-                  uiModule.showToast(`Cleared ${pids.length} GPU process(es)`, 4000);
-                  return;
-                }
-                if (!await window.styledConfirm(`${survivors.length} process(es) survived SIGTERM:\n\n${survivors.map(p => p.pid + ' (' + p.name + ')').join(', ')}\n\nForce-kill with SIGKILL?`, { confirmText: 'SIGKILL', danger: true })) return;
-                const killResults = await Promise.all(survivors.map(p =>
-                  fetch('/api/cookbook/kill-pid', {
-                    method: 'POST', credentials: 'same-origin',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ pid: p.pid, signal: 'KILL', host: hostVal || null }),
-                  }).then(r => r.json()).catch(e => ({ ok: false, error: e.message }))
-                ));
-                const killOk = killResults.filter(r => r.ok).length;
-                uiModule.showToast(`SIGKILL → ${killOk}/${survivors.length} processes`, 5000);
-                await new Promise(r => setTimeout(r, 800));
-                await _runProbe();
-              });
-            } catch (e) {
-              uiModule.showToast('Clear Server error: ' + e.message, 6000);
-            }
+          _clearBtn.addEventListener('click', () => {
+            const server = _selectedServeTarget(panel);
+            clearGpuMemory({
+              host: server.host || '', sshPort: server.port || '', button: _clearBtn,
+              onCleared: () => _runProbe(true),
+            });
           });
         }
 
@@ -3332,6 +3301,11 @@ function _rerenderCachedModels() {
         });
         serveState.backend = serveState.backend || (_detectBackend(m).backend) || 'vllm';
         const launchTarget = _selectedServeTarget(panel);
+        if (!_cmdManuallyEdited && panel._missingMainGguf) {
+          _restoreLaunchBtn();
+          uiModule.showToast('Only vision projectors were found. Download the main model GGUF and refresh the cached model list.', 8000);
+          return;
+        }
         if (serveState.backend === 'llamacpp' && serveState.vision && !/(?:^|\s)(?:--mmproj|--clip_model_path)\b/.test(launchCmd)) {
           _restoreLaunchBtn();
           uiModule.showToast('Vision is checked, but no mmproj projector is in the launch command. Refresh cached models after downloading mmproj, or add --mmproj manually.', 8000);
@@ -3785,7 +3759,11 @@ function _resolveCacheHost() {
 }
 
 async function _deleteCachedModel(repo, itemEl, skipConfirm = false, model = null) {
-  const m = model || _cachedAllModels.find(x => x.repo_id === repo);
+  const m = model || _modelForCachedCard(_cachedAllModels, repo, itemEl);
+  if (!m) {
+    uiModule.showError('Model cache changed. Refresh before deleting.');
+    return;
+  }
   // Delete the EXACT on-disk path the scan reported. Models in a custom
   // model dir live at <path>/<repo>; HF-cache models at
   // <path>/models--<org>--<name>. The old code always rm'd the hardcoded
@@ -3890,7 +3868,7 @@ async function _deleteCachedModel(repo, itemEl, skipConfirm = false, model = nul
       await new Promise(resolve => setTimeout(resolve, 300));
       if (itemEl.parentElement) itemEl.remove();
       // Drop from the in-memory list so a re-render/filter doesn't resurrect it.
-      _cachedAllModels = _cachedAllModels.filter(x => x.repo_id !== repo);
+      _cachedAllModels = _cachedAllModels.filter(x => x !== m);
     }
   } catch (e) {
     uiModule.showError('Delete failed: ' + (e && e.message ? e.message : e));

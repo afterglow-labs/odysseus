@@ -58,6 +58,7 @@ const collaborators = {
   './cookbookProgressSignal.js': { computeProgressSignal() {} },
   './cookbookPorts.js': { portOf() {}, nextFreePort() {} },
   './toolWindowZOrder.js': { topPortalZ() {} },
+  './cookbookGpu.js': { clearGpuMemory() {} },
 };
 const filename = path.resolve('static/js/cookbookRunning.js');
 // Expose the private click handler and configure only its injected host helpers;

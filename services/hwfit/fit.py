@@ -705,7 +705,7 @@ def _matches_search(model, search):
     return True
 
 
-def rank_models(system, use_case=None, limit=50, search=None, sort="score", quant=None, target_context=None, fit_only=False):
+def rank_models(system, use_case=None, limit=50, search=None, sort="score", quant=None, target_context=None, fit_only=False, candidate_models=None):
     """Rank all models against detected hardware. Returns sorted list of fit results.
 
     fit_only: when True, drop rows whose fit_level is "too_tight" (model doesn't
@@ -713,7 +713,7 @@ def rank_models(system, use_case=None, limit=50, search=None, sort="score", quan
     shown — sorting by Param means highest-param PERIOD, even ones that won't
     run, so the user can see the truth.
     """
-    models = get_models()
+    models = get_models() if candidate_models is None else candidate_models
     results = []
 
     # Include image gen models only when explicitly filtered

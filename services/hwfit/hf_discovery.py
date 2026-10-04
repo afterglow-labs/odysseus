@@ -2,6 +2,7 @@ import json
 import os
 import re
 import time
+import threading
 import urllib.parse
 import urllib.request
 from email.utils import parsedate_to_datetime
@@ -15,6 +16,70 @@ HW_FIT_CACHE_DIR = Path(DATA_DIR) / "hwfit"
 MLX_COMMUNITY_CACHE = HW_FIT_CACHE_DIR / "mlx_community_models.json"
 HF_COLLECTION_MODELS_CACHE = HW_FIT_CACHE_DIR / "hf_collection_models.json"
 HF_COLLECTION_TTL_SECONDS = 24 * 3600
+_SEARCH_CACHE = {}
+_SEARCH_LOCK = threading.Lock()
+_SEARCH_TTL_SECONDS = 300
+
+
+def search_hf_models(query, timeout=8):
+    """Find public models beyond the bundled catalog, retaining AND word matching.
+
+    Hub's search is a substring search: "Qwen Uncensored" does not match
+    "Qwen3.8-27B-Uncensored". Fetch candidates with the most specific word;
+    rank_models applies the complete, case-insensitive query afterwards.
+    """
+    query = " ".join(str(query or "").lower().split())[:200]
+    if len(query) < 2:
+        return []
+    terms = query.split()
+    hub_query = max(terms, key=len)
+    with _SEARCH_LOCK:
+        cached = _SEARCH_CACHE.get(hub_query)
+        if cached and time.monotonic() - cached[0] < _SEARCH_TTL_SECONDS:
+            return list(cached[1])
+    params = urllib.parse.urlencode({
+        "search": hub_query, "limit": "200", "sort": "downloads",
+        "direction": "-1", "full": "true", "config": "true",
+    })
+    req = urllib.request.Request(
+        "https://huggingface.co/api/models?" + params,
+        headers={"User-Agent": "Odysseus-Cookbook/1.0"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        payload = json.load(resp)
+    if not isinstance(payload, list):
+        raise ValueError("Hugging Face returned an invalid model search response")
+    rows = []
+    for item in payload:
+        if not isinstance(item, dict) or item.get("private"):
+            continue
+        pipeline = item.get("pipeline_tag") or ""
+        if pipeline and pipeline not in {"text-generation", "image-text-to-text"}:
+            continue
+        tags = item.get("tags") or []
+        if any(t in tags for t in ("peft", "lora", "adapter")):
+            continue
+        repo = item.get("id") or item.get("modelId") or ""
+        if not isinstance(repo, str) or "/" not in repo:
+            continue
+        safetensors = item.get("safetensors") or {}
+        gguf = item.get("gguf") or {}
+        source = {"provider": repo.split("/", 1)[0], "mlx_only": "mlx" in tags or "mlx" in repo.lower()}
+        entry = _entry_from_collection_item({}, {
+            **item, "id": repo, "type": "model",
+            "numParameters": safetensors.get("total") or gguf.get("total") or 0,
+        }, source)
+        if not entry:
+            continue
+        if "gguf" in tags or any(str(s.get("rfilename", "")).endswith(".gguf") for s in item.get("siblings") or [] if isinstance(s, dict)):
+            entry.update(is_gguf=True, format="gguf", capabilities=["llama.cpp"])
+        entry["_source"] = "hf_search"
+        rows.append(entry)
+    with _SEARCH_LOCK:
+        if len(_SEARCH_CACHE) >= 64:
+            _SEARCH_CACHE.pop(min(_SEARCH_CACHE, key=lambda k: _SEARCH_CACHE[k][0]))
+        _SEARCH_CACHE[hub_query] = (time.monotonic(), rows)
+    return list(rows)
 
 
 HF_COLLECTION_SOURCES = (

@@ -103,6 +103,27 @@ def _save_for_user(user: Optional[str], prefs: dict):
 def setup_prefs_routes():
     router = APIRouter(prefix="/api/prefs", tags=["preferences"])
 
+    @router.put("/model-generation")
+    async def set_model_generation(request: Request, body: dict):
+        from fastapi import HTTPException
+        from src.model_generation import validate_generation_options
+        key = body.get("model_key")
+        if not isinstance(key, str) or not key or len(key) > 4096:
+            raise HTTPException(422, "Invalid model profile key")
+        options = validate_generation_options(body.get("options"))
+        user = get_current_user(request)
+        prefs = _load_for_user(user)
+        profiles = dict(prefs.get("model-generation") or {})
+        if options:
+            if key not in profiles and len(profiles) >= 250:
+                raise HTTPException(422, "At most 250 model profiles can be saved")
+            profiles[key] = options
+        else:
+            profiles.pop(key, None)
+        prefs["model-generation"] = profiles
+        _save_for_user(user, prefs)
+        return {"key": "model-generation", "value": profiles}
+
     @router.get("")
     async def get_all_prefs(request: Request):
         user = get_current_user(request)

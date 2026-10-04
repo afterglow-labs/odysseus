@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from fastapi import HTTPException
 from typing import Optional, Dict, List, Tuple
 from src.model_context import get_context_length, DEFAULT_CONTEXT, is_local_endpoint
+from src.model_generation import apply_generation_options
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -217,7 +218,8 @@ def _cache_header_identity(headers) -> str:
 
 def _get_cache_key(url: str, model: str, messages: List[Dict],
                    temperature: float, max_tokens: int, headers=None,
-                   daybreak_enabled: bool = False, reasoning_effort: Optional[str] = None) -> str:
+                   daybreak_enabled: bool = False, reasoning_effort: Optional[str] = None,
+                   generation_options: Optional[Dict] = None) -> str:
     """Generate a cache key partitioned by endpoint and credential identity."""
     hashable_messages = []
     for msg in messages:
@@ -232,6 +234,7 @@ def _get_cache_key(url: str, model: str, messages: List[Dict],
         'max_tokens': max_tokens,
         'daybreak_enabled': bool(daybreak_enabled),
         'reasoning_effort': reasoning_effort or None,
+        'generation_options': generation_options or {},
         # Never put credentials in a cache key or loggable cache payload.  The
         # digest only prevents responses from one configured account/route
         # being returned under another route with the same URL and model.
@@ -2123,10 +2126,22 @@ def normalize_model_id(
             return a
     return None
 
+def _apply_chat_generation_options(payload, options, provider, url, model):
+    # The subscription transport has its own capability-validated selector.
+    if not options or provider == "chatgpt-subscription":
+        return
+    apply_generation_options(
+        payload, options, provider=provider, local=is_local_endpoint(url),
+        max_token_key="max_completion_tokens" if _uses_max_completion_tokens(model) else "max_tokens",
+        temperature_allowed=(not _anthropic_rejects_temperature(model) if provider == "anthropic" else not _omit_temperature(provider, model)),
+    )
+
+
 def llm_call(url: str, model: str, messages: List[Dict], temperature: float = LLMConfig.DEFAULT_TEMPERATURE,
              max_tokens: int = LLMConfig.DEFAULT_MAX_TOKENS, headers: Optional[Dict] = None,
              timeout: int = LLMConfig.DEFAULT_TIMEOUT, prompt_type: Optional[str] = None,
-             daybreak_enabled: bool = False, reasoning_effort: Optional[str] = None) -> str:
+             daybreak_enabled: bool = False, reasoning_effort: Optional[str] = None,
+             generation_options: Optional[Dict] = None) -> str:
     """Synchronous LLM call with optional prompt type enhancement."""
     h = _provider_headers(_detect_provider(url))
     # Tolerate headers that arrive as a JSON string (some sessions stored them
@@ -2163,6 +2178,7 @@ def llm_call(url: str, model: str, messages: List[Dict], temperature: float = LL
         url, model, messages_copy, temperature, max_tokens, headers=headers,
         daybreak_enabled=daybreak_enabled,
         reasoning_effort=reasoning_effort,
+        generation_options=generation_options,
     )
     cached_response = _get_cached_response(cache_key)
     if cached_response:
@@ -2206,6 +2222,7 @@ def llm_call(url: str, model: str, messages: List[Dict], temperature: float = LL
         _apply_local_generation_stability(payload, target_url, model)
         if provider == "mistral" and _supports_thinking(model):
             payload["reasoning_effort"] = _MISTRAL_REASONING_EFFORT
+    _apply_chat_generation_options(payload, generation_options, provider, target_url, model)
     try:
         note_model_activity(target_url, model)
         r = httpx_post_kimi_aware(target_url, h, json=payload, timeout=timeout)
@@ -2451,6 +2468,7 @@ async def llm_call_async(
     return_model_metadata: bool = False,
     daybreak_enabled: bool = False,
     reasoning_effort: Optional[str] = None,
+    generation_options: Optional[Dict] = None,
 ) -> str | tuple[str, str]:
     """Asynchronous LLM call using httpx with connection pooling, timeout, retry logic, and performance logging."""
     provider = _detect_provider(url)
@@ -2476,6 +2494,7 @@ async def llm_call_async(
         url, model, messages_copy, temperature, max_tokens, headers=headers,
         daybreak_enabled=daybreak_enabled,
         reasoning_effort=reasoning_effort,
+        generation_options=generation_options,
     )
     cached_response = _get_cached_response(cache_key)
     if cached_response:
@@ -2587,6 +2606,7 @@ async def llm_call_async(
         _apply_local_cache_affinity(payload, url, session_id)
         _apply_local_generation_stability(payload, target_url, model)
 
+    _apply_chat_generation_options(payload, generation_options, provider, target_url, model)
     if _is_host_dead(target_url):
         raise HTTPException(503, f"Upstream {_host_key(target_url)} marked unreachable (cooldown active)")
 
@@ -2748,7 +2768,8 @@ async def stream_llm(url: str, model: str, messages: List[Dict], temperature: fl
                      timeout: int = LLMConfig.STREAM_TIMEOUT, prompt_type: Optional[str] = None,
                      tools: Optional[List[Dict]] = None, session_id: Optional[str] = None,
                      tool_choice_none: bool = False, workload: str = "foreground",
-                     daybreak_enabled: bool = False, reasoning_effort: Optional[str] = None):
+                     daybreak_enabled: bool = False, reasoning_effort: Optional[str] = None,
+                     generation_options: Optional[Dict] = None):
     target_url = _stream_target_url(url)
     async with _local_model_slot(target_url, model, workload):
         async for chunk in _stream_llm_inner(
@@ -2765,6 +2786,7 @@ async def stream_llm(url: str, model: str, messages: List[Dict], temperature: fl
             tool_choice_none=tool_choice_none,
             daybreak_enabled=daybreak_enabled,
             reasoning_effort=reasoning_effort,
+            generation_options=generation_options,
         ):
             yield chunk
 
@@ -2774,7 +2796,8 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
                             timeout: int = LLMConfig.STREAM_TIMEOUT, prompt_type: Optional[str] = None,
                             tools: Optional[List[Dict]] = None, session_id: Optional[str] = None,
                             tool_choice_none: bool = False, daybreak_enabled: bool = False,
-                            reasoning_effort: Optional[str] = None):
+                            reasoning_effort: Optional[str] = None,
+                            generation_options: Optional[Dict] = None):
     """Stream LLM responses with improved error handling.
 
     Yields SSE chunks:
@@ -2873,6 +2896,8 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
         if provider == "copilot":
             from src.copilot import apply_request_headers
             apply_request_headers(h, messages_copy)
+
+    _apply_chat_generation_options(payload, generation_options, provider, target_url, model)
 
     # Connect budget from LLMConfig.CONNECT_TIMEOUT (env LLM_CONNECT_TIMEOUT).
     # The dead-host cooldown still bounds a genuinely unreachable upstream, so a
