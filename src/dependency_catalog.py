@@ -183,7 +183,12 @@ DEPENDENCIES = [
 
 def dependency_catalog(*, local_platform="", target_platform=""):
     """Return independent plans; app tools always use the local platform."""
-    packages = deepcopy(DEPENDENCIES)
+    # The native Windows backend does not run tmux. Keep it in the catalog
+    # for supported remote servers, including when the app runs on Windows.
+    packages = [
+        pkg for pkg in deepcopy(DEPENDENCIES)
+        if not (pkg["name"] == "tmux" and target_platform.lower() in {"win32", "windows", "win"})
+    ]
     for pkg in packages:
         platform = local_platform if pkg.get("target") == "local" else target_platform
         platform = platform.lower()

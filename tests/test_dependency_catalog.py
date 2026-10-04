@@ -1,3 +1,5 @@
+import pytest
+
 from src.dependency_catalog import dependency_catalog, requirement_specs
 
 
@@ -36,3 +38,15 @@ def test_catalog_changes_for_one_request_do_not_leak_into_another():
     first["pip"] = "wrong"
     assert row("rembg")["pip"] == "rembg[cpu]"
     assert row("rembg", local="linux")["pip"] == "rembg[gpu]"
+
+
+@pytest.mark.parametrize("target", ["win32", "windows", "win"])
+def test_native_windows_targets_do_not_offer_tmux(target):
+    names = {pkg["name"] for pkg in dependency_catalog(local_platform="win32", target_platform=target)}
+    assert "tmux" not in names
+    assert "docker" in names
+
+
+@pytest.mark.parametrize("target", ["linux", "darwin", "macos"])
+def test_windows_client_keeps_tmux_for_supported_remote_targets(target):
+    assert row("tmux", local="win32", target=target)["install_supported"] is True

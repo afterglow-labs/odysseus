@@ -1153,7 +1153,7 @@ async function _fetchDependencies({ showIssues = false } = {}) {
       if (pkg.install_supported === false && !pkg.installed) {
         return `<span class="cookbook-dep-tag cookbook-dep-na" title="${esc(pkg.install_hint || 'Not supported on this target.')}">Unavailable</span>`;
       }
-      if (pkg.needs_repair && pkg.installed && pkg.install_supported !== false) {
+      if (pkg.needs_repair && pkg.install_supported !== false) {
         return `<button type="button" class="cookbook-dep-tag cookbook-dep-install cookbook-dep-issues" data-dep-issues="${esc(pkg.name)}" title="Review missing or incompatible dependencies">Repair</button>`;
       }
       if (pkg.installed && pkg.install_supported === false) {
@@ -1660,7 +1660,10 @@ async function _fetchDependencies({ showIssues = false } = {}) {
         btn.textContent = 'Installing…';
         btn.disabled = true;
         try {
-          const body = { packages: names };
+          const body = {
+            packages: names,
+            platform: isLocal || !_envState.remoteHost ? _envState.hostPlatform : _envState.platform,
+          };
           if (!isLocal && _envState.remoteHost) {
             body.remote_host = _envState.remoteHost;
             const _p = _getPort(_envState.remoteHost);

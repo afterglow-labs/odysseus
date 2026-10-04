@@ -386,6 +386,21 @@ cd odysseus
 powershell -ExecutionPolicy Bypass -File .\launch-windows.ps1
 ```
 
+For a desktop app window and tray icon, build the native launcher after setup:
+
+```powershell
+.\venv\Scripts\python.exe -m pip install --require-hashes -r requirements-build.lock
+.\build-windows-app.ps1
+.\dist\Odysseus-desktop\Odysseus.exe
+```
+
+Like the macOS app, this launcher uses the checkout's `venv`. Cookbook installs
+local dependencies into that same environment. Keep the checkout in place and
+keep `Odysseus-launcher.json` beside the executable; rebuild after moving it.
+The desktop profile is stored in `%USERPROFILE%\.odysseus\data`, including
+profiles restored from another computer. The older frozen portable build cannot
+install local Python dependencies; use this launcher for Cookbook and editor tools.
+
 Or do it by hand:
 
 ```powershell

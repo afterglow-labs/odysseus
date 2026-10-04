@@ -3,12 +3,46 @@
 from copy import deepcopy
 import importlib.metadata
 import json
+import site
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 import routes.shell_routes as routes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("user_site_enabled", [False, True])
+async def test_dependency_probe_respects_user_site_policy(tmp_path, monkeypatch, user_site_enabled):
+    # Refresh shared installs and their .pth paths only when Python permits
+    # that site. Opening Dependencies must preserve an app venv's isolation.
+    name = "odysseus_shared_package_fixture"
+    (tmp_path / (name + ".py")).write_text("VALUE = 1\n", encoding="utf-8")
+    metadata = tmp_path / (name + "-1.0.dist-info")
+    metadata.mkdir()
+    (metadata / "METADATA").write_text(f"Name: {name}\nVersion: 1.0\n", encoding="utf-8")
+    extra_path = tmp_path / "pth-packages"
+    extra_path.mkdir()
+    (tmp_path / "fixture.pth").write_text(str(extra_path) + "\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setattr(site, "ENABLE_USER_SITE", user_site_enabled)
+    monkeypatch.setattr(site, "getusersitepackages", lambda: str(tmp_path))
+    monkeypatch.setattr(routes, "_require_admin", lambda request: None)
+    monkeypatch.setattr(routes, "_reject_cross_site", lambda request: None)
+    monkeypatch.setattr(routes, "dependency_catalog", lambda **kwargs: [
+        {"name": name, "pip": name, "target": "local"},
+    ])
+    endpoint = next(route.endpoint for route in routes.setup_shell_routes().routes
+                    if route.path == "/api/cookbook/packages")
+    try:
+        result = await endpoint(SimpleNamespace())
+        assert result["packages"][0]["installed"] is user_site_enabled
+        assert (str(tmp_path) in sys.path) is user_site_enabled
+        assert (str(extra_path) in sys.path) is user_site_enabled
+    finally:
+        sys.modules.pop(name, None)
 
 
 @pytest.fixture

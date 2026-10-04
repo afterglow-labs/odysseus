@@ -1995,9 +1995,12 @@ def setup_cookbook_routes() -> APIRouter:
             req.cmd,
             local=not bool(req.remote_host),
             in_venv=sys.prefix != sys.base_prefix,
+            executable=sys.executable if not req.env_prefix else None,
         )
         is_pip_install = bool(req.cmd and "pip install" in req.cmd)
         if is_pip_install:
+            if not req.remote_host and getattr(sys, "frozen", False):
+                raise HTTPException(400, "Local dependencies need the native desktop launcher and its isolated Python environment. Rebuild with build-windows-app.ps1.")
             # Keep big dependency wheel builds (vLLM, …) off the home filesystem's
             # pip cache so they don't fail mid-build with "No space left" (#1219)
             # and leave the dep installed-but-unusable (#1459).

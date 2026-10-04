@@ -34,8 +34,20 @@ exe = EXE(
     entitlements_file=None,
     icon=['static\\icon.ico'],
 )
+# Stdio tools need the console bootloader to retain their inherited pipes.
+# Both executables use the same module archive and _internal dependencies.
+worker = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name='Odysseus-worker',
+    console=True,
+    icon=['static\\icon.ico'],
+)
 coll = COLLECT(
     exe,
+    worker,
     a.binaries,
     a.datas,
     strip=False,

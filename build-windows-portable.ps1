@@ -4,10 +4,11 @@
 
   Output layout:
     dist\Odysseus\Odysseus.exe
-    dist\Odysseus\static\...
-    dist\Odysseus\scripts\...
-    dist\Odysseus\mcp_servers\...
-    dist\Odysseus\services\hwfit\data\...
+    dist\Odysseus\Odysseus-worker.exe
+    dist\Odysseus\_internal\static\...
+    dist\Odysseus\_internal\scripts\...
+    dist\Odysseus\_internal\mcp_servers\...
+    dist\Odysseus\_internal\services\hwfit\data\...
 
   The app then keeps using its normal filesystem layout when frozen.
 
@@ -63,19 +64,17 @@ if ($LASTEXITCODE -eq 0) {
 if ($LASTEXITCODE -ne 0) { Fail "Dependency install failed." }
 
 Write-Step "Building portable exe bundle"
-Remove-Item -Recurse -Force build, dist -ErrorAction SilentlyContinue
+foreach ($outputName in @("build", "dist")) {
+    $outputPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot $outputName))
+    if ([IO.Path]::GetDirectoryName($outputPath) -ne $PSScriptRoot) {
+        Fail "Build output is outside the project: $outputPath"
+    }
+    if (Test-Path -LiteralPath $outputPath) {
+        Remove-Item -LiteralPath $outputPath -Recurse -Force
+    }
+}
 
-$dataArgs = @(
-    "--add-data", "static;static",
-    "--add-data", "scripts;scripts",
-    "--add-data", "mcp_servers;mcp_servers",
-    "--add-data", "services/hwfit/data;services/hwfit/data",
-    "--add-data", "config;config",
-    "--add-data", ".env.example;.env.example",
-    "--add-data", ".python-version;."
-)
-
-& $pyExe -m PyInstaller --noconfirm --clean --onedir --noconsole --icon=static/icon.ico --name Odysseus @dataArgs launcher.py
+& $pyExe -m PyInstaller --noconfirm --clean Odysseus.spec
 if ($LASTEXITCODE -ne 0) { Fail "PyInstaller build failed." }
 
 Write-Host ""

@@ -1003,14 +1003,13 @@ async def _generate_tmux(cmd: str, request: Request):
 
 
 async def _generate_win_detached(cmd: str, request: Request):
-    """Windows stand-in for the tmux path (issues #84/#162).
+    """Native Windows fallback for background jobs (issues #84/#162).
 
-    tmux doesn't exist on Windows, so we run the command in a *detached* child
-    (DETACHED_PROCESS — survives browser disconnect, same as the tmux session)
-    that writes output to a log file, and tail that log over SSE. Prefers bash
-    (Git Bash) for command-syntax parity; falls back to cmd.exe. There's no
-    `tmux attach` equivalent, but the "keeps running if you disconnect" contract
-    holds, which is the point of the feature for long Cookbook downloads."""
+    Detached children survive browser disconnects and write output to a log
+    file streamed over SSE. This backend does not implement tmux terminal
+    sessions or attach/detach. It prefers Git Bash for command syntax and
+    falls back to cmd.exe.
+    """
     TMUX_LOG_DIR.mkdir(parents=True, exist_ok=True)
     session_id = f"cookbook-{uuid.uuid4().hex[:8]}"
     log_path = TMUX_LOG_DIR / f"{session_id}.log"
@@ -1362,7 +1361,7 @@ def setup_shell_routes() -> APIRouter:
         importlib.invalidate_caches()
         try:
             user_site = site.getusersitepackages()
-            if user_site and os.path.isdir(user_site):
+            if site.ENABLE_USER_SITE and user_site and os.path.isdir(user_site):
                 # Use addsitedir(), NOT a bare sys.path.append(). When a package
                 # is `pip install --user`'d at runtime (Cookbook → Install) the
                 # long-lived server process started before the user-site existed,
@@ -1800,6 +1799,9 @@ def setup_shell_routes() -> APIRouter:
         _require_admin(request)
         import sys as _sys
 
+        if getattr(_sys, "frozen", False):
+            raise HTTPException(400, "Local dependencies need the native desktop launcher and its isolated Python environment. Rebuild with build-windows-app.ps1.")
+
         body = await request.json()
         pip_name = body.get("pip")
         if not pip_name:
@@ -1884,6 +1886,15 @@ def setup_shell_routes() -> APIRouter:
         raw = body.get("packages") or []
         host = (body.get("remote_host") or "").strip()
         ssh_port = body.get("ssh_port")
+        platform = str(body.get("platform") or "").strip().lower()
+        if (not host and IS_WINDOWS) or (host and platform in {"win32", "windows", "win"}):
+            # Bare bash on Windows may resolve to the WSL launcher. Never
+            # install into a different OS than the selected Cookbook target.
+            raise HTTPException(
+                400,
+                "The Cookbook system package installer does not support native Windows targets. "
+                "Select a supported Linux or macOS server for these packages.",
+            )
         # Names users can request — must match canonical names used in the
         # deps catalog's `system_prereqs` field and on the System rows.
         ALLOWED = {"cmake", "build-essential", "g++", "gcc", "git", "tmux", "make"}

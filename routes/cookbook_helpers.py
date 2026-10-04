@@ -278,7 +278,9 @@ def _pip_install_fallback_chain(package: str, *, python_cmd: str = "python3 -m p
     return f"{base} || {{ ! {venv_check} && {user_fallback}; }}"
 
 
-def _venv_safe_local_pip_install_cmd(cmd: str, *, local: bool, in_venv: bool) -> str:
+def _venv_safe_local_pip_install_cmd(
+    cmd: str, *, local: bool, in_venv: bool, executable: str | None = None,
+) -> str:
     """Drop pip user-install flags that are invalid for local venv installs.
 
     Cookbook dependency installs run through the model-serve task path so users
@@ -303,6 +305,11 @@ def _venv_safe_local_pip_install_cmd(cmd: str, *, local: bool, in_venv: bool) ->
         for part in parts
         if part not in {"--user", "--break-system-packages"}
     ]
+    if executable and stripped and stripped[0] in {"python", "python3", "python.exe"}:
+        # Windows venvs do not provide python3.exe. A python3 shim earlier on
+        # PATH can silently install into shared Python even with Scripts first.
+        # Pin ordinary local recipes to the interpreter checking their status.
+        stripped[0] = _git_bash_path(executable)
     return shlex.join(stripped)
 
 

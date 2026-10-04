@@ -94,6 +94,7 @@ const context = vm.createContext({
   fetch: async (url, options) => {
     requests.push({ url, body: options?.body ? JSON.parse(options.body) : null });
     if (url.startsWith('/api/cookbook/packages')) return { ok: true, json: async () => ({ packages }) };
+    if (url === '/api/cookbook/install-system-deps') return { ok: true, json: async () => ({ ok: true }) };
     assert.equal(url, '/api/model/serve');
     return failInstall
       ? { ok: false, status: 400, json: async () => ({ detail: 'test install rejected' }) }
@@ -230,7 +231,23 @@ assert.deepEqual(doc.querySelector('.cookbook-dependency-health').querySelectorA
 packages = [{ name: 'broken-runtime', pip: 'broken-runtime', target: 'local',
   installed: false, needs_repair: true, status_note: 'Runtime import failed.' }];
 await app._fetchDependencies({ showIssues: true });
+assert.match(ids.get('cookbook-deps-list').innerHTML, /data-dep-issues="broken-runtime"[^>]*>Repair<\/button>/);
 assert.deepEqual(doc.querySelector('.cookbook-dependency-health').querySelectorAll('button').map(b => b.textContent), ['Repair', 'Close']);
+
+// A Windows client must not label a remote with an unknown OS as Windows.
+// The remote installer detects its own package manager in that case.
+packages = [{ name: 'tmux', pip: '', kind: 'system', target: 'remote', installed: false }];
+Object.assign(app._envState, { hostPlatform: 'windows', remoteHost: 'linux-box', platform: '',
+  servers: [{ host: 'linux-box', name: 'Linux box', platform: '' }] });
+ids.get('hwfit-deps-server').value = 'linux-box';
+const systemButton = new Element('button');
+systemButton.dataset = { depSysdeps: 'tmux', depTarget: 'remote' };
+ids.get('cookbook-deps-list').querySelectorAll = selector => selector === '.cookbook-dep-install-sysdeps' ? [systemButton] : [];
+await app._fetchDependencies();
+await systemButton.events.click({ stopPropagation() {} });
+const systemRequest = requests.findLast(r => r.url === '/api/cookbook/install-system-deps').body;
+assert.equal(systemRequest.remote_host, 'linux-box');
+assert.ok(!systemRequest.platform, 'Unknown remote OS must not inherit the Windows client OS');
 """
     result = subprocess.run(
         ["node", "--experimental-vm-modules", "--input-type=module"],

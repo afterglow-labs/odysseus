@@ -10,6 +10,38 @@ from starlette.requests import Request
 import routes.cookbook_routes as cookbook_routes
 import routes.shell_routes as shell_routes
 from routes.cookbook_helpers import ServeRequest
+from fastapi import HTTPException
+
+
+@pytest.mark.asyncio
+async def test_frozen_app_refuses_local_pip_instead_of_using_path_python(monkeypatch):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(cookbook_routes, "require_admin", lambda request: None)
+    monkeypatch.setattr(cookbook_routes, "load_stored_hf_token", lambda **kwargs: "")
+    monkeypatch.setattr(cookbook_routes.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("Must reject before launching an install"))
+    endpoint = next(route.endpoint for route in cookbook_routes.setup_cookbook_routes().routes
+                    if route.path == "/api/model/serve" and "POST" in route.methods)
+    with pytest.raises(HTTPException) as error:
+        await endpoint(SimpleNamespace(), ServeRequest(
+            repo_id="playwright", cmd="python -m pip install playwright", platform="windows",
+        ))
+    assert error.value.status_code == 400
+    assert "desktop launcher" in error.value.detail
+
+
+@pytest.mark.asyncio
+async def test_frozen_legacy_installer_does_not_relaunch_the_app(monkeypatch):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(shell_routes, "_require_admin", lambda request: None)
+    monkeypatch.setattr(shell_routes.asyncio, "create_subprocess_exec", lambda *args, **kwargs: pytest.fail("Must reject before launching Python"))
+    endpoint = next(route.endpoint for route in shell_routes.setup_shell_routes().routes
+                    if route.path == "/api/cookbook/packages/install")
+    request = AsyncMock()
+    request.json.return_value = {"pip": "playwright"}
+    with pytest.raises(HTTPException) as error:
+        await endpoint(request)
+    assert error.value.status_code == 400
+    assert "desktop launcher" in error.value.detail
 
 
 @pytest.mark.asyncio

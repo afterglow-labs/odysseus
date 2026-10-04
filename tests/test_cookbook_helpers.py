@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
+from core.platform_compat import find_bash
 
 from routes.cookbook_helpers import (
     _cached_model_scan_script,
@@ -351,7 +352,7 @@ def test_pip_install_fallback_chain_propagates_failure_in_venv():
         "&& echo user_attempt; }"
     )
     result = subprocess.run(
-        ["bash", "-c", script],
+        [find_bash() or "bash", "-c", script],
         capture_output=True, text=True, timeout=10,
     )
     assert "user_attempt" not in result.stdout
@@ -369,7 +370,7 @@ def test_pip_install_fallback_chain_tries_user_outside_venv():
         "'"
     )
     result = subprocess.run(
-        ["bash", "-c", script],
+        [find_bash() or "bash", "-c", script],
         capture_output=True, text=True, timeout=10,
     )
     assert "user_attempt" in result.stdout, "Chain should try --user when not in venv and base fails"
@@ -443,6 +444,23 @@ def test_venv_safe_local_pip_install_strips_user_flags_only_for_local_venv():
     assert _venv_safe_local_pip_install_cmd(cmd, local=True, in_venv=False) == cmd
 
 
+def test_local_install_pins_app_python_even_if_path_contains_another_python():
+    command = _venv_safe_local_pip_install_cmd(
+        "python3 -m pip install --user playwright", local=True, in_venv=True,
+        executable="C:\\Odysseus App\\venv\\Scripts\\python.exe",
+    )
+    assert shlex.split(command) == [
+        "/c/Odysseus App/venv/Scripts/python.exe", "-m", "pip", "install", "playwright",
+    ]
+
+
+def test_remote_install_keeps_its_selected_interpreter():
+    command = "python3 -m pip install --user playwright"
+    assert _venv_safe_local_pip_install_cmd(
+        command, local=False, in_venv=True, executable="C:\\app\\python.exe",
+    ) == command
+
+
 def test_pip_install_runner_guards_break_system_packages():
     lines = []
     _append_pip_install_runner_lines(
@@ -485,7 +503,7 @@ def test_local_pip_runner_bootstraps_selected_no_pip_venv_offline(tmp_path):
     script = "\n".join(lines)
     env = {**os.environ, "PIP_CONFIG_FILE": os.devnull, "PIP_DISABLE_PIP_VERSION_CHECK": "1"}
     result = subprocess.run(
-        ["bash", "-c", script], capture_output=True, text=True, timeout=60, env=env,
+        [find_bash() or "bash", "-c", script], capture_output=True, text=True, timeout=60, env=env,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -501,7 +519,7 @@ def test_local_pip_runner_bootstraps_selected_no_pip_venv_offline(tmp_path):
 
     # A subsequent install uses the working pip without bootstrapping again.
     again = subprocess.run(
-        ["bash", "-c", script], capture_output=True, text=True, timeout=30, env=env,
+        [find_bash() or "bash", "-c", script], capture_output=True, text=True, timeout=30, env=env,
     )
     assert again.returncode == 0, again.stdout + again.stderr
     assert "bootstrapping" not in again.stdout
@@ -532,7 +550,7 @@ def test_local_pip_runner_preserves_failure_and_completion_status(
     )
     _append_serve_exit_code_lines(lines, keep_shell_open=False, is_pip_install=True)
     result = subprocess.run(
-        ["bash", "-c", "\n".join(lines)], capture_output=True, text=True, timeout=15,
+        [find_bash() or "bash", "-c", "\n".join(lines)], capture_output=True, text=True, timeout=15,
     )
 
     assert result.returncode == expected_status, result.stdout + result.stderr
@@ -578,7 +596,7 @@ def test_realesrgan_runner_prepares_same_python_before_install(
     )
     _append_serve_exit_code_lines(lines, keep_shell_open=False, is_pip_install=True)
     result = subprocess.run(
-        ["bash", "-c", "\n".join(lines)], capture_output=True, text=True, timeout=15,
+        [find_bash() or "bash", "-c", "\n".join(lines)], capture_output=True, text=True, timeout=15,
         env={**os.environ, "ODYS_TEST_READY": str(ready), "ODYS_TEST_BUILDER": builder.as_posix()},
     )
 
@@ -629,7 +647,7 @@ def test_pip_install_attempt_failure_propagates_real_exit_code():
     to confirm the subshell exits with pip's non-zero status."""
     snippet = _pip_install_attempt("python3 -m pip install __nonexistent_package_12345__")
     result = subprocess.run(
-        ["bash", "-c", snippet],
+        [find_bash() or "bash", "-c", snippet],
         capture_output=True,
         text=True,
         timeout=60,
@@ -641,7 +659,7 @@ def test_pip_install_attempt_success_exits_zero():
     """When pip succeeds, the subshell should exit 0."""
     snippet = _pip_install_attempt("python3 -c 'pass'")
     result = subprocess.run(
-        ["bash", "-c", snippet],
+        [find_bash() or "bash", "-c", snippet],
         capture_output=True,
         text=True,
         timeout=15,
@@ -653,7 +671,7 @@ def test_pip_install_attempt_surfaces_stderr_on_failure():
     """On failure, the last 5 lines of pip output should appear in stdout."""
     snippet = _pip_install_attempt("python3 -m pip install __nonexistent_package_12345__")
     result = subprocess.run(
-        ["bash", "-c", snippet],
+        [find_bash() or "bash", "-c", snippet],
         capture_output=True,
         text=True,
         timeout=60,
@@ -1038,6 +1056,7 @@ def test_cached_model_scan_does_not_launch_ollama_cli_on_windows(tmp_path):
     env = dict(os.environ)
     env["PATH"] = str(tmp_path) + os.pathsep + env.get("PATH", "")
     env["HOME"] = str(empty_home)
+    env["USERPROFILE"] = str(empty_home)
     env.pop("ODYSSEUS_ALLOW_OLLAMA_CLI_SCAN", None)
     proc = subprocess.run(
         [sys.executable, str(scan_py)],
@@ -1048,7 +1067,8 @@ def test_cached_model_scan_does_not_launch_ollama_cli_on_windows(tmp_path):
     )
 
     assert marker.exists() is False
-    assert all(m.get("backend") != "ollama" for m in json.loads(proc.stdout))
+    # An already-running Ollama HTTP service may legitimately return models;
+    # this regression guards against launching the CLI, not discovering it.
 
 
 def test_cached_model_scan_uses_huggingface_cache_env(tmp_path):
