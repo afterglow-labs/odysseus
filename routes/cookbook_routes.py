@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException, Request, Depends
 
 from src.auth_helpers import require_user
 from src.constants import COOKBOOK_STATE_FILE
+from src.dependency_catalog import is_native_windows, unsupported_windows_requirements
 from pydantic import BaseModel
 
 from core.middleware import require_admin
@@ -2001,6 +2002,11 @@ def setup_cookbook_routes() -> APIRouter:
         if is_pip_install:
             if not req.remote_host and getattr(sys, "frozen", False):
                 raise HTTPException(400, "Local dependencies need the native desktop launcher and its isolated Python environment. Rebuild with build-windows-app.ps1.")
+            windows_target = is_native_windows(req.platform) if req.remote_host else IS_WINDOWS
+            if windows_target:
+                unsupported = unsupported_windows_requirements(shlex.split(req.cmd) + [req.repo_id or ""])
+                if unsupported:
+                    raise HTTPException(400, f"These Cookbook dependencies are not supported on native Windows: {', '.join(unsupported)}. Select a supported remote server.")
             # Keep big dependency wheel builds (vLLM, …) off the home filesystem's
             # pip cache so they don't fail mid-build with "No space left" (#1219)
             # and leave the dep installed-but-unusable (#1459).

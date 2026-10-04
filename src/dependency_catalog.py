@@ -5,10 +5,18 @@ necessarily the name that Python imports or package metadata records.
 """
 
 from copy import deepcopy
+import re
 import shlex
 
 DISTRIBUTION_ALIASES = {"krea_diffusers": "diffusers", "boogu_image_mlx": "boogu-image-mlx"}
 IMPORT_ALIASES = {"krea_diffusers": "diffusers"}
+
+# These Cookbook runtimes have no native Windows backend/install recipe.
+# Keep their definitions for supported remote targets, including Windows clients.
+_WINDOWS_UNSUPPORTED_PACKAGES = frozenset({
+    "tmux", "apfel", "vllm", "sglang", "mlx", "mlx-lm", "mlx-vlm", "mflux",
+    "boogu-image-mlx", "mlx-lama-swift", "mlx-ddcolor-swift",
+})
 
 DEPENDENCIES = [
     # ── System ── OS binaries, not pip packages
@@ -181,23 +189,42 @@ DEPENDENCIES = [
 ]
 
 
+def is_native_windows(platform):
+    return (platform or "").strip().lower() in {"win32", "windows", "win"}
+
+
+def unsupported_windows_requirements(specs):
+    """Identify known unsupported packages in catalog names or pip arguments.
+
+    Match whole project names, including extras/version pins and our VCS
+    recipes, so an index URL or an unrelated package name cannot match by accident.
+    """
+    sources = {
+        shlex.split(pkg["pip"])[0]: pkg["name"]
+        for pkg in DEPENDENCIES if pkg.get("pip", "").startswith("git+")
+    }
+    names = {
+        re.sub(r"[-_.]+", "-", re.split(r"[\[<>=!~\s@]", sources.get(spec, spec), maxsplit=1)[0]).lower()
+        for spec in specs
+    }
+    return sorted(names & _WINDOWS_UNSUPPORTED_PACKAGES)
+
+
 def dependency_catalog(*, local_platform="", target_platform=""):
     """Return independent plans; app tools always use the local platform."""
-    # The native Windows backend does not run tmux. Keep it in the catalog
-    # for supported remote servers, including when the app runs on Windows.
-    packages = [
-        pkg for pkg in deepcopy(DEPENDENCIES)
-        if not (pkg["name"] == "tmux" and target_platform.lower() in {"win32", "windows", "win"})
-    ]
-    for pkg in packages:
+    packages = []
+    for pkg in deepcopy(DEPENDENCIES):
         platform = local_platform if pkg.get("target") == "local" else target_platform
         platform = platform.lower()
+        if is_native_windows(platform) and unsupported_windows_requirements([pkg["name"]]):
+            continue
         if pkg["name"] == "rembg" and platform in {"darwin", "macos", "mac"}:
             pkg["pip"] = "rembg[cpu]"
-        if pkg["name"] in {"vllm", "sglang"} and platform in {"darwin", "macos", "mac", "win32", "windows", "win"}:
+        if pkg["name"] in {"vllm", "sglang"} and platform in {"darwin", "macos", "mac"}:
             pkg["install_supported"] = False
             pkg["install_hint"] = "This automatic install recipe requires a Linux model server. Select a Linux server, or use llama.cpp / MLX for native Mac inference."
         pkg.setdefault("install_supported", True)
+        packages.append(pkg)
     return packages
 
 

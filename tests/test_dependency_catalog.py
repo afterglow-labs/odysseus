@@ -1,6 +1,6 @@
 import pytest
 
-from src.dependency_catalog import dependency_catalog, requirement_specs
+from src.dependency_catalog import dependency_catalog, requirement_specs, unsupported_windows_requirements
 
 
 def row(name, local="darwin", target="linux"):
@@ -12,8 +12,8 @@ def test_app_background_removal_uses_local_mac_runtime_with_remote_selected():
     assert requirement_specs(row("rembg")) == ["rembg[cpu]"]
 
 
-def test_linux_serving_recipes_are_not_offered_as_native_mac_or_windows_installs():
-    for platform in ("darwin", "win32", "windows"):
+def test_linux_serving_recipes_are_not_offered_as_native_mac_installs():
+    for platform in ("darwin", "macos", "mac"):
         for name in ("vllm", "sglang"):
             pkg = row(name, target=platform)
             assert not pkg["install_supported"]
@@ -40,13 +40,44 @@ def test_catalog_changes_for_one_request_do_not_leak_into_another():
     assert row("rembg", local="linux")["pip"] == "rembg[gpu]"
 
 
-@pytest.mark.parametrize("target", ["win32", "windows", "win"])
-def test_native_windows_targets_do_not_offer_tmux(target):
+@pytest.mark.parametrize("target", ["win32", "windows", "win", "Windows"])
+def test_native_windows_catalog_contains_only_supported_dependencies(target):
     names = {pkg["name"] for pkg in dependency_catalog(local_platform="win32", target_platform=target)}
-    assert "tmux" not in names
-    assert "docker" in names
+    assert not names.intersection({
+        "tmux", "APFEL", "vllm", "sglang", "mlx_lm", "mlx_vlm", "mflux",
+        "boogu_image_mlx", "mlx_lama_swift", "mlx_ddcolor_swift",
+    })
+    assert {
+        "docker", "llama_cpp", "hf_transfer", "diffusers", "rembg",
+        "realesrgan", "sam_mask", "playwright",
+    } <= names
 
 
 @pytest.mark.parametrize("target", ["linux", "darwin", "macos"])
 def test_windows_client_keeps_tmux_for_supported_remote_targets(target):
     assert row("tmux", local="win32", target=target)["install_supported"] is True
+
+
+def test_platform_filter_uses_each_dependency_execution_target():
+    mac_server = {p["name"] for p in dependency_catalog(local_platform="win32", target_platform="darwin")}
+    assert {"mlx_lm", "mlx_vlm", "mflux", "tmux"} <= mac_server
+    assert "APFEL" not in mac_server  # This feature always runs inside the local app.
+    windows_server = {p["name"] for p in dependency_catalog(local_platform="darwin", target_platform="windows")}
+    assert "APFEL" in windows_server
+    assert not windows_server.intersection({"mlx_lm", "vllm", "sglang", "tmux"})
+
+
+def test_windows_client_keeps_linux_engines_for_linux_server():
+    for name in ("vllm", "sglang"):
+        assert row(name, local="win32", target="linux")["install_supported"] is True
+
+
+def test_windows_install_guard_matches_projects_without_blocking_index_urls():
+    assert unsupported_windows_requirements([
+        "--extra-index-url", "https://example.org/wheels/mlx", "mlx-helper",
+        "llama-cpp-python[server]", "diffusers[torch]", "rembg[gpu]",
+    ]) == []
+    assert unsupported_windows_requirements([
+        "MLX_LM>=0.32", "sglang[all]", "mlx[cpu]", "mlx-vlm==0.1",
+        "git+https://github.com/xocialize/boogu-image-mlx.git",
+    ]) == ["boogu-image-mlx", "mlx", "mlx-lm", "mlx-vlm", "sglang"]

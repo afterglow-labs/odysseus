@@ -24,6 +24,7 @@ from src.host_docker_access import (
 from src.optional_deps import prepare_optional_dependency_import
 from src.dependency_catalog import (
     DISTRIBUTION_ALIASES, IMPORT_ALIASES, dependency_catalog, requirement_specs,
+    is_native_windows, unsupported_windows_requirements,
 )
 from src.dependency_health import check_dependency_health
 from src.dependency_index import check_latest_release
@@ -1837,6 +1838,8 @@ def setup_shell_routes() -> APIRouter:
         }
         if pip_name not in known:
             return {"ok": False, "error": f"Unknown package: {pip_name}"}
+        if IS_WINDOWS and unsupported_windows_requirements([pip_name]):
+            raise HTTPException(400, f"This Cookbook dependency is not supported on native Windows: {pip_name}. Select a supported remote server.")
 
         async def run_python(*args):
             proc = await asyncio.create_subprocess_exec(
@@ -1887,7 +1890,7 @@ def setup_shell_routes() -> APIRouter:
         host = (body.get("remote_host") or "").strip()
         ssh_port = body.get("ssh_port")
         platform = str(body.get("platform") or "").strip().lower()
-        if (not host and IS_WINDOWS) or (host and platform in {"win32", "windows", "win"}):
+        if (not host and IS_WINDOWS) or (host and is_native_windows(platform)):
             # Bare bash on Windows may resolve to the WSL launcher. Never
             # install into a different OS than the selected Cookbook target.
             raise HTTPException(
