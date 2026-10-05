@@ -6,6 +6,7 @@ from pydantic import Field, field_validator
 
 from src.constants import DATA_DIR as _DATA_DIR_CONST
 from src.runtime_paths import get_app_root
+from src.upload_limits import get_chat_upload_max_bytes
 
 # Cross-platform OS flag, exposed here so callers can `from src.config import
 # IS_WINDOWS`. Defined locally (a trivial `os.name == "nt"`) rather than imported
@@ -31,7 +32,7 @@ class DataConfig(BaseSettings):
     runbook_dir: Path = Field(default=Path(_DATA_DIR_CONST) / "personal_docs" / "runbook", description="Runbook directory")
     
     # Upload settings
-    max_upload_size: int = Field(default=10 * 1024 * 1024, description="Maximum upload size in bytes (10MB)")
+    max_upload_size: int = Field(default_factory=get_chat_upload_max_bytes, description="Maximum chat attachment size in bytes")
     allowed_extensions: List[str] = Field(
         default=[
             '.txt', '.py', '.html', '.md', '.json', '.csv',
@@ -99,7 +100,7 @@ class SecurityConfig(BaseSettings):
     
     # Security settings
     allowed_origins: List[str] = Field(default=["*"], description="Allowed origins for CORS")
-    max_file_size: int = Field(default=10 * 1024 * 1024, description="Maximum file size in bytes")
+    max_file_size: int = Field(default_factory=get_chat_upload_max_bytes, description="Maximum file size in bytes")
     dangerous_file_types: List[str] = Field(
         default=[
             'application/x-executable', 'application/x-sharedlib',
@@ -156,7 +157,8 @@ class AppConfig(BaseSettings):
         data_dir = Path(_DATA_DIR_CONST)
         
         # Get values from the input dict or use defaults
-        max_upload_size = v.get("max_upload_size", 10 * 1024 * 1024) if isinstance(v, dict) else 10 * 1024 * 1024
+        upload_limit = get_chat_upload_max_bytes()
+        max_upload_size = v.get("max_upload_size", upload_limit) if isinstance(v, dict) else upload_limit
         allowed_extensions = v.get("allowed_extensions", [
             '.txt', '.py', '.html', '.md', '.json', '.csv',
             '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.tiff', '.pdf'

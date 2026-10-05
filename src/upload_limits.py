@@ -4,11 +4,13 @@ import os
 
 from fastapi import HTTPException, UploadFile
 
-DEFAULT_CHAT_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
+DEFAULT_CHAT_UPLOAD_MAX_BYTES = 1024 * 1024 * 1024
 CHAT_UPLOAD_MAX_BYTES_ENV = "ODYSSEUS_CHAT_UPLOAD_MAX_BYTES"
 
 
 def format_byte_limit(limit: int) -> str:
+    if limit % (1024 * 1024 * 1024) == 0:
+        return f"{limit // (1024 * 1024 * 1024)} GB"
     if limit % (1024 * 1024) == 0:
         return f"{limit // (1024 * 1024)} MB"
     if limit % 1024 == 0:
