@@ -1525,6 +1525,9 @@ def setup_cookbook_routes() -> APIRouter:
                     entry["is_ollama"] = True
                 if isinstance(m.get("gguf_files"), list):
                     entry["gguf_files"] = m["gguf_files"]
+                for field in ("adapter_files", "workflow_files", "base_models"):
+                    entry[field] = m.get(field) if isinstance(m.get(field), list) else []
+                entry["adapter_only"] = bool(m.get("adapter_only"))
                 models.append(entry)
         except Exception as e:
             logger.warning(f"Failed to parse cached models host={host or 'local'}: {e}")

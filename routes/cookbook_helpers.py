@@ -436,7 +436,10 @@ def _cached_model_scan_script(model_dirs: list[str] | None = None, add_hf_cache:
     """Build the standalone Python scanner used by /api/model/cached.
     Allows for an additional HuggingFace cache path to be scanned (i.e. Windows HF cache for local WSL envs.)
     """
+    from src import model_artifacts
+    artifact_source = Path(model_artifacts.__file__).read_text(encoding="utf-8")
     lines = [
+        artifact_source,
         "import json, os, re, shutil, subprocess, urllib.request",
         "models = []",
         "seen = set()",
@@ -527,10 +530,16 @@ def _cached_model_scan_script(model_dirs: list[str] | None = None, add_hf_cache:
         "            sz, nf, ic = sz2, nf2, ic or ic2",
         "        is_video = bool(re.search(r'(?i)(^|/)Lightricks/LTX-|(^|/)LTX[-_/]|video|text-to-video|image-to-video', rid))",
         "        is_diffusion = is_video; is_adapter = bool(re.search(r'(?i)(lora|adapter|peft|qlora|control[-_]?lora|diffusion[-_]?lora)', rid)); gguf_files = []",
+        "        artifact_rows = []",
         "        if os.path.isdir(snap):",
         "            for sd in os.listdir(snap):",
         "                sf = os.path.join(snap, sd)",
         "                if not os.path.isdir(sf): continue",
+        "                artifacts = scan_model_artifacts(sf)",
+        "                for kind in ('adapter_files', 'workflow_files'):",
+        "                    for f in artifacts[kind]: f['repo_path'] = f['rel_path']; f['rel_path'] = sd + '/' + f['rel_path']; f['revision'] = sd",
+        "                artifact_rows.append(artifacts)",
+        "                is_adapter = is_adapter or artifacts['is_adapter']; is_diffusion = is_diffusion or artifacts['is_diffusion']; is_video = is_video or artifacts['is_video']",
         "                if os.path.exists(os.path.join(sf, 'model_index.json')): is_diffusion = True",
         "                if os.path.exists(os.path.join(sf, 'adapter_config.json')) or os.path.exists(os.path.join(sf, 'adapter_model.safetensors')): is_adapter = True",
         "                for _root, _dirs, _fns in safe_walk(sf):",
@@ -540,7 +549,10 @@ def _cached_model_scan_script(model_dirs: list[str] | None = None, add_hf_cache:
         "                        if _lfn in ('adapter_config.json','adapter_model.safetensors','pytorch_lora_weights.safetensors') or 'lora' in _lfn:",
         "                            is_adapter = True",
         "                for f in collect_ggufs(sf): f['rel_path'] = sd + '/' + f['rel_path']; gguf_files.append(f)",
-        "        models.append({'repo_id':rid,'size_bytes':sz,'nb_files':nf,'has_incomplete':ic,'path':cache,'is_diffusion':is_diffusion,'is_video':is_video,'is_adapter':is_adapter,'is_gguf':bool(gguf_files),'gguf_files':gguf_files})",
+        "        artifacts = {kind: [f for row in artifact_rows for f in row[kind]] for kind in ('adapter_files', 'workflow_files')}",
+        "        artifacts['base_models'] = sorted({base for row in artifact_rows for base in row['base_models']})",
+        "        artifacts['adapter_only'] = bool(artifacts['adapter_files']) and not any(row['has_base_model'] for row in artifact_rows)",
+        "        models.append({'repo_id':rid,'size_bytes':sz,'nb_files':nf,'has_incomplete':ic,'path':cache,'is_diffusion':is_diffusion,'is_video':is_video,'is_adapter':is_adapter,'is_gguf':bool(gguf_files),'gguf_files':gguf_files,**artifacts})",
         "def hf_cache_paths():",
         "    candidates = []",
         "    def add(p):",
@@ -592,7 +604,9 @@ def _cached_model_scan_script(model_dirs: list[str] | None = None, add_hf_cache:
         "                try: nf += 1; sz += os.path.getsize(os.path.join(dp, fn))",
         "                except Exception: pass",
         "        is_diff = os.path.exists(os.path.join(fp, 'model_index.json'))",
-        "        models.append({'repo_id':d,'size_bytes':sz,'nb_files':nf,'has_incomplete':False,'path':p,'is_local_dir':True,'is_diffusion':is_diff,'is_adapter':is_adapter,'is_gguf':bool(gguf_files),'gguf_files':gguf_files})",
+        "        artifacts = scan_model_artifacts(fp)",
+        "        artifacts['is_adapter'] = is_adapter or artifacts['is_adapter']; artifacts['is_diffusion'] = is_diff or artifacts['is_diffusion']",
+        "        models.append({'repo_id':d,'size_bytes':sz,'nb_files':nf,'has_incomplete':False,'path':p,'is_local_dir':True,'is_gguf':bool(gguf_files),'gguf_files':gguf_files,**artifacts})",
         "def parse_size(num, unit):",
         "    try: n = float(num)",
         "    except Exception: return 0",

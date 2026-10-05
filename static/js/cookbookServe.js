@@ -47,7 +47,7 @@ const SERVE_STATE_KEY = 'cookbook-serve-state';
 const SERVE_FAVORITES_KEY = 'cookbook-serve-favorite-models';
 
 let _cachedAllModels = [];
-const _CACHED_MODELS_SCAN_KEY = 'cookbook_cached_models_scan_v4_multiple_caches';
+const _CACHED_MODELS_SCAN_KEY = 'cookbook_cached_models_scan_v5_artifact_files';
 const _CACHED_MODELS_SCAN_TTL = 30 * 1000;
 
 function _normalizeCookbookModelDir(dir) {
@@ -787,12 +787,42 @@ function _looksLikeAdapterModel(m) {
 function _cachedAdapterModels(currentRepo = '') {
   const current = String(currentRepo || '');
   return (_cachedAllModels || [])
-    .filter(m => m && m.status === 'ready' && m.repo_id && m.repo_id !== current)
+    .filter(m => m && m.status === 'ready' && m.repo_id && (m.repo_id !== current || m.adapter_files?.length) && _looksLikeAdapterModel(m))
     .sort((a, b) => String(a.repo_id || '').localeCompare(String(b.repo_id || '')));
 }
 
+function _cachedArtifactPath(model, file) {
+  const root = String(model.path || '').replace(/\/+$/, '');
+  const relative = String(file.rel_path || '').replace(/^\/+/, '');
+  return model.is_local_dir
+    ? `${root}/${model.repo_id}/${relative}`
+    : `${root}/models--${model.repo_id.replace(/\//g, '--')}/snapshots/${relative}`;
+}
+
+function _artifactRepoURL(model, file) {
+  if (model.is_local_dir || !/^[\w.-]+\/[\w.-]+$/.test(model.repo_id || '')) return '';
+  const path = file.repo_path || file.rel_path;
+  const revision = file.revision || 'main';
+  return `https://huggingface.co/${model.repo_id}/blob/${encodeURIComponent(revision)}/${String(path).split('/').map(encodeURIComponent).join('/')}`;
+}
+
+function _adapterOptions(kind, currentRepo = '') {
+  return _cachedAdapterModels(currentRepo).flatMap(model => {
+    // Video LoRAs need their conditioning workflow; the still-image server
+    // cannot use them. LLM and image adapters also have separate runtimes.
+    if (model.is_video || (kind === 'vllm_lora_modules' ? model.is_diffusion : !model.is_diffusion)) return [];
+    const files = model.adapter_files || [];
+    if (files.length && kind !== 'vllm_lora_modules') {
+      return files.map(file => ({value: _cachedArtifactPath(model, file),
+        label: `${model.repo_id.split('/').pop()} / ${file.repo_path || file.rel_path}`}));
+    }
+    return [{value: model.is_local_dir ? `${String(model.path).replace(/\/+$/, '')}/${model.repo_id}` : model.repo_id,
+      label: model.repo_id.split('/').pop()}];
+  });
+}
+
 function _cachedAdapterSelectHtml(kind, currentRepo = '') {
-  const adapters = _cachedAdapterModels(currentRepo);
+  const adapters = _adapterOptions(kind, currentRepo);
   const cls = kind === 'vllm_lora_modules'
     ? 'hwfit-backend-vllm'
     : kind === 'diff_lora'
@@ -803,15 +833,69 @@ function _cachedAdapterSelectHtml(kind, currentRepo = '') {
   if (!adapters.length) {
     return `<label class="hwfit-cached-adapter-label ${cls}" style="grid-column:1 / -1;">Cached adapter <select class="hwfit-cached-adapter-select" data-adapter-kind="${esc(kind)}" disabled style="height:30px;width:100%;background:var(--bg);color:var(--fg-muted);border:1px solid var(--border);border-radius:4px;font:inherit;font-size:11px;opacity:0.75;"><option value="">No cached adapters found</option></select></label>`;
   }
-  const opts = adapters.map(m => {
-    const repo = String(m.repo_id || '');
-    const value = m.is_local_dir && m.path
-      ? `${String(m.path || '').replace(/\/+$/, '')}/${repo}`
-      : repo;
-    const short = repo.split('/').pop() || repo;
-    return `<option value="${esc(value)}">${esc(short)}</option>`;
-  }).join('');
+  const opts = adapters.map(option => `<option value="${esc(option.value)}">${esc(option.label)}</option>`).join('');
   return `<label class="hwfit-cached-adapter-label ${cls}" style="grid-column:1 / -1;">Cached adapter <select class="hwfit-cached-adapter-select" data-adapter-kind="${esc(kind)}" style="height:30px;width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;font:inherit;font-size:11px;"><option value="">Choose cached adapter…</option>${opts}</select></label>`;
+}
+
+function _showAdapterFiles(item, model, list) {
+  const files = model.adapter_files || [];
+  const groups = new Map();
+  for (const file of files) {
+    const family = file.family || 'Other adapters';
+    if (!groups.has(family)) groups.set(family, []);
+    groups.get(family).push(file);
+  }
+  const options = [...groups].map(([family, rows]) => `<optgroup label="${esc(family)}">${rows.map(file =>
+    `<option value="${esc(file.rel_path)}">${esc(file.repo_path || file.rel_path)}</option>`).join('')}</optgroup>`).join('');
+  const selectStyle = 'width:100%;min-width:0;max-width:100%;font:inherit;padding:8px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:5px;';
+  item.classList.add('doclib-card-expanded');
+  item.style.flexDirection = 'column'; item.style.alignItems = 'stretch';
+  item.insertAdjacentHTML('beforeend', `<div class="hwfit-serve-panel cookbook-adapter-panel" style="min-width:0;line-height:1.5;">
+    <strong>LoRA adapters · ${files.length} files</strong>
+    <p>Choose an adapter to see its base model and workflow files. These weights must be loaded with a base model.</p>
+    <label style="display:block;">Adapter file<select class="cookbook-adapter-file" style="${selectStyle}">${options}</select></label>
+    <p class="cookbook-adapter-requirements" role="status"></p>
+    <label style="display:block;">Path on selected server<input class="cookbook-adapter-path" readonly style="${selectStyle}" /></label>
+    <button type="button" class="cookbook-btn cookbook-copy-adapter" style="margin:8px 0;">Copy adapter path</button>
+    <div class="cookbook-adapter-workflows"></div>
+    <p>${model.is_video
+      ? 'These video adapters require their matching ComfyUI workflow, base weights, reference image, and guide video. Odysseus’s Diffusers server currently handles still images; it cannot run these video workflows.'
+      : 'Open the matching base model in Launch, then select this file under Cached adapter. Keep the base model as the main model.'}</p>
+  </div>`);
+  const panel = item.querySelector('.cookbook-adapter-panel');
+  const picker = panel.querySelector('.cookbook-adapter-file');
+  const pathField = panel.querySelector('.cookbook-adapter-path');
+  function update() {
+    const file = files.find(row => row.rel_path === picker.value) || files[0];
+    pathField.value = _cachedArtifactPath(model, file);
+    const bases = (file.base_models || []).join(', ');
+    panel.querySelector('.cookbook-adapter-requirements').textContent =
+      `${bases ? 'Base model' : 'Base model family'}: ${bases || file.family || 'See the adapter model card'}${file.family === 'Wan 2.2' ? ' — use the Bernini-R base and both high/low-noise adapters from the supplied workflow.' : ''}`;
+    const workflows = (model.workflow_files || []).filter(workflow => !file.family || workflow.family === file.family);
+    const version = path => { const match = String(path).match(/(?:^|[_-])v(\d+(?:[._]\d+)?)/i); return match ? Number(match[1].replace('_', '.')) : null; };
+    const selectedVersion = version(file.name);
+    if (selectedVersion !== null) workflows.sort((a, b) => Number(version(b.name) === selectedVersion) - Number(version(a.name) === selectedVersion));
+    const area = panel.querySelector('.cookbook-adapter-workflows');
+    area.innerHTML = workflows.length ? `<label style="display:block;">Workflow for ${esc(file.family || 'this adapter')}<select class="cookbook-adapter-workflow" style="${selectStyle}">${workflows.map((workflow, index) =>
+      `<option value="${index}">${esc(workflow.repo_path || workflow.rel_path)}</option>`).join('')}</select></label><p class="cookbook-workflow-links"></p>` : '<p>No matching workflow file was found in this cache. Check the repository’s model card.</p>';
+    if (workflows.length) {
+      const workflowPicker = area.querySelector('select');
+      const showWorkflow = () => {
+        const workflow = workflows[Number(workflowPicker.value)];
+        const url = _artifactRepoURL(model, workflow);
+        const links = area.querySelector('.cookbook-workflow-links');
+        links.innerHTML = `${url ? `<a href="${esc(url)}" target="_blank" rel="noopener" style="color:var(--fg);">Open workflow on Hugging Face ↗</a> · ` : ''}<button type="button" class="cookbook-btn cookbook-copy-workflow">Copy workflow path</button>`;
+        links.querySelector('button').addEventListener('click', () => _copyText(_cachedArtifactPath(model, workflow)));
+      };
+      workflowPicker.addEventListener('change', showWorkflow); showWorkflow();
+    }
+    // Expanded cards use a bounded scroller on small windows.
+    requestAnimationFrame(() => { item.style.maxHeight = ''; list.style.maxHeight = ''; list.style.minHeight = ''; });
+  }
+  picker.addEventListener('change', update);
+  panel.querySelector('.cookbook-copy-adapter').addEventListener('click', () => _copyText(pathField.value));
+  update();
+  requestAnimationFrame(() => panel.scrollIntoView({block: 'nearest', behavior: 'smooth'}));
 }
 
 async function _fetchServeRuntimePackage(panel, backend) {
@@ -1146,7 +1230,6 @@ function _rerenderCachedModels() {
   let html = '';
   let visibleCount = 0;
   for (const m of allModels) {
-	    if (m.is_adapter && !m.is_diffusion && !m.is_video) continue;
     if (activeTag && m._tag !== activeTag) continue;
     if (searchVal && !(m.repo_id || '').toLowerCase().includes(searchVal)) continue;
     visibleCount++;
@@ -1160,6 +1243,7 @@ function _rerenderCachedModels() {
     }
     const ggufCount = _runnableGgufFiles(m).length;
     if (ggufCount > 1) metaParts.push(`${ggufCount} GGUFs`);
+    if (m.adapter_files?.length) metaParts.push(`${m.adapter_files.length} LoRA files`);
     // "downloading" status now renders as a title-row pill instead of
     // a meta-row text label, matching the "running" pill style and
     // living on the same line as the model name.
@@ -1267,11 +1351,11 @@ function _rerenderCachedModels() {
         : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>';
       const items = [];
       items.push({ label: _favNow ? 'Unfavorite' : 'Favorite', icon: _favIco, action: 'favorite' });
-      if (m && m.status === 'ready') items.push({ label: 'Serve', icon: _serveIco, action: 'serve' });
+      if (m && m.status === 'ready') items.push({ label: m.adapter_only ? 'Choose adapter' : 'Serve', icon: _serveIco, action: 'serve' });
       if (m && (m.status === 'downloading' || m.status === 'stalled' || m.has_incomplete)) {
         items.push({ label: 'Resume download', icon: _retryIco, action: 'retry' });
       }
-      if (m && m.status === 'ready') items.push({ label: 'Schedule…', icon: _schedIco, action: 'schedule' });
+      if (m && m.status === 'ready' && !m.adapter_only) items.push({ label: 'Schedule…', icon: _schedIco, action: 'schedule' });
       items.push({ label: 'Select', icon: _selectIco, action: 'select' });
       items.push({ label: 'Delete', icon: _deleteIco, action: 'delete', danger: true });
       for (const opt of items) {
@@ -1401,6 +1485,11 @@ function _rerenderCachedModels() {
         c.style.alignItems = '';
         c.style.maxHeight = '';
       });
+
+      if (m.adapter_only && m.adapter_files?.length) {
+        _showAdapterFiles(item, m, list);
+        return;
+      }
 
       const shortName = repo.split('/').pop();
       const _es = _envState;
@@ -4044,7 +4133,8 @@ function _renderCachedModelsData(list, data, host) {
   for (const m of allModels) {
     const n = (m.repo_id || '').toLowerCase();
     let tag = 'other';
-    if (m.backend === 'ollama' || m.is_ollama) tag = 'llm';
+    if (m.adapter_only || m.is_adapter) tag = 'lora';
+    else if (m.backend === 'ollama' || m.is_ollama) tag = 'llm';
 		    else if (m.is_diffusion || m.is_video || m.is_image_gen || /(?:^|[-_/])(diffusion|image)(?:[-_/]|$)/i.test(n)) tag = 'image';
     else if (/whisper|stt|asr/i.test(n)) tag = 'stt';
     else if (/tts|cosyvoice|parler/i.test(n)) tag = 'tts';
