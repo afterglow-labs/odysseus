@@ -1348,6 +1348,38 @@ def _legacy_visible_api_models(ep) -> List[str]:
     )
 
 
+def _is_cookbook_launch_placeholder(ep, model_id: str) -> bool:
+    """Recognize the repository ID older Cookbook launches auto-pinned.
+
+    Only Cookbook-managed local LLM endpoints use this convention. Do not
+    infer model equivalence from similar filenames or change manual/API pins.
+    """
+    name = str(getattr(ep, "name", "") or "")
+    return (
+        str(getattr(ep, "id", "") or "").startswith("local-")
+        and _endpoint_kind(ep) == "local"
+        and (getattr(ep, "model_type", None) or "llm") == "llm"
+        and bool(name)
+        and model_id.rsplit("/", 1)[-1] == name
+    )
+
+
+def _cookbook_model_aliases(ep) -> Dict[str, str]:
+    """Map only the generated launch fallback to a single discovered model.
+
+    Multi-model endpoints are ambiguous; never collapse distinct advertised
+    models or guess equivalence from names. Aliases keep existing chats usable.
+    """
+    cached = _cached_model_ids(ep)
+    if len(cached) != 1:
+        return {}
+    return {
+        mid: cached[0]
+        for mid in _normalize_model_ids(getattr(ep, "pinned_models", None))
+        if mid != cached[0] and _is_cookbook_launch_placeholder(ep, mid)
+    }
+
+
 def _picker_models_for_endpoint(ep, base_url: str, kind: str):
     """Return model IDs that should appear in the picker for an endpoint.
 
@@ -1360,8 +1392,11 @@ def _picker_models_for_endpoint(ep, base_url: str, kind: str):
         if not _has_explicit_pinned_models(ep):
             pinned = _legacy_visible_api_models(ep)
         return pinned, pinned
+    cached = _cached_model_ids(ep)
+    aliases = _cookbook_model_aliases(ep)
+    pinned = [mid for mid in pinned if mid not in aliases]
     return _visible_models(
-        _cached_model_ids(ep),
+        cached,
         getattr(ep, "hidden_models", None),
         pinned,
     ), pinned
@@ -1608,6 +1643,7 @@ def setup_model_routes(model_discovery):
                     "category": category,
                     "endpoint_kind": kind,
                     "model_type": ep_model_type,
+                    "model_aliases": _cookbook_model_aliases(ep),
                     **capability_fields,
                 })
             else:

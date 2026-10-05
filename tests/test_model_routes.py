@@ -1702,6 +1702,56 @@ def _route_request():
     )
 
 
+@pytest.mark.parametrize("cached", [[], ["Example/Model-GGUF"], ["/cache/model-Q8.gguf"]])
+def test_cookbook_repository_is_a_fallback_until_model_discovery(cached):
+    repo = "Example/Model-GGUF"
+    ep = _route_ep("local-fixture", "http://localhost:8001/v1", name="Model-GGUF",
+                   endpoint_kind="local", cached_models=cached, pinned_models=[repo])
+    visible, pinned = model_routes._picker_models_for_endpoint(ep, ep.base_url, "local")
+    assert visible == (cached or [repo])
+    assert pinned == ([] if cached == ["/cache/model-Q8.gguf"] else [repo])
+    assert json.loads(ep.pinned_models) == [repo]  # Existing chat IDs stay valid.
+
+
+@pytest.mark.parametrize("endpoint_id,kind", [("manual", "local"), ("local-test", "ollama"), ("local-test", "api")])
+def test_cookbook_alias_filter_preserves_manually_pinned_models(endpoint_id, kind):
+    repo = "Example/Model-GGUF"
+    ep = _route_ep(endpoint_id, "http://localhost:8001/v1", name="Model-GGUF",
+                   endpoint_kind=kind, cached_models=["model-Q8.gguf"], pinned_models=[repo])
+    assert model_routes._cookbook_model_aliases(ep) == {}
+    visible, pinned = model_routes._picker_models_for_endpoint(ep, ep.base_url, kind)
+    assert repo in visible
+    assert pinned == [repo]
+
+
+def test_cookbook_alias_filter_keeps_distinct_server_ids_and_unrelated_pins():
+    repo = "Example/Model-GGUF"
+    ep = _route_ep("local-test", "http://localhost:8001/v1", name="Model-GGUF",
+                   endpoint_kind="local", cached_models=["model-Q8.gguf", "model-Q4.gguf"],
+                   pinned_models=[repo, "manual-alias"])
+    assert model_routes._cookbook_model_aliases(ep) == {}
+    visible, _ = model_routes._picker_models_for_endpoint(ep, ep.base_url, "local")
+    assert visible == ["model-Q8.gguf", "model-Q4.gguf", repo, "manual-alias"]
+    ep.cached_models = json.dumps(["model-Q8.gguf", repo])
+    visible, _ = model_routes._picker_models_for_endpoint(ep, ep.base_url, "local")
+    assert visible == ["model-Q8.gguf", repo, "manual-alias"]
+
+
+def test_api_models_exposes_one_cookbook_model_with_legacy_alias(monkeypatch):
+    repo, actual = "Example/Model-GGUF", "/cache/model-Q8.gguf"
+    ep = _route_ep("local-test", "http://localhost:8001/v1", name="Model-GGUF",
+                   endpoint_kind="local", cached_models=[actual], pinned_models=[repo])
+    monkeypatch.setattr(model_routes, "ModelEndpoint", _RouteModelEndpoint)
+    monkeypatch.setattr(model_routes, "SessionLocal", lambda: _RouteDb([ep]))
+    monkeypatch.setattr(model_routes, "_auth_disabled", lambda: True)
+    monkeypatch.setattr(model_routes, "_disable_stale_cookbook_local_endpoints", lambda db: 0)
+    router = model_routes.setup_model_routes(model_discovery=None)
+    result = _route_endpoint(router, "/api/models")(_route_request())
+    assert result["items"][0]["models"] == [actual]
+    assert result["items"][0]["models_extra"] == []
+    assert result["items"][0]["model_aliases"] == {repo: actual}
+
+
 def test_api_models_rejects_api_token_without_chat_scope(monkeypatch):
     router = model_routes.setup_model_routes(model_discovery=None)
 

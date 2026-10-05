@@ -1846,28 +1846,32 @@ def setup_cookbook_routes() -> APIRouter:
         # agent_loop trusts emitted tool_calls instead of the name heuristic.
         is_ollama_endpoint = "ollama" in (req.cmd or "").lower()
         supports_tools = True if "--enable-auto-tool-choice" in req.cmd else None
-        # Pin the model the user launched for every Cookbook-created LLM
-        # endpoint, not just Ollama. Some OpenAI-compatible servers report a
-        # deployment alias from /v1/models, and a stale server can answer on the
-        # same port while the new launch failed. Keeping the requested model id
-        # pinned makes the picker reflect the actual launch intent.
-        pinned_models = [mlx_shim_model_id] if mlx_shim_model_id else ([req.repo_id] if req.repo_id else [])
+        # Keep the launch ID as a fallback/legacy alias while discovery finds
+        # the actual served ID. The picker treats this generated repository pin
+        # as an alias once a single canonical model is known, not an extra model.
+        initial_models = [mlx_shim_model_id] if mlx_shim_model_id else ([req.repo_id] if req.repo_id else [])
+        pinned_models = initial_models
 
         db = SessionLocal()
         try:
             # Reuse an endpoint already pointed at this URL instead of duplicating.
             existing = db.query(ModelEndpoint).filter(ModelEndpoint.base_url == base_url).first()
             if existing:
+                from routes.model_routes import _is_cookbook_launch_placeholder, _normalize_model_ids
+                # Remove the preceding launch's generated fallback before
+                # changing its display name; preserve unrelated manual pins.
+                existing_pinned = [
+                    mid for mid in _normalize_model_ids(existing.pinned_models)
+                    if not _is_cookbook_launch_placeholder(existing, mid)
+                ]
+                existing.pinned_models = json.dumps(existing_pinned) if existing_pinned else None
+                existing.cached_models = json.dumps(initial_models) if initial_models else None
                 existing.is_enabled = True
                 existing.model_type = "llm"
                 existing.name = display_name
                 existing.endpoint_kind = "local"
                 existing.model_refresh_mode = "auto"
                 if pinned_models:
-                    try:
-                        existing_pinned = json.loads(existing.pinned_models or "[]")
-                    except Exception:
-                        existing_pinned = []
                     merged_pinned = []
                     for mid in [*existing_pinned, *pinned_models]:
                         if mid and mid not in merged_pinned:
@@ -1926,7 +1930,7 @@ def setup_cookbook_routes() -> APIRouter:
                 model_type="llm",
                 endpoint_kind="ollama" if is_ollama_endpoint else "local",
                 model_refresh_mode="auto",
-                cached_models=json.dumps(pinned_models) if pinned_models else None,
+                cached_models=json.dumps(initial_models) if initial_models else None,
                 pinned_models=json.dumps(pinned_models) if pinned_models else None,
                 supports_tools=supports_tools,
             )
