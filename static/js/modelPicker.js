@@ -108,7 +108,8 @@ function _modelExists(modelId, url) {
     if (item.offline) return false;
     const itemUrl = (item.url || '').replace(/\/+$/, '');
     const models = (item.models || []).concat(item.models_extra || []);
-    return models.includes(modelId) && (!targetUrl || itemUrl === targetUrl);
+    const canonicalId = (item.model_aliases || {})[modelId] || modelId;
+    return models.includes(canonicalId) && (!targetUrl || itemUrl === targetUrl);
   });
 }
 
@@ -952,7 +953,7 @@ export function updateModelPicker() {
       if (item.offline) return;
       (item.models || []).concat(item.models_extra || []).forEach(m => allAvailable.push(m));
     });
-    if (allAvailable.length > 0 && !allAvailable.includes(modelId)) {
+    if (allAvailable.length > 0 && !_modelExists(modelId, _pendingChat.url)) {
       // Model no longer available — switch to first available
       const fallback = items.find(item => !item.offline && (item.models || []).length > 0);
       if (fallback) {
