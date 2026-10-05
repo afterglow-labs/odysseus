@@ -1244,7 +1244,7 @@ def setup_cookbook_routes() -> APIRouter:
         elif remote:
             # ── Linux/Termux remote: create tmux session ON the remote host ──
             remote_runner = f".{session_id}_run.sh"
-            runner_lines = ["#!/bin/bash"]
+            runner_lines = ["#!/bin/bash", f"export ODYSSEUS_COOKBOOK_SESSION={shlex.quote(session_id)}"]
             runner_lines.extend(_user_shell_path_bootstrap())
             if not is_ollama_download:
                 runner_lines.extend(["export HF_HUB_DISABLE_PROGRESS_BARS=0", "export TQDM_DISABLE=0"])
@@ -2163,7 +2163,7 @@ def setup_cookbook_routes() -> APIRouter:
             )
         else:
             # ── Linux/Termux: bash + tmux (existing flow) ──
-            runner_lines = ["#!/bin/bash"]
+            runner_lines = ["#!/bin/bash", f"export ODYSSEUS_COOKBOOK_SESSION={shlex.quote(session_id)}"]
             # Mirror every line of stdout+stderr into a persistent log file
             # on the host running the serve. This is the file tail_serve_output
             # reads when the tmux pane has been overwritten by the post-crash
@@ -3428,6 +3428,65 @@ def setup_cookbook_routes() -> APIRouter:
 
     # ── Cookbook state persistence (cross-device sync) ──
 
+    @router.post("/api/cookbook/tasks/{session_id}/stop")
+    async def stop_cookbook_task(session_id: str, request: Request):
+        """Stop only the saved job, and persist success only after process verification."""
+        require_admin(request)
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session_id):
+            raise HTTPException(400, "Invalid Cookbook job identity")
+
+        def read_state():
+            if not _cookbook_state_path.exists():
+                return {}, []
+            state = json.loads(_cookbook_state_path.read_text(encoding="utf-8"))
+            tasks = state.get("tasks") or []
+            return state, list(tasks.values()) if isinstance(tasks, dict) else tasks
+
+        _, tasks = read_state()
+        task = next((t for t in tasks if t.get("sessionId") == session_id), None)
+        if task is None:
+            raise HTTPException(404, "Cookbook job not found; refresh Active and retry")
+        payload = task.get("payload") or {}
+        host = validate_remote_host(task.get("remoteHost") or payload.get("remote_host") or "")
+        port = validate_ssh_port(str(task.get("sshPort") or payload.get("ssh_port") or ""))
+        platform = task.get("platform") or payload.get("platform") or ""
+        if platform == "windows" or (not host and IS_WINDOWS):
+            raise HTTPException(400, "Use the desktop Cookbook to stop a native Windows job")
+        try:
+            from src import cookbook_stop
+            if host:
+                import base64
+                source = base64.b64encode(Path(cookbook_stop.__file__).read_bytes()).decode("ascii")
+                program = "import base64;exec(compile(base64.b64decode(" + repr(source) + "),'<cookbook-stop>','exec'))"
+                command = _remote_posix_path_prefix() + "python3 -c " + shlex.quote(program) + " " + shlex.quote(session_id)
+                ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8"]
+                if port:
+                    ssh.extend(["-p", port])
+                ssh.extend(["--", host, command])
+                process = await asyncio.to_thread(subprocess.run, ssh, capture_output=True, text=True, timeout=30)
+                if process.returncode:
+                    raise RuntimeError("Could not reach the job's server to verify shutdown")
+                result = json.loads(process.stdout.strip().splitlines()[-1])
+            else:
+                result = await asyncio.to_thread(cookbook_stop.stop_job, session_id, TMUX_LOG_DIR)
+        except Exception as error:
+            logger.warning("Cookbook stop %s failed: %s", session_id, type(error).__name__)
+            return {"ok": False, "error": str(error)}
+        if result.get("ok") is not True or result.get("status") != "stopped":
+            return result
+        # Re-read after shutdown: another device may have saved unrelated
+        # settings or launched another job while we waited for processes.
+        from core.atomic_io import atomic_write_json
+        state, tasks = read_state()
+        for row in tasks:
+            if row.get("sessionId") == session_id:
+                row.update(status="stopped", _userStopped=True, _stopVerifiedAtMs=int(time.time() * 1000))
+        state["tasks"] = tasks
+        atomic_write_json(str(_cookbook_state_path), state, indent=2)
+        _state_get_cache.update(ts=0.0, value=None)
+        _tasks_status_cache.update(ts=0.0, value=None)
+        return result
+
     @router.get("/api/cookbook/state")
     async def get_cookbook_state(request: Request):
         """Load saved cookbook state (tasks, servers, presets, settings)."""
@@ -3504,6 +3563,13 @@ def setup_cookbook_routes() -> APIRouter:
 
             disk_tasks = on_disk.get("tasks") or [] if isinstance(on_disk, dict) else []
             incoming_tasks = data.get("tasks") if isinstance(data.get("tasks"), list) else []
+            # A stale client's debounced sync must not undo a verified stop.
+            disk_rows = list(disk_tasks.values()) if isinstance(disk_tasks, dict) else disk_tasks
+            verified = {t.get("sessionId"): t for t in disk_rows if isinstance(t, dict) and t.get("_stopVerifiedAtMs")}
+            for row in incoming_tasks:
+                if isinstance(row, dict) and row.get("sessionId") in verified:
+                    row.update(status="stopped", _userStopped=True,
+                               _stopVerifiedAtMs=verified[row["sessionId"]]["_stopVerifiedAtMs"])
             incoming_removed = data.get("removedTasks") if isinstance(data.get("removedTasks"), dict) else {}
             disk_removed = on_disk.get("removedTasks") if isinstance(on_disk, dict) and isinstance(on_disk.get("removedTasks"), dict) else {}
             removed_tasks = {**disk_removed, **incoming_removed}
@@ -4623,6 +4689,9 @@ def setup_cookbook_routes() -> APIRouter:
                 status = "error"
             if download_zero_files:
                 diagnosis = {"message": "No matching files were downloaded. The model repo or filename/quant pattern may be wrong (for example a ':Q4_K_M' tag that does not exist in the repo). Check the repo and the include/quant pattern."}
+            if task.get("_stopVerifiedAtMs") and not is_alive:
+                status = "stopped"
+                diagnosis = None
             output_tail = error_aware_output_tail(full_snapshot, status)
 
             results.append({
