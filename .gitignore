@@ -119,3 +119,6 @@ compound.config.json
 *.error.log
 _scratch/
 /odysseus/
+
+# Downloaded, independently versioned model runtimes.
+/runtimes/

@@ -13,6 +13,7 @@ import { openCookbookDependencies } from './cookbook-diagnosis.js';
 import { _hwfitCache } from './cookbook-hwfit.js';
 import { topPortalZ } from './toolWindowZOrder.js';
 import { clearGpuMemory } from './cookbookGpu.js';
+import { isH3VideoComponent, showH3Video } from './h3Video.js';
 
 // Shared state/functions injected by init()
 let _envState;
@@ -47,6 +48,7 @@ const SERVE_STATE_KEY = 'cookbook-serve-state';
 const SERVE_FAVORITES_KEY = 'cookbook-serve-favorite-models';
 
 let _cachedAllModels = [];
+let _cachedModelsHost = '';
 const _CACHED_MODELS_SCAN_KEY = 'cookbook_cached_models_scan_v5_artifact_files';
 const _CACHED_MODELS_SCAN_TTL = 30 * 1000;
 
@@ -1209,6 +1211,7 @@ function _rerenderCachedModels() {
   if (!list || !_cachedAllModels.length) return;
 
   const allModels = _cachedAllModels;
+  const scannedHost = _cachedModelsHost;
   const _h = (text) => `<span class="hwfit-hint" title="${text}">?</span>`;
 
   const activeTag = tagContainer?.querySelector('.memory-cat-chip.active')?.dataset.serveTag || '';
@@ -1351,11 +1354,11 @@ function _rerenderCachedModels() {
         : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>';
       const items = [];
       items.push({ label: _favNow ? 'Unfavorite' : 'Favorite', icon: _favIco, action: 'favorite' });
-      if (m && m.status === 'ready') items.push({ label: m.adapter_only ? 'Choose adapter' : 'Serve', icon: _serveIco, action: 'serve' });
+      if (m && (m.status === 'ready' || isH3VideoComponent(m))) items.push({ label: m.adapter_only ? 'Choose adapter' : isH3VideoComponent(m) ? 'Generate video' : 'Serve', icon: _serveIco, action: 'serve' });
       if (m && (m.status === 'downloading' || m.status === 'stalled' || m.has_incomplete)) {
         items.push({ label: 'Resume download', icon: _retryIco, action: 'retry' });
       }
-      if (m && m.status === 'ready' && !m.adapter_only) items.push({ label: 'Schedule…', icon: _schedIco, action: 'schedule' });
+      if (m && m.status === 'ready' && !m.adapter_only && !isH3VideoComponent(m)) items.push({ label: 'Schedule…', icon: _schedIco, action: 'schedule' });
       items.push({ label: 'Select', icon: _selectIco, action: 'select' });
       items.push({ label: 'Delete', icon: _deleteIco, action: 'delete', danger: true });
       for (const opt of items) {
@@ -1447,6 +1450,16 @@ function _rerenderCachedModels() {
       if (!repo) return;
       const m = _modelForCachedCard(allModels, repo, item);
       if (!m) return;
+      // H3 repositories contain independent variants. One unfinished download
+      // must not hide a complete variant; the video inventory validates files.
+      if (isH3VideoComponent(m)) {
+        if (scannedHost) {
+          uiModule.showToast(`MiniMax H3 Video runs on the local Odysseus server. This model is on ${scannedHost}. Select Local to choose local H3 components.`, 8000);
+          return;
+        }
+        showH3Video({ preferredModel: m }, item);
+        return;
+      }
       if (m.status !== 'ready') {
         if (m.status === 'downloading' && _isActivelyDownloading(m.repo_id)) {
           uiModule.showToast?.(`${(m.name || m.repo_id || 'Model').split('/').pop()} is still downloading.`);
@@ -4098,6 +4111,7 @@ export async function openServePanelForRepo(repo, fields) {
 // ── Fetch cached models from server ──
 
 function _renderCachedModelsData(list, data, host) {
+  _cachedModelsHost = host || '';
   // CHANGELOG: 'ready' already excludes partial downloads;
   // show every complete model regardless of size/backend.
   const ready = (data.models || []).filter(m => m.status === 'ready');

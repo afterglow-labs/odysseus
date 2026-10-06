@@ -55,7 +55,7 @@ for updating them.
 ## Features
 
 - **Chat + Agents** — local/API models, tools, MCP, files, shell, skills, and memory.
-- **Cookbook** — hardware-aware model recommendations, downloads, and serving.
+- **Cookbook** — hardware-aware model recommendations, downloads, serving, and [MiniMax H3 video generation](docs/minimax-h3.md) with audio, keyframes, and media references.
 - **Deep Research** — multi-step web research with source reading and report generation.
 - **Compare** — blind side-by-side model testing and synthesis.
 - **Documents** — writing-first editor with AI edits, suggestions, Markdown, HTML, CSV, and syntax highlighting.

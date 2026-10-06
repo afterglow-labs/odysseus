@@ -107,7 +107,7 @@ const context = vm.createContext({
 const jsRoot = path.resolve('static/js');
 const real = new Set(['cookbook.js', 'cookbook-deps-recipes.js', 'cookbookDependencyHealth.js', 'cookbookMaintenance.js', 'escMenuStack.js']);
 const allowedStubs = new Set(['ui.js', 'spinner.js', 'providers.js', 'windowDrag.js', 'cookbook-diagnosis.js',
-  'cookbook-hwfit.js', 'cookbookRunning.js', 'cookbookDownload.js', 'cookbookServe.js', 'toolWindowZOrder.js', 'modalManager.js']);
+  'cookbook-hwfit.js', 'cookbookRunning.js', 'cookbookDownload.js', 'cookbookServe.js', 'toolWindowZOrder.js', 'modalManager.js', 'h3Video.js']);
 const source = fs.readFileSync(path.join(jsRoot, 'cookbook.js'), 'utf8');
 // Declare the collaborators' import surface, while retaining the full real
 // coordinator, recipes, dialog, and Escape stack. No production functions are

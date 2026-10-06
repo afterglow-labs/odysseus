@@ -129,6 +129,7 @@ const deps = {
  './chatRenderer.js':{modelColor(){}},'./escMenuStack.js':{bindMenuDismiss(){},dismissOrRemove(){}},
  './cookbook-diagnosis.js':{openCookbookDependencies(){}},'./cookbook-hwfit.js':{_hwfitCache:null},
  './toolWindowZOrder.js':{topPortalZ(){}},'./cookbookGpu.js':{clearGpuMemory(){}},
+ './h3Video.js':{isH3VideoComponent(){return false;},showH3Video(){}},
 };
 const source=fs.readFileSync('static/js/cookbookServe.js','utf8')+`
 export { _adapterOptions, _cachedArtifactPath, _artifactRepoURL };

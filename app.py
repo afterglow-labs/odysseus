@@ -808,6 +808,10 @@ app.include_router(setup_shell_routes())
 from routes.cookbook_routes import setup_cookbook_routes
 app.include_router(setup_cookbook_routes())
 
+# MiniMax H3 video generation in the private local environment.
+from routes.h3_video_routes import setup_h3_video_routes
+app.include_router(setup_h3_video_routes())
+
 from routes.workspace_routes import setup_workspace_routes
 app.include_router(setup_workspace_routes())
 

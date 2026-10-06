@@ -11,6 +11,7 @@ import { _diagnose, _showDiagnosis, _clearDiagnosis, _runQuickCmd, ERROR_PATTERN
 import { RECIPE_BACKENDS, recipesForBackend, pickRecipe, recipeCommands, RECIPE_DEFAULT_VARIANT } from './cookbook-deps-recipes.js';
 import { dependencyIssues, showDependencyIssues } from './cookbookDependencyHealth.js';
 import { showEnvironmentPackages, showClearVram } from './cookbookMaintenance.js';
+import { showH3Video } from './h3Video.js';
 import { _hwfitCache, _hwfitDebounce, _hwfitFetch, _hwfitInit, _hwfitRenderList, _hwfitRenderHw, _renderGpuToggles, _expandModelRow, _fitColors, _hwfitColumns, _cachedModelIds, _gpuToggleTotal, _resetGpuToggleState } from './cookbook-hwfit.js';
 
 // Sub-modules
@@ -2268,6 +2269,7 @@ function _wireTabEvents(body) {
   }
 
   const depsServer = document.getElementById('hwfit-deps-server');
+  document.getElementById('cookbook-h3-video')?.addEventListener('click', event => showH3Video({}, event.currentTarget));
   document.getElementById('cookbook-check-dependencies')?.addEventListener('click', () => _fetchDependencies({ showIssues: true }));
   document.getElementById('cookbook-clear-vram')?.addEventListener('click', event => {
     const server = _selectedServer();
@@ -3286,6 +3288,7 @@ function _renderRecipes() {
   html += '<div class="admin-card" style="flex:1;display:flex;flex-direction:column;overflow:hidden;">';
   html += '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:2px;">';
   html += '<h2 style="margin:0;padding:0;line-height:1;">Serve <span id="serve-stats" class="memory-count" style="font-size:0.6em;opacity:0.6;font-weight:normal"></span></h2>';
+  html += '<button type="button" class="memory-toolbar-btn" id="cookbook-h3-video" style="margin-left:auto;" title="Generate video on the local Odysseus server; remote SSH hosts are not supported">MiniMax H3 Video · Local</button>';
   html += '</div>';
   const _selSrv = _es.servers.find(s => s.host === _es.remoteHost) || _es.servers[0] || {};
   const _srvDirs = (Array.isArray(_selSrv.modelDirs) ? _selSrv.modelDirs : [_selSrv.modelDir || '~/.cache/huggingface/hub']).map(d => _normalizeCookbookModelDir(d)).filter(Boolean);
