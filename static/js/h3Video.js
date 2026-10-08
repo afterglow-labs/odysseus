@@ -481,11 +481,6 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   }
   function updateReady() {
     jobEditor?.observe(jobs);
-    for (const job of jobs) {
-      const nodes = jobNodes.get(job.id); if (!nodes) continue;
-      const state = reruns.state(job); nodes.rerun.disabled = state.disabled;
-      nodes.editRerun.disabled = state.disabled || state.pending || !inventory || !!jobEditor?.active || !!jobEditor?.loading;
-    }
     const batching = batchActive(), batchBusy = !!batchQueue?.busy;
     const editing = !!jobEditor?.active, editLoading = !!jobEditor?.loading;
     const queueBusy = !!queueControls?.busy;
@@ -513,6 +508,11 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     batchContainer.hidden = editing || fields.mode.value !== 'ref2va';
     for (const [id, nodes] of jobNodes) nodes.edit.disabled = queueBusy || !!queueControls?.editing || editing || editLoading || batchBusy || transferBusy || enhancing || submitting || inventoryLoading || !inventory || pendingStops.has(id);
     queueControls?.setBlocked(editing || editLoading || batchBusy || transferBusy || enhancing || submitting || inventoryLoading || pendingStops.size > 0 || pendingDeletes.size > 0);
+    for (const job of jobs) {
+      const nodes = jobNodes.get(job.id); if (!nodes) continue;
+      const state = reruns.state(job); nodes.rerun.disabled = state.disabled;
+      nodes.editRerun.disabled = state.disabled || !!queueControls?.blocked || nodes.editorLoading || state.pending || !inventory || !!jobEditor?.active || !!jobEditor?.loading;
+    }
     updateEnhancerControls();
   }
   function updateEnhancerControls() {
@@ -847,10 +847,16 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
         edit.onclick = () => jobEditor.open(job.id);
         rerun.title = 'Queue a new copy using this job’s saved prompt, settings and inputs; keep the original.';
         rerun.onclick = () => reruns.run(jobs.find(item => item.id === job.id) || job);
-        editRerun.onclick = () => queueControls.openRerun(job.id, async (source, patch) => {
-          const result = await reruns.run(source, patch, true);
-          return { result, ...reruns.state(source) };
-        });
+        editRerun.onclick = async () => {
+          nodes.editorLoading = true; nodes.editorError = ''; renderJobs();
+          const opened = await queueControls.openRerun(job.id, async (source, patch) => {
+            const result = await reruns.run(source, patch, true);
+            return { result, ...reruns.state(source) };
+          });
+          nodes.editorLoading = false;
+          nodes.editorError = opened?.opened ? '' : opened?.error || 'Could not open saved parameters. Refresh jobs and try again.';
+          if (!closed) renderJobs();
+        };
         stop.onclick = () => stopJob(job.id);
         remove.onclick = () => { deletion.hidden = false; deleteError.hidden = true; keep.focus(); };
         keep.onclick = () => { deletion.hidden = true; remove.focus(); };
@@ -862,9 +868,10 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
       nodes.edit.hidden = !queued;
       const rerunState = reruns.state(job);
       nodes.rerun.hidden = nodes.editRerun.hidden = rerunState.hidden; nodes.rerun.disabled = rerunState.disabled; nodes.rerun.textContent = rerunState.label;
-      nodes.editRerun.disabled = rerunState.disabled || rerunState.pending || !inventory || !!jobEditor?.active || !!jobEditor?.loading;
-      nodes.rerunStatus.textContent = rerunState.message; nodes.rerunStatus.hidden = !rerunState.message;
-      nodes.rerunError.textContent = rerunState.error; nodes.rerunError.hidden = !rerunState.error;
+      nodes.editRerun.disabled = rerunState.disabled || !!queueControls?.blocked || nodes.editorLoading || rerunState.pending || !inventory || !!jobEditor?.active || !!jobEditor?.loading;
+      nodes.editRerun.textContent = nodes.editorLoading ? 'Loading parameters…' : 'Edit & rerun';
+      nodes.rerunStatus.textContent = nodes.editorLoading ? 'Loading this job’s saved parameters…' : rerunState.message; nodes.rerunStatus.hidden = !nodes.rerunStatus.textContent;
+      nodes.rerunError.textContent = nodes.editorError || rerunState.error; nodes.rerunError.hidden = !nodes.rerunError.textContent;
       const position = Number.isInteger(job.queue_position) && job.queue_position > 0 ? ` · Position ${job.queue_position}` : '';
       nodes.heading.textContent = `${job.source_name ? `${job.source_name} · ` : ''}${queued ? `Queued${position}` : job.status.charAt(0).toUpperCase() + job.status.slice(1)} · ${job.id}`;
       nodes.description.textContent = queued

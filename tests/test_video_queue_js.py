@@ -163,3 +163,17 @@ value('steps').value='600';value('steps').listeners.input();await submit();asser
 value('steps').value='6';value('steps').listeners.input();await submit();assert.equal(value('steps').disabled,true);assert.equal(find('apply').textContent,'Retry request');
 await submit();assert.equal(controls.editing,false);
 ''')
+
+
+def test_single_editor_reports_blocked_and_failed_open_without_starting_a_job():
+    run_js(DOM + r'''
+controls.setBlocked(true);assert.equal(controls.blocked,true);
+const blocked=await controls.openRerun('original',async()=>{});assert.match(blocked.error,/Finish the current/);assert.equal(calls.length,0);
+controls.setBlocked(false);assert.equal(controls.blocked,false);
+handler=async()=>{throw Error('Saved parameters temporarily unavailable')};
+const failed=await controls.openRerun('original',async()=>{});assert.equal(failed.error,'Saved parameters temporarily unavailable');
+assert.equal(controls.editing,false);assert.equal(controls.busy,false);assert.equal(calls.length,1);assert.equal(calls[0].path,'/queue/jobs?status=finished');
+handler=async()=>({jobs:[{id:'original',revision:4,status:'failed',config:{steps:25,prompt:'Saved'}}],queue});
+assert.deepEqual(await controls.openRerun('original',async()=>{}),{opened:true});
+assert.equal(find('apply').disabled,true);
+''')

@@ -102,8 +102,8 @@ export function createVideoQueueControls({ container, family, request, getFields
   async function run(operation) {
     if (busy || blocked || !alive()) return;
     busy = true; error(); render(); onChange();
-    try { await operation(); }
-    catch (e) { if (alive()) error(e.message || String(e)); }
+    try { return await operation(); }
+    catch (e) { if (alive()) error(e.message || String(e)); return { error: e.message || String(e) }; }
     finally { busy = false; if (alive()) { render(); onChange(); } }
   }
   function receipt(result, verb) {
@@ -197,7 +197,7 @@ export function createVideoQueueControls({ container, family, request, getFields
   }
   edit.onclick = () => openEditor('edit'); rerun.onclick = () => openEditor('rerun');
   function openRerun(id, submit) {
-    if (mode || typeof submit !== 'function') return;
+    if (!alive() || busy || blocked || mode || typeof submit !== 'function') return Promise.resolve({ error: 'Finish the current workflow operation or close the parameter editor, then try Edit & rerun again.' });
     return run(async () => {
       const result = await request('/queue/jobs?status=finished');
       if (!alive()) return;
@@ -212,6 +212,7 @@ export function createVideoQueueControls({ container, family, request, getFields
       targetStatus.textContent = `One ${familyName} job selected · ${job.id}`;
       buildFields(job.config); render(); editor.scrollIntoView({ block: 'start', behavior: 'smooth' });
       editor.querySelector('textarea')?.focus({ preventScroll: true });
+      return { opened: true };
     });
   }
   targetScope.onchange = () => run(loadTargets); refreshSelection.onclick = () => run(loadTargets); approve.onchange = render; abandon.onclick = () => { if (!busy) closeEditor(); };
@@ -253,7 +254,7 @@ export function createVideoQueueControls({ container, family, request, getFields
   };
   scope.onchange = render; render();
   return {
-    get busy() { return busy; }, get editing() { return !!mode; },
+    get busy() { return busy; }, get editing() { return !!mode; }, get blocked() { return blocked; },
     update(value) { if (!busy) updateQueue(value); },
     setBlocked(value) { blocked = !!value; render(); },
     destroy() { dead = true; selectionVersion++; },
