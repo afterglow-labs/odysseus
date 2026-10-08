@@ -888,6 +888,38 @@ function _isServeOutputPlaceholder(value) {
   return !text || /^Launched via agent\s+—\s+waiting for tmux output/i.test(text);
 }
 
+function _mergeOutputTail(previous, incoming) {
+  // Status output is a rolling snapshot, not a stream of new log lines. Apply
+  // the same redaction as storage before comparing it with a saved snapshot.
+  const normalize = value => _redactStoredText(String(value || '').replace(/\r\n?/g, '\n')).trim();
+  const before = normalize(previous).slice(-5000);
+  const tail = normalize(incoming).slice(-5000);
+  if (!tail) return before;
+  if (_isServeOutputPlaceholder(before)) return tail;
+  if (before.endsWith(tail)) return before;
+
+  // Match at line boundaries, so an incidental shared character cannot join
+  // unrelated messages. A partial last line may grow or be rewritten by a
+  // terminal progress indicator; the incoming snapshot owns that last line.
+  const lastNewline = before.lastIndexOf('\n');
+  for (let start = 0; start < before.length;) {
+    const suffix = before.slice(start);
+    if (tail.startsWith(suffix)) return (before + tail.slice(suffix.length)).slice(-5000);
+    if (lastNewline >= start) {
+      const completeLines = before.slice(start, lastNewline + 1);
+      if (tail.startsWith(completeLines)) return (before.slice(0, start) + tail).slice(-5000);
+    }
+    const newline = before.indexOf('\n', start);
+    if (newline < 0) break;
+    start = newline + 1;
+  }
+
+  // With no cursor or reliable overlap, continuity cannot be established.
+  // Prefer the authoritative snapshot over inventing an append (and possibly
+  // duplicating an entire log block). The foreground poll retains full captures.
+  return tail;
+}
+
 function _redactTaskForStorage(task) {
   if (!task || typeof task !== 'object') return task;
   const safe = { ...task };
@@ -4381,12 +4413,8 @@ async function _pollBackgroundStatus() {
         if (live.exit_code != null && live.exit_code !== task.exit_code) updates.exit_code = live.exit_code;
         if (live.output_tail) {
           const previous = String(task.output || '');
-          const tail = String(live.output_tail || '');
-          if (tail && !previous.endsWith(tail)) {
-            updates.output = _isServeOutputPlaceholder(previous)
-              ? tail.slice(-5000)
-              : `${previous ? `${previous}\n` : ''}${tail}`.slice(-5000);
-          }
+          const merged = _mergeOutputTail(previous, live.output_tail);
+          if (merged !== previous) updates.output = merged;
         }
         if (live.diagnosis && !task._diagnosisDismissed) {
           updates._backendDiagnosis = live.diagnosis;
