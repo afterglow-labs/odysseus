@@ -16,6 +16,7 @@ const MODES = [ ['t2va', 'Text → video + audio'], ['fl2va', 'First / last fram
 const SETTINGS = ['mode', 'model', 'encoder', 'video_vae', 'audio_vae', 'gpu', 'vae_gpu', 'width', 'height', 'frames', 'steps', 'seed', 'sampler', 'scheduler', 'shift_video', 'shift_audio', 'reference_size'];
 const NUMBER_FIELDS = new Set([ 'width', 'height', 'frames', 'steps', 'seed', 'shift_video', 'shift_audio']);
 const enhancerName = model => String(model || 'Qwen3.8 27B').split(/[\\/]/).filter(Boolean).at(-1) || 'Qwen3.8 27B';
+const h3ComponentId = (value, components = []) => components.find(item => String(item.id) === String(value) || item.aliases?.includes(String(value)))?.id ?? value;
 
 const el = (tag, className = '', text) => {
   const node = document.createElement(tag);
@@ -398,7 +399,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     if (automatic && (loraTouched || Object.prototype.hasOwnProperty.call(saved, 'loras') || appliedPresetRevision === preset.revision || fields.mode.value !== values.mode)) return false;
     if (!automatic) {
       fields.mode.value = values.mode;
-      fields.model.value = values.model;
+      fields.model.value = h3ComponentId(values.model, inventory.components);
     }
     // An existing draft keeps its prompt, files, base components, dimensions,
     // seed and GPU placement. Installation supplies only the adapter settings.
@@ -692,6 +693,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     updateReady();
   }
   function fillOptions(key, options, preferred, optional = false) {
+    preferred = h3ComponentId(preferred, options);
     const control = fields[key]; control.replaceChildren();
     control.add(new Option(optional ? 'None' : options.length ? 'Choose component…' : `No cached ${key.replaceAll('_', ' ')} found`, ''));
     options.forEach(item => control.add(new Option(item.name, String(item.id))));
@@ -1055,7 +1057,8 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     }
     for (const key of [...SETTINGS, 'prompt']) {
       if (values[key] === undefined) continue;
-      const control = fields[key], value = String(values[key]);
+      const control = fields[key], value = String(['model', 'encoder', 'video_vae', 'audio_vae'].includes(key)
+        ? h3ComponentId(values[key], inventory?.components) : values[key]);
       if (control.tagName === 'SELECT' && value && ![...control.options].some(option => option.value === value)) control.add(new Option('Previously selected value is unavailable', value));
       control.value = value;
     }

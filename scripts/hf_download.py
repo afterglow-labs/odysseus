@@ -145,6 +145,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("repo_id", help="HuggingFace repo (e.g. meta-llama/Llama-3-8B)")
     parser.add_argument("--include", help="File pattern to include (e.g. '*Q4_K_M*')")
+    parser.add_argument("--local-dir", help="Readable repository directory (original filenames, no Hub blobs)")
+    parser.add_argument("--cache-dir", help="Legacy Hugging Face cache directory")
     args = parser.parse_args()
 
     # Disable HF progress bars (we provide our own)
@@ -168,10 +170,30 @@ def main():
     }
     if args.include:
         kwargs["allow_patterns"] = [args.include]
+    if args.local_dir:
+        kwargs["local_dir"] = os.path.expanduser(args.local_dir)
+        kwargs["ignore_patterns"] = [".odysseus-model*"]
+    elif args.cache_dir:
+        kwargs["cache_dir"] = os.path.expanduser(args.cache_dir)
 
     print(f"START {args.repo_id}", flush=True)
     try:
+        # Import after parsing so this helper still supports standalone legacy
+        # usage; normal Odysseus directory downloads share marker semantics.
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from src.hf_download_space import check_download_space
+        from src.hf_directory_download import prepare_directory_download, finish_directory_download
+        from src.hf_cache import effective_hf_cache
+        preview = []
+        code = check_download_space(args.repo_id, args.include, args.cache_dir or effective_hf_cache(), local_dir=kwargs.get("local_dir"), preview_callback=lambda entries: preview.append(entries))
+        if code:
+            sys.exit(code)
+        if args.local_dir:
+            expected = {entry.filename: entry.file_size for entry in preview[0]} if preview else None
+            prepare_directory_download(args.repo_id, kwargs["local_dir"], args.include, expected)
         path = snapshot_download(**kwargs)
+        if args.local_dir and finish_directory_download(args.repo_id, path, args.include):
+            sys.exit(1)
         print(f"DONE {path}", flush=True)
     except Exception as e:
         print(f"ERROR {e}", file=sys.stderr, flush=True)

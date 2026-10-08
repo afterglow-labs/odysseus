@@ -137,7 +137,8 @@ def helper_error(workflow, runtime, project):
 
 
 def discover_components(roots):
-    result, seen = [], set()
+    from src.model_library import component_aliases
+    result, seen, known_ids, metadata_cache = [], set(), set(), {}
     patterns = [s['pattern'] for w in WORKFLOWS for s in w['slots']]
     for root in roots:
         for directory, dirs, files in os.walk(root, followlinks=False):
@@ -153,7 +154,12 @@ def discover_components(roots):
                     seen.add(resolved)
                 except OSError:
                     continue
-                result.append({'id': hashlib.sha256(str(resolved).encode()).hexdigest()[:32],
+                identity = hashlib.sha256(str(resolved).encode()).hexdigest()[:32]
+                aliases = component_aliases(resolved, metadata_cache)
+                if identity in known_ids:
+                    continue
+                known_ids.update([identity, *aliases])
+                result.append({'id': identity, **({'aliases': aliases} if aliases else {}),
                                'name': name, 'path': str(path.absolute()), 'nvfp4': 'nvfp4' in name.lower()})
     return sorted(result, key=lambda c: (0 if c['nvfp4'] else 1 if 'int8' in c['name'].lower() else 2, c['name']))
 
@@ -194,7 +200,7 @@ def validate_config(raw, inventory, uploads):
         if not selected and not spec['required']:
             config[spec['key']] = None
             continue
-        component = next((c for c in inventory['components'] if c['id'] == selected), None)
+        component = next((c for c in inventory['components'] if c['id'] == selected or selected in c.get('aliases', [])), None)
         if not component or not matches(component, spec, workflow) or not Path(component['path']).is_file():
             raise ValueError('Choose a compatible cached ' + spec['label'])
         if component['nvfp4'] and not gpu.get('nvfp4'):

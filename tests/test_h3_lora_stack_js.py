@@ -4,6 +4,22 @@ from test_video_workflow_js import run_js as run_workflow_js
 from test_video_queue_js import run_js as run_queue_js
 
 
+def test_moved_components_restore_saved_and_edited_ids_through_inventory_aliases():
+    run_js(r'''
+for (const item of components) item.aliases = ['old-' + item.id];
+stored.set(STORAGE, JSON.stringify({...defaults, model:'old-ref', encoder:'old-encoder',
+ video_vae:'old-video_vae',audio_vae:'old-audio_vae',loras:[{id:'old-turbo',strength:0.65}]}));
+showH3Video();await flush();
+for (const key of ['model','encoder','video_vae','audio_vae']) assert.equal(byId(key).value, defaults[key]);
+assert.equal(byId('lora').value,'turbo');assert.equal(byId('lora_scale').value,'0.65');
+assert.deepEqual(editorOptions.getDraft().config.loras,[{id:'turbo',strength:0.65}]);
+assert.match(h3LoraIssue([{id:'turbo',strength:1},{id:'old-turbo',strength:1}],components), /only once/);
+editorOptions.restoreDraft({config:{...defaults, model:'old-ref', encoder:'old-encoder',loras:[{id:'old-vfx',strength:0.4}]},uploads:{}});
+assert.equal(byId('model').value,'ref');assert.equal(byId('encoder').value,'encoder');
+assert.deepEqual(editorOptions.getDraft().config.loras,[{id:'vfx',strength:0.4}]);
+''')
+
+
 def test_saved_stack_keeps_order_strengths_and_explicit_empty_over_new_preset():
     run_js(r'''
 inventory.installed_preset={revision:'new-vfx',name:'VFX',config:{...defaults,lora:'vfx'}};

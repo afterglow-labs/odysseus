@@ -102,10 +102,11 @@ def _draft(config, inventory, family, *, resolved_paths=None):
         # Keep an unavailable selection visible instead of replacing it with a
         # different checkpoint when a cache has moved or disconnected.
         path = resolve(value)
+        previous_id = hashlib.sha256(str(path).encode()).hexdigest()[:32]
         choices[role] = next((row["id"] for row in inventory["components"]
                               if compatible(row, role, family, config)
-                              and resolve(row["path"]) == path),
-                             hashlib.sha256(str(path).encode()).hexdigest()[:32])
+                              and (previous_id in row.get("aliases", []) or resolve(row["path"]) == path)),
+                             previous_id)
     if family == "bfs":
         result["components"] = choices
         if "prompt_notes" in config:
@@ -128,9 +129,11 @@ def _draft(config, inventory, family, *, resolved_paths=None):
             result["loras"] = []
             for row in lora_entries(config, "path"):
                 path = resolve(row["path"])
+                previous_id = hashlib.sha256(str(path).encode()).hexdigest()[:32]
                 identity = next((item["id"] for item in inventory["components"]
-                                 if item.get("role") == "lora" and resolve(item["path"]) == path),
-                                hashlib.sha256(str(path).encode()).hexdigest()[:32])
+                                 if item.get("role") == "lora"
+                                 and (previous_id in item.get("aliases", []) or resolve(item["path"]) == path)),
+                                previous_id)
                 result["loras"].append({"id": identity, "strength": row["strength"]})
     return result
 

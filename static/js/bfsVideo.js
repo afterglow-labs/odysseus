@@ -20,6 +20,7 @@ const el = (tag, className = '', text) => {
 };
 const button = text => { const node = el('button', 'memory-toolbar-btn', text); node.type = 'button'; return node; };
 const optionId = value => String(value ?? '');
+const bfsComponentId = (value, components = []) => optionId(components.find(item => optionId(item.id) === optionId(value) || item.aliases?.includes(optionId(value)))?.id ?? value);
 
 function jobOrder(a, b) {
   const rank = job => job.status === 'running' ? 0 : job.status === 'queued' ? 1 : 2;
@@ -290,7 +291,7 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
       // A deliberate adapter-file choice may override its slot. Match the
       // repository-relative file, never a shared cache directory or basename.
       const selectedAdapter = preferredAdapter && candidates.find(item => String(item.path || '').replaceAll('\\', '/').endsWith('/' + preferredAdapter));
-      const wanted = incompatibleAdapter && slot.key === 'lora' ? '' : optionId(selectedAdapter?.id ?? previous.components?.[slot.key] ?? slot.default_id);
+      const wanted = incompatibleAdapter && slot.key === 'lora' ? '' : bfsComponentId(selectedAdapter?.id ?? previous.components?.[slot.key] ?? slot.default_id, candidates);
       if (wanted && !candidates.some(item => optionId(item.id) === wanted)) control.add(new Option('Previously selected component is unavailable', wanted));
       if ([...control.options].some(option => option.value === wanted)) control.value = wanted;
       slots.set(slot.key, { control, ids: new Set(candidates.map(item => optionId(item.id))), required: !!slot.required, label: slot.label || slot.key });
@@ -579,7 +580,7 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
       control.value = value;
     };
     prompt.value = values.prompt || ''; assign(gpu, values.gpu);
-    for (const [key, slot] of slots) assign(slot.control, values.components?.[key]);
+    for (const [key, slot] of slots) assign(slot.control, values.components?.[key] === undefined ? undefined : bfsComponentId(values.components[key], inventory?.components));
     for (const [key, state] of controls) {
       if (state.type === 'boolean') state.control.checked = !!values[key];
       else assign(state.control, values[key]);

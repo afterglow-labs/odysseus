@@ -64,7 +64,7 @@ async def test_real_download_runner_pins_exact_cache(tmp_path, monkeypatch, remo
                     if r.path == "/api/model/download" and "POST" in r.methods)
     await endpoint(Request({"type": "http", "method": "POST", "path": "/api/model/download", "headers": []}),
                    ModelDownloadRequest(repo_id="example/model", remote_host=remote,
-                                        platform=platform, local_dir=selected))
+                                        platform=platform, local_dir=selected, layout="cache"))
     script = next(tmp_path.glob("*.ps1" if platform == "windows" else "*.sh")).read_text()
     home, hub = download_cache_paths(selected)
     if platform == "windows":

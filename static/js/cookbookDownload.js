@@ -132,7 +132,7 @@ export function _downloadDirForServer(server, host = '') {
   const localServer = isLocal ? (_envState.servers || []).find(s =>
     !s.host || ['local', 'localhost'].includes(String(s.host).toLowerCase())) : null;
   return server?.downloadDir || localServer?.downloadDir
-    || (isLocal ? (_envState.localDownloadDir || _envState.localHfCacheDir) : '') || '';
+    || (isLocal ? (_envState.localDownloadDir || '~/models') : '') || '';
 }
 
 export function _buildDownloadCmd(model, backend) {
@@ -147,17 +147,22 @@ export function _buildDownloadCmd(model, backend) {
       const repo = ggufSource?.repo || model.name;
       const includePattern = backend === 'llamacpp' ? _ggufIncludePattern(model, ggufSource) : null;
       const includeArg = includePattern ? `, allow_patterns=${JSON.stringify([includePattern])}` : '';
-      // Match download_cache_paths: an explicit hub is used directly; a
-      // parent directory stores the Hub cache in its hub subdirectory.
-      const _dlDir = _downloadDirForServer(
+      // Keep the HF repository's names and subfolders under the chosen root.
+      let _dlDir = _downloadDirForServer(
         _serverByVal?.(_envState.remoteServerKey || _envState.remoteHost || ''),
         _envState.remoteHost || '');
+      const isH3 = /minimax.*h3|h3.*minimax/i.test(`${repo}/${includePattern || ''}`) || /(?:^|\/)h3(?:\/|$)/i.test(includePattern || '');
+      const normalized = value => String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+      if (!_envState.remoteHost && isH3 && _envState.localH3DownloadDir
+        && (!_dlDir || normalized(_dlDir) === normalized(_envState.localDownloadDir))) _dlDir = _envState.localH3DownloadDir;
       const normalizedDir = String(_dlDir).replace(/\\/g, '/').replace(/\/+$/, '');
-      const cacheDir = /(?:^|\/)hub$/i.test(normalizedDir) ? normalizedDir : `${normalizedDir}/hub`;
-      const cacheArg = _dlDir ? `, cache_dir=os.path.expanduser(${JSON.stringify(cacheDir)})` : '';
+      const rootExpr = _dlDir
+        ? `os.path.expanduser(${JSON.stringify(normalizedDir || '/')})`
+        : `os.path.expanduser('~/models')`;
+      const localArg = `, local_dir=os.path.join(${rootExpr}, repo)`;
       const _py = _isWindows() ? 'python' : 'python3';
       const script = `
-import sys, time, os
+import sys, time, os, json
 os.environ['HF_HUB_DISABLE_PROGRESS_BARS']='0'
 os.environ['TQDM_DISABLE']='0'
 _lp={}
@@ -205,7 +210,13 @@ from huggingface_hub import snapshot_download
 repo=${JSON.stringify(repo)}
 print(f'START {repo}',flush=True)
 try:
- path=snapshot_download(repo${includeArg}${cacheArg})
+ path=snapshot_download(repo${includeArg}${localArg}, ignore_patterns=['.odysseus-model*'])
+ if os.path.isdir(path):
+  marker=os.path.join(path,'.odysseus-model.json')
+  if os.path.islink(marker): raise RuntimeError('Model metadata cannot be a symbolic link')
+  try:
+   with open(marker,'x',encoding='utf-8') as f: json.dump(dict(format='odysseus-model',version=1,repository=repo,files={}),f)
+  except FileExistsError: pass
  print(f'DONE {path}',flush=True)
 except Exception as e:
  print(f'ERROR {e}',file=sys.stderr,flush=True);sys.exit(1)
@@ -539,7 +550,7 @@ export async function _runModelDownload(panel, model, backend, hostOverride) {
   const platform = host ? (srv.platform || '') : (_envState.platform || '');
   const isWin = host ? (platform === 'windows') : _isWindows();
 
-  const payload = { repo_id: repo, backend };
+  const payload = { repo_id: repo, backend, layout: 'directory' };
   if (include) payload.include = include;
   // Large downloads are where hf_transfer most often dies near the end. Use the
   // plain HuggingFace downloader up front for big model files; it is slower, but
@@ -554,8 +565,7 @@ export async function _runModelDownload(panel, model, backend, hostOverride) {
     if (_sp) payload.ssh_port = _sp;
   }
   if (platform) payload.platform = platform;
-  // The server resolves this target to an HF hub cache (a path ending in hub
-  // is already the cache, not a parent to which another hub is appended).
+  // The server places the readable owner/repository folder under this root.
   const downloadDir = _downloadDirForServer(srv, host);
   if (downloadDir) payload.local_dir = downloadDir;
   if (isWin) {
@@ -649,7 +659,10 @@ export async function _runModelDownload(panel, model, backend, hostOverride) {
     if (!res.ok) {
       // Errors carry actionable text (e.g. "tmux is required …"); keep them up
       // long enough to read, matching the serve path's duration (issue #1355).
-      uiModule.showToast('Download failed: HTTP ' + res.status, 9000);
+      const failure = await res.json().catch(() => ({}));
+      const message = typeof failure.detail === 'string' ? failure.detail
+        : typeof failure.error === 'string' ? failure.error : `HTTP ${res.status}`;
+      uiModule.showToast('Download failed: ' + message, 9000);
       return;
     }
     const data = await res.json();
@@ -658,6 +671,9 @@ export async function _runModelDownload(panel, model, backend, hostOverride) {
       return;
     }
     if (data.cache_dir) payload.cache_dir = data.cache_dir;
+    if (data.download_dir) payload.download_dir = data.download_dir;
+    if (data.model_root) payload.model_root = data.model_root;
+    if (data.layout) payload.layout = data.layout;
     _addTask(data.session_id, taskName, 'download', payload);
     uiModule.showToast(`Downloading ${taskName}...`);
   } catch (e) {

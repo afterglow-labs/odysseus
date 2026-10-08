@@ -8,15 +8,29 @@ import re
 import shlex
 from pathlib import Path
 
-from src import hf_cache, hf_download_space
+from src import hf_cache, hf_download_space, hf_directory_download, model_library
 
 _HF_CACHE_SOURCE = Path(hf_cache.__file__).read_text(encoding="utf-8")
+_HF_DIRECTORY_SOURCE = (
+    Path(model_library.__file__).read_text(encoding="utf-8") + "\n"
+    + Path(hf_directory_download.__file__).read_text(encoding="utf-8").replace(
+        "from src.model_library import write_model_metadata\n", "")
+)
 
 HF_DOWNLOAD_SPACE_PROBE = (
-    _HF_CACHE_SOURCE + "\n"
+    _HF_CACHE_SOURCE + "\n" + _HF_DIRECTORY_SOURCE + "\n"
     + Path(hf_download_space.__file__).read_text(encoding="utf-8")
-    + "\nimport sys\nsys.exit(check_download_space(sys.argv[1], "
-      "sys.argv[2] if len(sys.argv) > 2 else '', effective_hf_cache()))\n"
+    + "\nimport sys\npattern=sys.argv[2] if len(sys.argv)>2 else ''\n"
+      "required_mount=os.environ.get('ODYSSEUS_REQUIRED_DOWNLOAD_MOUNT')\n"
+      "if required_mount and not os.path.ismount(required_mount):\n"
+      " print('DOWNLOAD_MOUNT_UNAVAILABLE: '+required_mount+' is not mounted. Mount the Windows drive in WSL, then retry. No files were downloaded.',flush=True)\n"
+      " sys.exit(72)\n"
+      "directory=os.environ.get('ODYSSEUS_HF_LOCAL_DIR') or None\n"
+      "preview=[]\n"
+      "code=check_download_space(sys.argv[1], pattern, effective_hf_cache(), local_dir=directory, preview_callback=lambda entries: preview.append(entries))\n"
+      "expected={entry.filename:entry.file_size for entry in preview[0]} if directory and preview else None\n"
+      "if code==0 and directory: prepare_directory_download(sys.argv[1],directory,pattern,expected)\n"
+      "sys.exit(code)\n"
 )
 
 
@@ -44,7 +58,7 @@ def hf_download_attempt_lines(python_command, download_command, repo_id, pattern
         "    fi",
         '    rm -f "$_odysseus_download_log"',
         "  fi",
-        "  if [ $_ec -eq 28 ]; then break; fi",
+        "  if [ $_ec -eq 28 ] || [ $_ec -eq 72 ]; then break; fi",
     ]
 
 _FETCHING_ZERO_FILES_RE = re.compile(r"Fetching\s+0\s+files", re.IGNORECASE)
@@ -53,11 +67,14 @@ _FETCHING_ZERO_FILES_RE = re.compile(r"Fetching\s+0\s+files", re.IGNORECASE)
 # include pattern matches nothing. Recent noninteractive CLIs also suppress
 # the "Fetching 0 files" progress line, so validate the materialized files
 # before the runner prints DOWNLOAD_OK. This is entirely offline.
-HF_CACHE_MATCHING_FILES_PROBE = _HF_CACHE_SOURCE + "\n" + r'''
+HF_CACHE_MATCHING_FILES_PROBE = _HF_CACHE_SOURCE + "\n" + _HF_DIRECTORY_SOURCE + "\n" + r'''
 import fnmatch, ntpath, os, sys
 repo = sys.argv[1]
 # Legacy PowerShell may omit an empty final native-command argument.
 pattern = sys.argv[2] if len(sys.argv) > 2 else ''
+directory = os.environ.get('ODYSSEUS_HF_LOCAL_DIR')
+if directory:
+    sys.exit(finish_directory_download(repo, directory, pattern))
 base = os.path.join(effective_hf_cache(), 'models--' + repo.replace('/', '--'))
 snapshots = os.path.join(base, 'snapshots')
 ref = os.path.join(base, 'refs', 'main')
@@ -128,6 +145,17 @@ HF_CACHE_INCOMPLETE_PROBE = (
     "blobs=os.path.join(d,'blobs');"
     "inc=os.path.isdir(blobs) and any(x.endswith('.incomplete') for x in os.listdir(blobs));"
     "sys.exit(0 if inc else 1)"
+)
+
+# Directory probes receive the actual repository folder, never a cache root.
+# A receipt is produced only by this transfer's successful completion check.
+HF_DIRECTORY_COMPLETE_PROBE = _HF_DIRECTORY_SOURCE + "\n" + (
+    "import sys\nsys.exit(0 if directory_download_complete(sys.argv[1], sys.argv[2], "
+    "sys.argv[3] if len(sys.argv)>3 else '') else 1)\n"
+)
+HF_DIRECTORY_INCOMPLETE_PROBE = _HF_DIRECTORY_SOURCE + "\n" + (
+    "import sys\nsys.exit(0 if directory_download_incomplete(sys.argv[1], sys.argv[2], "
+    "sys.argv[3] if len(sys.argv)>3 else '') else 1)\n"
 )
 
 

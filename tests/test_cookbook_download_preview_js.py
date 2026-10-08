@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def preview_command(*, download_dir="", local_cache="/private/cache/huggingface/hub",
-                    local_download="", servers=None, remote=False, model=None):
+                    local_download="", h3_download="", servers=None, remote=False, model=None):
     node = shutil.which("node")
     if not node:
         pytest.skip("Node.js is required for the download preview regression")
@@ -23,7 +23,7 @@ def preview_command(*, download_dir="", local_cache="/private/cache/huggingface/
         "// ── Panel rendering helpers ──", 1
     )[0].replace("export function", "function")
     state = {"remoteHost": "remote.test" if remote else "", "localHfCacheDir": local_cache,
-             "localDownloadDir": local_download, "servers": servers or []}
+             "localDownloadDir": local_download, "localH3DownloadDir": h3_download, "servers": servers or []}
     model = model or {"name": "author/model"}
     backend = "llamacpp" if model.get("gguf_sources") else "diffusers"
     script = (
@@ -60,13 +60,13 @@ def run_preview(command, tmp_path):
 @pytest.mark.parametrize("chosen,expected", [
     ("/private/cache/huggingface/hub", "/private/cache/huggingface/hub"),
     ("/private/cache/huggingface/hub/", "/private/cache/huggingface/hub"),
-    ("/private/cache/huggingface", "/private/cache/huggingface/hub"),
-    ("/", "/hub"),
-    ("", "/private/cache/huggingface/hub"),
+    ("/private/cache/huggingface", "/private/cache/huggingface"),
+    ("/", ""),
+    ("", os.path.expanduser("~/models")),
 ])
-def test_preview_uses_hub_cache_not_repo_export(tmp_path, chosen, expected):
+def test_preview_preserves_repo_under_selected_directory(tmp_path, chosen, expected):
     captured = run_preview(preview_command(download_dir=chosen), tmp_path)
-    assert captured == {"repo_id": "author/model", "cache_dir": expected}
+    assert captured == {"repo_id": "author/model", "local_dir": expected + "/author/model", "ignore_patterns": [".odysseus-model*"]}
 
 
 def test_preview_does_not_expand_shell_characters_in_paths_or_patterns(tmp_path):
@@ -74,18 +74,18 @@ def test_preview_does_not_expand_shell_characters_in_paths_or_patterns(tmp_path)
     pattern = "weights owner's $BFS_PREVIEW_EXPANSION $(touch injected3).gguf"
     model = {"name": "author/model", "gguf_sources": [{"repo": "author/model", "file": pattern}]}
     captured = run_preview(preview_command(download_dir=dangerous, model=model), tmp_path)
-    assert captured == {"repo_id": "author/model", "cache_dir": dangerous, "allow_patterns": [pattern]}
+    assert captured == {"repo_id": "author/model", "local_dir": dangerous + "/author/model", "allow_patterns": [pattern], "ignore_patterns": [".odysseus-model*"]}
     assert not any((tmp_path / name).exists() for name in ["injected", "injected2", "injected3"])
 
 
 def test_remote_preview_uses_remote_target_and_never_local_default(tmp_path):
     captured = run_preview(preview_command(remote=True), tmp_path)
-    assert captured == {"repo_id": "author/model"}
+    assert captured == {"repo_id": "author/model", "local_dir": os.path.expanduser("~/models/author/model"), "ignore_patterns": [".odysseus-model*"]}
 
 
 def test_remote_preview_expands_remote_home_at_execution(tmp_path):
     captured = run_preview(preview_command(remote=True, download_dir="~/remote models"), tmp_path)
-    assert captured == {"repo_id": "author/model", "cache_dir": os.path.expanduser("~/remote models/hub")}
+    assert captured == {"repo_id": "author/model", "local_dir": os.path.expanduser("~/remote models/author/model"), "ignore_patterns": [".odysseus-model*"]}
 
 
 @pytest.mark.parametrize("servers,local_download,download_dir,expected", [
@@ -98,14 +98,24 @@ def test_preview_uses_chosen_download_drive_not_scan_root(
         tmp_path, servers, local_download, download_dir, expected):
     captured = run_preview(preview_command(
         servers=servers, local_download=local_download, download_dir=download_dir), tmp_path)
-    assert captured["cache_dir"] == expected
+    assert captured["local_dir"] == expected + "/author/model"
 
 
 def test_remote_preview_never_inherits_saved_local_drive(tmp_path):
     captured = run_preview(preview_command(
         remote=True, local_download="/mnt/e/AI/huggingface/hub",
         servers=[{"host": "", "downloadDir": "/mnt/e/AI/huggingface/hub"}]), tmp_path)
-    assert "cache_dir" not in captured
+    assert captured["local_dir"] == os.path.expanduser("~/models/author/model")
+
+
+@pytest.mark.parametrize("override,expected", [
+    ("", "/linux/H3"), ("/custom/models", "/custom/models"),
+])
+def test_local_h3_preview_uses_h3_policy_without_overriding_custom_directory(tmp_path, override, expected):
+    captured = run_preview(preview_command(
+        download_dir=override, local_download="/mnt/e/AI/Models", h3_download="/linux/H3",
+        model={"name": "author/MiniMax-H3"}), tmp_path)
+    assert captured["local_dir"] == expected + "/author/MiniMax-H3"
 
 
 def test_gemma_qat_recipe_downloads_real_gguf_instead_of_display_quantization(tmp_path):

@@ -83,6 +83,10 @@ def portable_config(raw, family):
 
 
 def component_reference(path):
+    from src.model_library import component_reference as named_reference
+    named = named_reference(path)
+    if named:
+        return named
     path = Path(path)
     result = {"name": safe_path(path.name, True)}
     for candidate in (path, path.resolve()):

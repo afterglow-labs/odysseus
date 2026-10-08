@@ -422,6 +422,27 @@ available for a later import or manual selection.
 
 ## Worker contract and validation
 
+Model storage uses readable Hugging Face repository folders:
+`<model library>/<author>/<repository>/<original filename>`. Subdirectories,
+projector files, and model configuration files retain their upstream names.
+New Cookbook downloads use this layout through Hugging Face's `local_dir` mode;
+the API still accepts `layout: "cache"` for legacy cache downloads.
+
+Set `ODYSSEUS_MODEL_DIR` for the general library and
+`ODYSSEUS_H3_MODEL_DIR` for a separate H3 library. Recognized H3 downloads using
+the default destination go to the H3 library; an explicit different destination
+is respected. API callers can set `usage: "h3"` for a repository whose name does
+not identify its purpose. Remote servers use their own selected paths.
+
+Existing caches can be planned and migrated with
+`venv/bin/python scripts/migrate_model_library.py --help`. Planning is read-only.
+Execution verifies files, preserves repository/revision metadata, and records
+progress in a resumable journal. Same-filesystem migration uses hardlinks;
+cross-filesystem migration verifies copied bytes before replacing old cache
+files with compatibility links. Sources on filesystems without symlink support
+are retained. Saved workflow component IDs are recognized through migration
+aliases, and portable exports keep the Hugging Face identity.
+
 The backend writes a private job manifest and launches:
 
 ```bash

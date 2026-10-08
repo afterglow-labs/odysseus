@@ -10,10 +10,10 @@ export function h3LoraIssue(stack, components = [], mode = 'ref2va', max = 8) {
   if (stack.length > max) return `Choose at most ${max} LoRAs.`;
   const ids = new Set(), variant = mode === 'ref2va' ? 'ref2va' : 'fl2va';
   for (const { id, strength } of stack) {
-    if (ids.has(id)) return 'Each LoRA can be selected only once. Remove the duplicate selection.';
-    ids.add(id);
-    const item = components.find(component => component.role === 'lora' && component.id === id);
+    const item = components.find(component => component.role === 'lora' && (component.id === id || component.aliases?.includes(id)));
     if (!item) return 'A selected LoRA is unavailable. Mount its drive and refresh components, or remove it.';
+    if (ids.has(item.id)) return 'Each LoRA can be selected only once. Remove the duplicate selection.';
+    ids.add(item.id);
     if (String(strength).trim() === '' || !Number.isFinite(Number(strength)) || Number(strength) < -4 || Number(strength) > 4) return 'Each LoRA strength must be between −4 and 4.';
     if (Number(strength) !== 0 && item.variant && item.variant !== 'shared' && item.variant !== variant) return `${item.name} requires ${item.variant.toUpperCase()} mode. Choose a compatible LoRA, set its strength to 0, or remove it.`;
   }
@@ -35,6 +35,7 @@ export function createH3LoraEditor({ components = [], value = [], max = 8, onCha
     add.disabled = disabled || rows.length >= max || !components.some(item => item.role === 'lora');
   }
   function options(row, selected = row.select.value) {
+    selected = components.find(item => item.role === 'lora' && (item.id === selected || item.aliases?.includes(selected)))?.id || selected;
     row.select.replaceChildren(); row.select.add(new Option('Choose LoRA…', ''));
     for (const item of components.filter(item => item.role === 'lora')) row.select.add(new Option(item.name, item.id));
     if (selected && !components.some(item => item.role === 'lora' && item.id === selected)) row.select.add(new Option(`Unavailable: ${selected.startsWith('unavailable:') ? selected.split(':').slice(2).join(':') : selected}`, selected));

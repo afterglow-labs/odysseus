@@ -10,7 +10,7 @@ DISK_FULL_EXIT = 28
 DOWNLOAD_RESERVE = 128 * 1024 * 1024
 
 
-def check_download_space(repo_id, pattern, cache_dir):
+def check_download_space(repo_id, pattern, cache_dir, *, local_dir=None, preview_callback=None):
     """Check only the selected, not-yet-cached files on the destination volume.
 
     Do not credit abandoned .incomplete files: current Hub releases download
@@ -23,10 +23,14 @@ def check_download_space(repo_id, pattern, cache_dir):
         print("[odysseus] Disk preflight unavailable in this huggingface_hub version; "
               "download errors will still be checked for a full disk.", flush=True)
         return 0
-    cache = Path(os.path.expanduser(cache_dir)).absolute()
+    cache = Path(os.path.expanduser(local_dir or cache_dir)).absolute()
+    destination = {"local_dir": str(cache)} if local_dir else {"cache_dir": str(cache)}
+    if local_dir:
+        destination["ignore_patterns"] = [".odysseus-model*"]
+    print(f"[odysseus] Checking selected files and free space in {cache}...", flush=True)
     preview = snapshot_download(
         repo_id=repo_id,
-        cache_dir=str(cache),
+        **destination,
         allow_patterns=[pattern] if pattern else None,
         dry_run=True,
     )
@@ -34,7 +38,17 @@ def check_download_space(repo_id, pattern, cache_dir):
     unknown = False
     for entry in preview:
         if not entry.will_download:
-            continue
+            if not local_dir:
+                continue
+            # HF also reports will_download=False when it plans to COPY a
+            # file from a separate blob cache. That copy still needs space in
+            # this library, even though no network transfer is required.
+            try:
+                target = cache / entry.filename
+                if target.is_file() and (entry.file_size is None or target.stat().st_size == entry.file_size):
+                    continue
+            except OSError:
+                pass
         if entry.file_size is None:
             unknown = True
         else:
@@ -59,4 +73,6 @@ def check_download_space(repo_id, pattern, cache_dir):
               "disk space could only be checked for files with known sizes.", flush=True)
     print(f"[odysseus] Download destination: {cache} "
           f"({required / 1e9:.2f} GB needed, {free / 1e9:.2f} GB free)", flush=True)
+    if preview_callback is not None:
+        preview_callback(preview)
     return 0

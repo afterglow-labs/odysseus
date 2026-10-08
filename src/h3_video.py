@@ -152,8 +152,10 @@ def _tail(path, limit=8000):
 
 
 def cache_roots(project=PROJECT_ROOT, state_file=COOKBOOK_STATE_FILE):
-    roots = [Path(project) / "cache/huggingface/hub",
+    roots = [Path(project) / "models", Path(project) / "cache/huggingface/hub",
              Path(project) / "runtimes/minimax-h3/models"]
+    if os.environ.get("ODYSSEUS_H3_MODEL_DIR"):
+        roots.insert(0, Path(os.environ["ODYSSEUS_H3_MODEL_DIR"]).expanduser())
     if any(os.environ.get(key) for key in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_HOME", "XDG_CACHE_HOME")):
         roots.append(Path(effective_hf_cache()))
     state = _read(state_file)
@@ -172,10 +174,11 @@ def cache_roots(project=PROJECT_ROOT, state_file=COOKBOOK_STATE_FILE):
 
 
 def discover_components(roots):
-    components, seen = [], set()
+    from src.model_library import component_aliases
+    components, seen, known_ids, metadata_cache = [], set(), set(), {}
     for base in roots:
         for directory, dirs, files in os.walk(base, followlinks=False):
-            dirs[:] = [d for d in dirs if not d.startswith(".") and d not in {"blobs", "refs"}
+            dirs[:] = [d for d in dirs if not d.startswith(".") and d not in {"blobs", "refs", "bfs-shared"}
                        and not Path(directory, d).is_symlink()]
             for name in sorted(files):
                 path = Path(directory, name)
@@ -194,6 +197,11 @@ def discover_components(roots):
                     seen.add(identity)
                 except OSError:
                     continue
+                identity = hashlib.sha256(str(resolved).encode()).hexdigest()[:32]
+                aliases = component_aliases(resolved, metadata_cache)
+                if identity in known_ids:
+                    continue
+                known_ids.update([identity, *aliases])
                 lower = name.lower()
                 adapter, _ = _safetensors_kind(path)
                 if adapter or "lora" in lower:
@@ -212,7 +220,7 @@ def discover_components(roots):
                 vfx_edit = role == "lora" and lower in VFX_LORAS
                 if vfx_edit:
                     variant = "ref2va"
-                components.append({"id": hashlib.sha256(str(resolved).encode()).hexdigest()[:32],
+                components.append({"id": identity, **({"aliases": aliases} if aliases else {}),
                                    "name": name, "path": str(path.absolute()), "role": role,
                                    "variant": variant, "nvfp4": "nvfp4" in lower,
                                    **({"recipe": "vfx_edit"} if vfx_edit else {})})
@@ -304,7 +312,8 @@ def validate_config(raw, components, gpus, uploads):
     if set(raw) - allowed:
         raise ValueError("Unknown generation setting: " + sorted(set(raw) - allowed)[0])
     config = {**DEFAULTS, **raw}
-    by_id = {item["id"]: item for item in components}
+    by_id = {alias: item for item in components for alias in item.get("aliases", [])}
+    by_id.update({item["id"]: item for item in components})
     adapters = lora_entries(config)
     vfx_edit = any(row["strength"] != 0 and by_id.get(row["id"], {}).get("name", "").lower() in VFX_LORAS for row in adapters)
     if "loras" in raw:
@@ -585,8 +594,11 @@ def installed_h3_preset(path, components, gpus, defaults):
             value = values[role]
             if not isinstance(value, str) or not value:
                 raise ValueError(f"Invalid {role} selection")
+            value_id = hashlib.sha256(str(Path(value).expanduser().resolve()).encode()).hexdigest()[:32]
             matches = [item for item in components if item["role"] == role and
-                       (item["id"] == value or Path(item["path"]).resolve() == Path(value).expanduser().resolve())]
+                       (item["id"] == value or value in item.get("aliases", [])
+                        or value_id in item.get("aliases", [])
+                        or Path(item["path"]).resolve() == Path(value).expanduser().resolve())]
             if len(matches) != 1:
                 raise ValueError(f"Installed {role.replace('_', ' ')} was not found in the cached component scan")
             resolved[role] = matches[0]["id"]
@@ -595,8 +607,11 @@ def installed_h3_preset(path, components, gpus, defaults):
             resolved["loras"] = []
             for row in lora_entries(values):
                 value = row["id"]
+                value_id = hashlib.sha256(str(Path(value).expanduser().resolve()).encode()).hexdigest()[:32]
                 matches = [item for item in components if item["role"] == "lora" and
-                           (item["id"] == value or Path(item["path"]).resolve() == Path(value).expanduser().resolve())]
+                           (item["id"] == value or value in item.get("aliases", [])
+                            or value_id in item.get("aliases", [])
+                            or Path(item["path"]).resolve() == Path(value).expanduser().resolve())]
                 if len(matches) != 1:
                     raise ValueError("Installed lora was not found in the cached component scan")
                 resolved["loras"].append({"id": matches[0]["id"], "strength": row["strength"]})

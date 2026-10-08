@@ -17,8 +17,9 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request, Depends
 
 from src.auth_helpers import require_user
-from src.constants import COOKBOOK_STATE_FILE
+from src.constants import BASE_DIR, COOKBOOK_STATE_FILE
 from src.hf_cache import download_cache_paths, effective_hf_cache, normalize_local_cache_settings
+from src.model_library import named_model_directory
 from src.dependency_catalog import is_native_windows, unsupported_windows_requirements
 from src.sglang_local import local_sglang_command, append_sglang_prepare
 from src.sglang_runtime import managed_sglang_venv
@@ -28,6 +29,7 @@ from core.middleware import require_admin
 from routes._validators import validate_remote_host, validate_ssh_port
 from core.platform_compat import (
     IS_WINDOWS,
+    is_wsl,
     detached_popen_kwargs,
     find_bash,
     kill_process_tree,
@@ -46,6 +48,7 @@ from src.host_docker_access import (
 from routes.cookbook_output import (
     error_aware_output_tail, classify_dead_download, download_has_zero_files,
     HF_CACHE_COMPLETE_PROBE, HF_CACHE_INCOMPLETE_PROBE, HF_CACHE_MATCHING_FILES_PROBE,
+    HF_DIRECTORY_COMPLETE_PROBE, HF_DIRECTORY_INCOMPLETE_PROBE,
     HF_DOWNLOAD_SPACE_PROBE, hf_download_attempt_lines,
 )
 
@@ -77,6 +80,55 @@ _HF_TOKEN_STATUS_SNIPPET = (
     'Add one in Odysseus Cookbook -> Settings -> HuggingFace Token."; '
     'fi'
 )
+
+
+def _local_named_download_root(requested, stored_default, repo_id, include=None, usage=None):
+    """Route H3 components to its library when using the normal default.
+
+    A client-selected custom folder always wins. Remote downloads never call
+    this helper: local environment paths have no meaning on another host.
+    """
+    from src.model_library import migrated_library_root
+    requested = migrated_library_root(requested)
+    stored_default = migrated_library_root(stored_default)
+    default = stored_default or os.environ.get("ODYSSEUS_MODEL_DIR") or str(Path(BASE_DIR) / "models")
+    def normalized(path):
+        value = os.path.expanduser(str(path)).replace("\\", "/").rstrip("/")
+        return value.casefold() if IS_WINDOWS else value
+    explicit = bool(requested) and normalized(requested) != normalized(default)
+    h3 = usage == "h3" or (usage is None and (
+        re.search(r"minimax.*h3|h3.*minimax", repo_id + "/" + (include or ""), re.I)
+        or re.search(r"(?:^|/)h3(?:/|$)", include or "", re.I)
+    ))
+    h3_root = os.environ.get("ODYSSEUS_H3_MODEL_DIR")
+    if h3 and h3_root and not explicit:
+        return h3_root
+    return requested or default
+
+
+def _required_local_download_mount(directory, stored_default=None):
+    """Guard Windows drives selected by this WSL installation's storage policy.
+
+    A normal Linux folder (including a custom /mnt folder) is unrestricted.
+    Merely having /mnt/e exist is insufficient: after unmounting it belongs to
+    WSL's root filesystem and must not become an accidental download target.
+    """
+    if not directory or not is_wsl():
+        return ""
+    def drive(path):
+        if not path:
+            return ""
+        value = os.path.abspath(os.path.expanduser(str(path))).replace("\\", "/")
+        match = re.match(r"^(/mnt/[a-zA-Z])(?:/|$)", value)
+        return match.group(1) if match else ""
+    target = drive(directory)
+    configured = {drive(stored_default), drive(os.environ.get("ODYSSEUS_MODEL_DIR"))}
+    if not target or target not in configured:
+        return ""
+    if not os.path.ismount(target):
+        raise HTTPException(409, f"Windows drive {target[-1].upper()}: is not mounted at {target}. "
+                            "Mount the drive in WSL, then retry. No download was started.")
+    return target
 
 
 def _windows_local_pid_record_line(pid_path: Path, ready_path: Path) -> str:
@@ -619,7 +671,8 @@ def setup_cookbook_routes() -> APIRouter:
             env["hfTokenMasked"] = _mask_secret(token)
             env["hostPlatform"] = _client_host_platform()
             env["localHfCacheDir"] = effective_hf_cache()
-            env["localDownloadDir"] = load_stored_local_download_dir(state_path=_cookbook_state_path) or effective_hf_cache()
+            env["localDownloadDir"] = load_stored_local_download_dir(state_path=_cookbook_state_path) or os.environ.get("ODYSSEUS_MODEL_DIR") or str(Path(BASE_DIR) / "models")
+            env["localH3DownloadDir"] = os.environ.get("ODYSSEUS_H3_MODEL_DIR") or ""
             env["localLegacyHfCacheDir"] = str(Path.home() / ".cache/huggingface/hub")
         return state
 
@@ -643,6 +696,7 @@ def setup_cookbook_routes() -> APIRouter:
             env.pop("hostPlatform", None)
             env.pop("localHfCacheDir", None)
             env.pop("localDownloadDir", None)
+            env.pop("localH3DownloadDir", None)
             env.pop("localLegacyHfCacheDir", None)
         return state
 
@@ -1095,8 +1149,15 @@ def setup_cookbook_routes() -> APIRouter:
         validate_remote_host(req.remote_host)
         req.ssh_port = validate_ssh_port(req.ssh_port)
         req.local_dir = _validate_local_dir(req.local_dir)
-        if not is_ollama_download and not req.remote_host and not req.local_dir:
-            req.local_dir = _validate_local_dir(load_stored_local_download_dir(state_path=_cookbook_state_path))
+        required_download_mount = ""
+        if not is_ollama_download and not req.remote_host:
+            stored_default = load_stored_local_download_dir(state_path=_cookbook_state_path)
+            if req.layout == "directory":
+                req.local_dir = _validate_local_dir(_local_named_download_root(
+                    req.local_dir, stored_default, req.repo_id, req.include, req.usage))
+            elif not req.local_dir:
+                req.local_dir = _validate_local_dir(stored_default)
+            required_download_mount = _required_local_download_mount(req.local_dir, stored_default)
         req.hf_token = "" if is_ollama_download else (req.hf_token or _load_stored_hf_token())
         _validate_token(req.hf_token)
         if req.remote_host and not req.env_prefix:
@@ -1105,17 +1166,23 @@ def setup_cookbook_routes() -> APIRouter:
         session_id = f"cookbook-{uuid.uuid4().hex[:8]}"
         wrapper_script = TMUX_LOG_DIR / f"{session_id}.sh"
 
-        # Point at the selected hub via env vars instead of --local-dir. Accept
-        # either the HF home or its hub, without creating a nested hub/hub.
-        # Explicit exports also prevent an older tmux server's environment
-        # from overriding this app's private default cache. local_dir
-        # produces a flat layout (<dir>/<name>/<file>) and the local-dir
-        # bookkeeping files (.cache/huggingface/.gitignore.lock), and it
-        # also breaks robust resume on flaky transfers — the blob-based hub
-        # cache survives SSL ReadError mid-stream by reusing <sha>.incomplete,
-        # local_dir does not. See issue #2722.
+        # New downloads retain HF filenames in <library>/<owner>/<repository>.
+        # Explicit cache layout remains available for resuming older tasks.
+        # Current Hub releases maintain local-dir resume metadata themselves;
+        # selecting a library must not create another blob cache beside it.
+        _dl_directory = _dl_root = None
         _dl_hf_home = _dl_hub = None
-        if not is_ollama_download and (req.local_dir or not req.remote_host):
+        if not is_ollama_download and req.layout == "directory":
+            _dl_root = req.local_dir or (
+                "~/models" if req.remote_host else
+                os.environ.get("ODYSSEUS_MODEL_DIR") or str(Path(BASE_DIR) / "models")
+            )
+            _dl_root = _validate_local_dir(_dl_root)
+            _dl_directory = str(named_model_directory(_dl_root, req.repo_id))
+            if not req.remote_host:
+                _dl_root = os.path.expanduser(_dl_root)
+                _dl_directory = os.path.expanduser(_dl_directory)
+        elif not is_ollama_download and (req.local_dir or not req.remote_host):
             _dl_hf_home, _dl_hub = download_cache_paths(req.local_dir)
             if not req.remote_host:
                 _dl_hf_home = os.path.expanduser(_dl_hf_home)
@@ -1124,8 +1191,12 @@ def setup_cookbook_routes() -> APIRouter:
         # as literals so unusual installation names cannot become shell code.
         _dl_hf_home_shell = (_shell_path(_dl_hf_home) if req.remote_host else shlex.quote(_dl_hf_home)) if _dl_hf_home else None
         _dl_hub_shell = (_shell_path(_dl_hub) if req.remote_host else shlex.quote(_dl_hub)) if _dl_hub else None
+        _dl_directory_shell = (_shell_path(_dl_directory) if req.remote_host else shlex.quote(_dl_directory)) if _dl_directory else "''"
         # The Python fallback must select the same files as CLI and preflight.
         _dl_pyarg = f", allow_patterns=['{req.include}']" if req.include else ""
+        if _dl_directory:
+            _dl_pyarg += ", local_dir=os.path.expanduser(os.environ['ODYSSEUS_HF_LOCAL_DIR'])"
+            _dl_pyarg += ", ignore_patterns=['.odysseus-model*']"
 
         # Build the hf download command. Redirection to suppress the interactive
         # "update available? [Y/n]" prompt is added per-platform further down
@@ -1133,6 +1204,8 @@ def setup_cookbook_routes() -> APIRouter:
         hf_download_args = f"download {shlex.quote(req.repo_id)}"
         if req.include:
             hf_download_args += f" --include {shlex.quote(req.include)}"
+        if _dl_directory:
+            hf_download_args += ' --local-dir "$ODYSSEUS_HF_LOCAL_DIR" --exclude \'.odysseus-model*\''
         hf_cmd = f"hf {hf_download_args}"
         ollama_cmd = f"ollama pull {shlex.quote(req.repo_id)}"
 
@@ -1144,12 +1217,12 @@ def setup_cookbook_routes() -> APIRouter:
         # otherwise suppress them when Odysseus inherits an agent environment.
         if not is_ollama_download:
             lines.extend(["export HF_HUB_DISABLE_PROGRESS_BARS=0", "export TQDM_DISABLE=0"])
+            lines.append(f"export ODYSSEUS_HF_LOCAL_DIR={_dl_directory_shell}")
+            lines.append(f"export ODYSSEUS_REQUIRED_DOWNLOAD_MOUNT={shlex.quote(required_download_mount)}")
         if req.hf_token:
             lines.append(f"export HF_TOKEN='{_bash_squote(req.hf_token)}'")
         if _dl_hf_home_shell and not is_ollama_download:
-            # Make hf download / snapshot_download honor the chosen dir via the
-            # standard HF cache (gives us the models--org--name/blobs/... layout
-            # with resumable .incomplete blobs).
+            # Pin only explicit legacy-cache downloads to the selected cache.
             lines.append(f"export HF_HOME={_dl_hf_home_shell}")
             lines.append(f"export HUGGINGFACE_HUB_CACHE={_dl_hub_shell}")
             lines.append(f"export HF_HUB_CACHE={_dl_hub_shell}")
@@ -1202,14 +1275,15 @@ def setup_cookbook_routes() -> APIRouter:
             ps_lines = []
             if not is_ollama_download:
                 ps_lines.extend(['$env:HF_HUB_DISABLE_PROGRESS_BARS = "0"', '$env:TQDM_DISABLE = "0"'])
+                ps_lines.append(f"$env:ODYSSEUS_HF_LOCAL_DIR = '{_ps_squote(_dl_directory or '')}'")
+                ps_lines.append("$env:ODYSSEUS_REQUIRED_DOWNLOAD_MOUNT = ''")
+                if _dl_directory and _dl_directory.startswith("~/"):
+                    ps_lines.append("$env:ODYSSEUS_HF_LOCAL_DIR = Join-Path $HOME $env:ODYSSEUS_HF_LOCAL_DIR.Substring(2)")
             ps_lines.append('$sessionDir = "$env:TEMP\\odysseus-sessions"')
             ps_lines.append('New-Item -ItemType Directory -Force -Path $sessionDir | Out-Null')
             if req.hf_token:
                 ps_lines.append(f"$env:HF_TOKEN = '{_ps_squote(req.hf_token)}'")
-            if req.local_dir and not is_ollama_download:
-                # Mirror the bash branch — point the HF cache at the user's dir
-                # via env vars instead of --local-dir, so resume works on flaky
-                # transfers (issue #2722).
+            if _dl_hf_home and not is_ollama_download:
                 ps_lines.append(f"$env:HF_HOME = '{_ps_squote(_dl_hf_home)}'")
                 ps_lines.append(f"$env:HUGGINGFACE_HUB_CACHE = '{_ps_squote(_dl_hub)}'")
                 ps_lines.append(f"$env:HF_HUB_CACHE = '{_ps_squote(_dl_hub)}'")
@@ -1226,41 +1300,41 @@ def setup_cookbook_routes() -> APIRouter:
                     + "' '" + _ps_squote(req.repo_id) + "' '" + _ps_squote(req.include or "") + "'"
                 )
                 ps_preflight_check = 'if ($LASTEXITCODE -ne 0) { throw "Download preflight failed (exit $LASTEXITCODE); see the error above." }'
-                ps_lines.append('try {{')
+                ps_lines.append('try {')
                 ps_lines.append('  $hfPath = Get-Command hf -ErrorAction SilentlyContinue')
-                ps_lines.append('  if ($hfPath) {{')
+                ps_lines.append('  if ($hfPath) {')
                 ps_lines.append('    ' + ps_preflight)
                 ps_lines.append('    ' + ps_preflight_check)
                 # Pipe $null to stdin to suppress interactive "update available? [Y/n]" prompt
-                ps_lines.append(f'    $null | {hf_cmd}')
-                ps_lines.append('  }} else {{')
+                ps_lines.append(f'    $null | {hf_cmd.replace("$ODYSSEUS_HF_LOCAL_DIR", "$env:ODYSSEUS_HF_LOCAL_DIR")}')
+                ps_lines.append('  } else {')
                 ps_lines.append('    python -c "import huggingface_hub" 2>$null')
-                ps_lines.append('    if ($LASTEXITCODE -eq 0) {{')
+                ps_lines.append('    if ($LASTEXITCODE -eq 0) {')
                 ps_lines.append('      Write-Host "hf CLI not found, using Python huggingface_hub..."')
                 ps_lines.append('      python -m pip install -q hf_transfer 2>$null')
                 ps_lines.append('      $env:HF_HUB_ENABLE_HF_TRANSFER = "1"')
                 ps_lines.append('      ' + ps_preflight)
                 ps_lines.append('      ' + ps_preflight_check)
                 ps_lines.append(f"      python -c \"import os; from huggingface_hub import snapshot_download; snapshot_download('{req.repo_id}'{_dl_pyarg}, max_workers=8)\"")
-                ps_lines.append('    }} else {{')
+                ps_lines.append('    } else {')
                 ps_lines.append('      Write-Host "Installing huggingface-hub..."')
                 ps_lines.append('      python -m pip install -q huggingface-hub hf_transfer')
                 ps_lines.append('      $env:HF_HUB_ENABLE_HF_TRANSFER = "1"')
                 ps_lines.append('      ' + ps_preflight)
                 ps_lines.append('      ' + ps_preflight_check)
                 ps_lines.append(f"      python -c \"import os; from huggingface_hub import snapshot_download; snapshot_download('{req.repo_id}'{_dl_pyarg}, max_workers=8)\"")
-                ps_lines.append('    }}')
-                ps_lines.append('  }}')
+                ps_lines.append('    }')
+                ps_lines.append('  }')
                 ps_lines.append(
                     "  if ($LASTEXITCODE -eq 0) { python -c '"
                     + _ps_squote(HF_CACHE_MATCHING_FILES_PROBE)
                     + "' '" + _ps_squote(req.repo_id) + "' '" + _ps_squote(req.include or "") + "' }"
                 )
-                ps_lines.append('  if ($LASTEXITCODE -eq 0) {{ Write-Host ""; Write-Host "DOWNLOAD_OK" }}')
-                ps_lines.append('  else {{ Write-Host ""; Write-Host "DOWNLOAD_FAILED (exit $LASTEXITCODE)" }}')
-                ps_lines.append('}} catch {{')
+                ps_lines.append('  if ($LASTEXITCODE -eq 0) { Write-Host ""; Write-Host "DOWNLOAD_OK" }')
+                ps_lines.append('  else { Write-Host ""; Write-Host "DOWNLOAD_FAILED (exit $LASTEXITCODE)" }')
+                ps_lines.append('} catch {')
                 ps_lines.append('  Write-Host ""; Write-Host "DOWNLOAD_FAILED ($_)"')
-                ps_lines.append('}}')
+                ps_lines.append('}')
             ps_lines.append(f'Remove-Item -Force "$HOME\\{remote_runner}" -ErrorAction SilentlyContinue')
             runner_path = TMUX_LOG_DIR / f"{session_id}_run.ps1"
             runner_path.write_text("\r\n".join(ps_lines) + "\r\n", encoding="utf-8")
@@ -1289,6 +1363,8 @@ def setup_cookbook_routes() -> APIRouter:
             runner_lines.extend(_user_shell_path_bootstrap())
             if not is_ollama_download:
                 runner_lines.extend(["export HF_HUB_DISABLE_PROGRESS_BARS=0", "export TQDM_DISABLE=0"])
+                runner_lines.append(f"export ODYSSEUS_HF_LOCAL_DIR={_dl_directory_shell}")
+                runner_lines.append("export ODYSSEUS_REQUIRED_DOWNLOAD_MOUNT=''")
             runner_lines.append("# Auto-detect environment")
             runner_lines.append("deactivate 2>/dev/null; hash -r")
             if req.hf_token:
@@ -1473,7 +1549,14 @@ def setup_cookbook_routes() -> APIRouter:
         except Exception:
             pass
 
-        return {"ok": True, "session_id": session_id, "remote": remote or "local", "cache_dir": _dl_hub}
+        # Old clients do not persist layout/destination fields in their payload.
+        # Retain secret-free routing beside the runner so status checks still
+        # inspect this download's destination, never an unrelated cached copy.
+        destination = {"layout": req.layout, "download_dir": _dl_directory,
+                       "model_root": _dl_root, "include": req.include or ""}
+        (TMUX_LOG_DIR / f"{session_id}.download.json").write_text(json.dumps(destination), encoding="utf-8")
+        return {"ok": True, "session_id": session_id, "remote": remote or "local", "cache_dir": _dl_hub,
+                **destination}
 
     @router.get("/api/model/cached")
     async def model_cached(request: Request, host: str | None = None, model_dir: str | None = None, ssh_port: str | None = None, platform: str | None = None):
@@ -1494,6 +1577,15 @@ def setup_cookbook_routes() -> APIRouter:
                     if d.startswith(("home/", "mnt/", "media/", "data/", "opt/", "srv/", "var/")):
                         d = "/" + d
                     model_dirs.append(d)
+        if not host:
+            defaults = [
+                load_stored_local_download_dir(state_path=_cookbook_state_path)
+                or os.environ.get("ODYSSEUS_MODEL_DIR") or str(Path(BASE_DIR) / "models"),
+                os.environ.get("ODYSSEUS_H3_MODEL_DIR"),
+            ]
+            for directory in defaults:
+                if directory and directory not in model_dirs:
+                    model_dirs.append(directory)
         paths_code = _cached_model_scan_script(model_dirs)
 
         async def _run_cached_scan_once():
@@ -1580,6 +1672,9 @@ def setup_cookbook_routes() -> APIRouter:
 	                }
                 if m.get("is_local_dir"):
                     entry["is_local_dir"] = True
+                if m.get("named_layout"):
+                    entry["named_layout"] = True
+                    entry["model_path"] = m.get("model_path", "")
                 if m.get("is_gguf"):
                     entry["is_gguf"] = True
                 if m.get("backend"):
@@ -4475,7 +4570,7 @@ def setup_cookbook_routes() -> APIRouter:
                 return progress_lines[-1]
             return lines[-1]
 
-        def _download_cache_complete(repo_id: str, remote_host: str = "", ssh_port: str = "", cache_root: str = "") -> bool:
+        def _download_cache_complete(repo_id: str, remote_host: str = "", ssh_port: str = "", cache_root: str = "", destination: dict | None = None) -> bool:
             """Best-effort check for a completed HF cache entry.
 
             tmux output can stop at a stale progress line if the pane/session
@@ -4487,7 +4582,12 @@ def setup_cookbook_routes() -> APIRouter:
             """
             if not repo_id or "/" not in repo_id:
                 return False
-            cmd = ["python3", "-c", HF_CACHE_COMPLETE_PROBE, repo_id, cache_root or ""]
+            destination = destination or {}
+            if destination.get("layout") == "directory":
+                directory = destination.get("download_dir") or str(named_model_directory(cache_root or "~/models", repo_id))
+                cmd = ["python3", "-c", HF_DIRECTORY_COMPLETE_PROBE, repo_id, directory, destination.get("include") or ""]
+            else:
+                cmd = ["python3", "-c", HF_CACHE_COMPLETE_PROBE, repo_id, cache_root or ""]
             try:
                 if remote_host:
                     ssh_base = ["ssh"]
@@ -4501,7 +4601,7 @@ def setup_cookbook_routes() -> APIRouter:
             except Exception:
                 return False
 
-        def _download_cache_incomplete(repo_id: str, remote_host: str = "", ssh_port: str = "", cache_root: str = "") -> bool:
+        def _download_cache_incomplete(repo_id: str, remote_host: str = "", ssh_port: str = "", cache_root: str = "", destination: dict | None = None) -> bool:
             """Best-effort check for resumable HF partial blobs.
 
             A lost SSH/tmux session can leave a real download still incomplete.
@@ -4510,7 +4610,12 @@ def setup_cookbook_routes() -> APIRouter:
             """
             if not repo_id or "/" not in repo_id:
                 return False
-            cmd = ["python3", "-c", HF_CACHE_INCOMPLETE_PROBE, repo_id, cache_root or ""]
+            destination = destination or {}
+            if destination.get("layout") == "directory":
+                directory = destination.get("download_dir") or str(named_model_directory(cache_root or "~/models", repo_id))
+                cmd = ["python3", "-c", HF_DIRECTORY_INCOMPLETE_PROBE, repo_id, directory, destination.get("include") or ""]
+            else:
+                cmd = ["python3", "-c", HF_CACHE_INCOMPLETE_PROBE, repo_id, cache_root or ""]
             try:
                 if remote_host:
                     ssh_base = ["ssh"]
@@ -4564,6 +4669,13 @@ def setup_cookbook_routes() -> APIRouter:
             # via the download flow (`repoId`), the serve flow (`modelId`),
             # or the UI-side serve preset (which uses `name` + `payload.repo_id`).
             _payload = task.get("payload") or {}
+            _download_destination = _payload
+            if task_type == "download" and _SESSION_ID_RE.fullmatch(session_id):
+                try:
+                    _download_destination = {**_payload, **json.loads(
+                        (TMUX_LOG_DIR / f"{session_id}.download.json").read_text(encoding="utf-8"))}
+                except (OSError, ValueError, TypeError):
+                    pass
             model = (
                 task.get("modelId")
                 or task.get("repoId")
@@ -4712,7 +4824,7 @@ def setup_cookbook_routes() -> APIRouter:
                 and (
                     ".incomplete" in full_snapshot
                     or bool(re.search(r'model-\d+-of-\d+\.[A-Za-z0-9_.-]+:\s+(?:[0-9]|[1-8][0-9])%', full_snapshot))
-                    or _download_cache_incomplete(_payload.get("repo_id") or model, remote, str(_tport or ""), _payload.get("local_dir") or "")
+                    or _download_cache_incomplete(_payload.get("repo_id") or model, remote, str(_tport or ""), _payload.get("local_dir") or "", _download_destination)
                 )
             )
             if is_alive or (local_win_task and full_snapshot):
@@ -4764,7 +4876,7 @@ def setup_cookbook_routes() -> APIRouter:
                 elif (
                     task_type == "download"
                     and not download_has_incomplete_evidence
-                    and _download_cache_complete(_payload.get("repo_id") or model, remote, str(_tport or ""), _payload.get("local_dir") or "")
+                    and _download_cache_complete(_payload.get("repo_id") or model, remote, str(_tport or ""), _payload.get("local_dir") or "", _download_destination)
                 ):
                     status = "completed"
                     if not progress_text:

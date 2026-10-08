@@ -35,7 +35,7 @@ const dependencies = {
 };
 const mod = new vm.SourceTextModule(fs.readFileSync('static/js/cookbookServe.js', 'utf8') + `
 _shellQuote = value => "'" + value.replace(/'/g, "'\\\"'\\\"'") + "'";
-export { _runnableGgufFiles, _projectorGgufFiles, _mainGgufPathExpr };
+export { _runnableGgufFiles, _projectorGgufFiles, _mainGgufPathExpr, _localModelPath, _cachedArtifactPath, _artifactRepoURL, _modelForCachedCard };
 `, { context });
 await mod.link(specifier => {
   const exports = dependencies[specifier];
@@ -79,6 +79,13 @@ try {
   fs.writeFileSync(path.join(dir, 'split-Q4-00001-of-00002.gguf'), 'first part');
   fs.writeFileSync(path.join(dir, 'split-Q4-00002-of-00002.gguf'), 'second part');
   assert.equal(resolve(expr(model, repo, '')), path.join(dir, 'split-Q4-00001-of-00002.gguf'), 'Legacy lookup prefers the first split');
+  const moved = {...model, repo_id: 'owner/vision', named_layout: true, model_path: dir, path: '/different/root'};
+  assert.equal(resolve(expr(moved, moved.repo_id, weights.rel_path)), path.join(dir, weights.rel_path), 'Named downloads use their exact model_path');
+  assert.equal(mod.namespace._localModelPath(moved), dir);
+  assert.equal(mod.namespace._cachedArtifactPath(moved, {rel_path:'loras/style.safetensors'}), path.join(dir, 'loras/style.safetensors'));
+  assert.equal(mod.namespace._artifactRepoURL(moved, {rel_path:'workflows/a b.json',revision:'rev1'}), 'https://huggingface.co/owner/vision/blob/rev1/workflows/a%20b.json');
+  const sibling = {...moved, model_path: dir + '/different'};
+  assert.equal(mod.namespace._modelForCachedCard([sibling,moved], moved.repo_id, {dataset:{cachePath:moved.path,modelPath:dir}}), moved, 'Cards for the same repository resolve their own files');
 } finally { fs.rmSync(temp, { recursive: true, force: true }); }
 """
     result = subprocess.run(

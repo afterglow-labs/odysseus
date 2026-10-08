@@ -69,7 +69,7 @@ _getPort = task => task?.sshPort || '';
 _sshPrefix = port => port ? '-p ' + port + ' ' : '';
 _getPlatform = () => 'darwin';
 _envState = { remoteHost: 'unrelated-selected-server', servers: [] };
-export { _retryTask };
+export { _retryTask, _downloadDestination };
 `, { context, identifier: filename });
 await module.link(specifier => {
   const exports = collaborators[specifier];
@@ -160,7 +160,13 @@ failLaunch = false;
 await retry({ ...install, name: 'org/model', payload: { repo_id: 'org/model' } });
 assert.equal(requests[1].url, '/api/model/download');
 assert.equal(requests[1].body.disable_hf_transfer, true);
+assert.equal(requests[1].body.layout, 'cache', 'An old task resumes in its original cache');
 assert.ok(toasts.some(t => /HuggingFace/.test(t)));
+await retry({ ...install, name: 'org/model', payload: { repo_id: 'org/model', layout:'directory', local_dir:'/named/models', download_dir:'/named/models/org/model' } });
+assert.equal(requests[1].body.layout, 'directory');
+assert.equal(requests[1].body.local_dir, '/named/models');
+assert.equal(running._downloadDestination({payload:requests[1].body}), '/named/models/org/model');
+assert.equal(running._downloadDestination({payload:{repo_id:'org/model',layout:'directory',local_dir:'/named/models'}}), '/named/models/org/model');
 
 // Clear VRAM stops only the model snapshot on the chosen server, leaving
 // installs, other hosts, and tasks started since the dialog opened intact.

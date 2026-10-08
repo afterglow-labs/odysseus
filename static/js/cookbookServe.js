@@ -51,7 +51,7 @@ const SERVE_FAVORITES_KEY = 'cookbook-serve-favorite-models';
 
 let _cachedAllModels = [];
 let _cachedModelsHost = '';
-const _CACHED_MODELS_SCAN_KEY = 'cookbook_cached_models_scan_v6_cache_roots';
+const _CACHED_MODELS_SCAN_KEY = 'cookbook_cached_models_scan_v7_named_roots';
 const _CACHED_MODELS_SCAN_TTL = 30 * 1000;
 
 function _normalizeCookbookModelDir(dir) {
@@ -795,16 +795,20 @@ function _cachedAdapterModels(currentRepo = '') {
     .sort((a, b) => String(a.repo_id || '').localeCompare(String(b.repo_id || '')));
 }
 
+function _localModelPath(model, repo = model?.repo_id || '') {
+  return String(model?.model_path || `${String(model?.path || '').replace(/\/+$/, '')}/${repo}`).replace(/\/+$/, '');
+}
+
 function _cachedArtifactPath(model, file) {
   const root = String(model.path || '').replace(/\/+$/, '');
   const relative = String(file.rel_path || '').replace(/^\/+/, '');
   return model.is_local_dir
-    ? `${root}/${model.repo_id}/${relative}`
+    ? `${_localModelPath(model)}/${relative}`
     : `${root}/models--${model.repo_id.replace(/\//g, '--')}/snapshots/${relative}`;
 }
 
 function _artifactRepoURL(model, file) {
-  if (model.is_local_dir || !/^[\w.-]+\/[\w.-]+$/.test(model.repo_id || '')) return '';
+  if ((model.is_local_dir && !model.named_layout) || !/^[\w.-]+\/[\w.-]+$/.test(model.repo_id || '')) return '';
   const path = file.repo_path || file.rel_path;
   const revision = file.revision || 'main';
   return `https://huggingface.co/${model.repo_id}/blob/${encodeURIComponent(revision)}/${String(path).split('/').map(encodeURIComponent).join('/')}`;
@@ -820,7 +824,7 @@ function _adapterOptions(kind, currentRepo = '') {
       return files.map(file => ({value: _cachedArtifactPath(model, file),
         label: `${model.repo_id.split('/').pop()} / ${file.repo_path || file.rel_path}`}));
     }
-    return [{value: model.is_local_dir ? `${String(model.path).replace(/\/+$/, '')}/${model.repo_id}` : model.repo_id,
+    return [{value: model.is_local_dir ? _localModelPath(model) : model.repo_id,
       label: model.repo_id.split('/').pop()}];
   });
 }
@@ -1183,9 +1187,8 @@ function _shellPathExpr(path) {
 function _selectedGgufExpr(model, repo, relPath) {
   const rel = String(relPath || '').replace(/^\/+/, '');
   if (!rel) return '';
-  if (model.is_local_dir && model.path) {
-    const base = String(model.path || '').replace(/\/+$/, '');
-    return `$(printf %s ${_shellPathExpr(`${base}/${repo}/${rel}`)})`;
+  if (model.is_local_dir && (model.model_path || model.path)) {
+    return `$(printf %s ${_shellPathExpr(`${_localModelPath(model, repo)}/${rel}`)})`;
   }
   if (model.path) {
     const base = String(model.path || '').replace(/\/+$/, '');
@@ -1196,7 +1199,7 @@ function _selectedGgufExpr(model, repo, relPath) {
 }
 
 function _ggufSearchDirExpr(model, repo) {
-  if (model.is_local_dir && model.path) return _shellQuote(`${String(model.path || '').replace(/\/+$/, '')}/${repo}`);
+  if (model.is_local_dir && (model.model_path || model.path)) return _shellPathExpr(_localModelPath(model, repo));
   if (model.path) return _shellQuote(`${String(model.path || '').replace(/\/+$/, '')}/models--${repo.replace(/\//g, '--')}/snapshots`);
   return `"$HOME/.cache/huggingface/hub/models--${repo.replace(/\//g, '--')}/snapshots"`;
 }
@@ -1212,8 +1215,10 @@ function _mainGgufPathExpr(model, repo, relPath) {
 
 function _modelForCachedCard(models, repo, item) {
   const cachePath = item?.dataset.cachePath;
+  const modelPath = item?.dataset.modelPath;
   return models.find(m => m.repo_id === repo
-    && (cachePath === undefined || String(m.path || '') === cachePath));
+    && (cachePath === undefined || String(m.path || '') === cachePath)
+    && (modelPath === undefined || String(m.model_path || '') === modelPath));
 }
 
 function _rerenderCachedModels() {
@@ -1252,8 +1257,8 @@ function _rerenderCachedModels() {
     const metaParts = [];
     if (m.repo_id.includes('/')) metaParts.push(m.repo_id.split('/')[0]);
     metaParts.push(m.size);
-    if (m.path) {
-      metaParts.push(`<span style="opacity:0.7;">${esc(m.path)}</span>`);
+    if (m.model_path || m.path) {
+      metaParts.push(`<span style="opacity:0.7;">${esc(m.model_path || m.path)}</span>`);
     }
     const ggufCount = _runnableGgufFiles(m).length;
     if (ggufCount > 1) metaParts.push(`${ggufCount} GGUFs`);
@@ -1265,7 +1270,7 @@ function _rerenderCachedModels() {
     const _isDlActive = _isDownloading ? _isActivelyDownloading(m.repo_id) : false;
     const _isFavorite = favorites.has(String(m.repo_id || ''));
     const isSelectMode = document.getElementById('hwfit-cache-select')?.classList.contains('active');
-    html += `<div class="doclib-card memory-item${_isFavorite ? ' memory-pinned cookbook-serve-favorite-model' : ''}" data-repo="${esc(m.repo_id)}" data-cache-path="${esc(m.path || '')}" data-tag="${m._tag || ''}" data-family="${m._family || ''}" style="cursor:pointer;">`;
+    html += `<div class="doclib-card memory-item${_isFavorite ? ' memory-pinned cookbook-serve-favorite-model' : ''}" data-repo="${esc(m.repo_id)}" data-cache-path="${esc(m.path || '')}" data-model-path="${esc(m.model_path || '')}" data-tag="${m._tag || ''}" data-family="${m._family || ''}" style="cursor:pointer;">`;
     html += `<span class="serve-select-cb memory-select-dot" style="display:${isSelectMode ? 'inline-block' : 'none'};cursor:pointer;"></span>`;
     html += `<div style="flex:1;min-width:0;">`;
     const _mc = modelColor(m.repo_id) || '';
@@ -1588,9 +1593,9 @@ function _rerenderCachedModels() {
         `<option value="${esc(f.rel_path)}"${f.rel_path === _defaultGguf ? ' selected' : ''}>${esc(_ggufFileLabel(f))}</option>`
       ).join('');
       const _minimaxM3Snapshot = '/home/pewds/.cache/huggingface/hub/models--cyankiwi--MiniMax-M3-AWQ-INT4/snapshots/4082acbbec1236d21828d55b6bb0fe02ade4ab5b';
-      const _defaultServeModel = _isMiniMaxM3 ? _minimaxM3Snapshot : (m.is_local_dir && m.path ? `${m.path}/${repo}` : repo);
+      const _defaultServeModel = m.is_local_dir ? _localModelPath(m, repo) : (_isMiniMaxM3 ? _minimaxM3Snapshot : repo);
       const _savedModelPath = String(svm('model_path', _defaultServeModel) || '').trim();
-      const _modelPathValue = _isMiniMaxM3 && (!_savedModelPath || _savedModelPath === repo) ? _minimaxM3Snapshot : _savedModelPath;
+      const _modelPathValue = (_isMiniMaxM3 || m.is_local_dir) && (!_savedModelPath || _savedModelPath === repo) ? _defaultServeModel : _savedModelPath;
       const _defaultServedModelName = _isMiniMaxM3 ? repo : '';
       // Build save slots
       const _allPresets = _loadPresets();
@@ -1985,7 +1990,7 @@ function _rerenderCachedModels() {
         const hostField = panel.querySelector('[data-field="host"]');
         if (hostField) hostField.value = f.host;
         const backend = f.backend || 'vllm';
-        const serveModel = (f.model_path || '').trim() || (m.is_local_dir && m.path ? `${m.path}/${repo}` : repo);
+        const serveModel = (f.model_path || '').trim() || (m.is_local_dir ? _localModelPath(m, repo) : repo);
         if (backend === 'llamacpp' || backend === 'ollama') {
           const choices = _runnableGgufFiles(m);
           // Loading an old preset can reintroduce a projector selection. Keep
@@ -3863,8 +3868,8 @@ async function _deleteCachedModel(repo, itemEl, skipConfirm = false, model = nul
   // removed and reappeared on the next scan. m.path is already absolute
   // (os.path.expanduser ran on the host); only the bare fallback uses ~.
   let target;
-  if (m && m.is_local_dir && m.path) {
-    target = `${m.path}/${repo}`;
+  if (m && m.is_local_dir && (m.model_path || m.path)) {
+    target = _localModelPath(m, repo);
   } else if (m && m.path) {
     target = `${m.path}/models--${repo.replace(/\//g, '--')}`;
   } else {
@@ -3995,7 +4000,7 @@ async function _promptResumeIncompleteModel(m, itemEl = null) {
 }
 
 function _retryCachedModel(repo, m) {
-  const payload = { repo_id: repo };
+  const payload = { repo_id: repo, layout: m?.named_layout || m?.is_local_dir ? 'directory' : 'cache' };
   if (_envState.hfToken) payload.hf_token = _envState.hfToken;
   const _target = _serverFromCacheSelection();
   const srv = _target.server || {};
@@ -4010,7 +4015,7 @@ function _retryCachedModel(repo, m) {
   if (platform) payload.platform = platform;
   const env = _target.host ? (srv.env || 'none') : (_envState.env || 'none');
   const envPath = _target.host ? (srv.envPath || '') : (_envState.envPath || '');
-  const downloadDir = srv.downloadDir || (m?.is_local_dir && m?.path ? m.path : '');
+  const downloadDir = m?.path || srv.downloadDir || '';
   if (downloadDir) payload.local_dir = _normalizeCookbookModelDir(downloadDir);
   payload.disable_hf_transfer = true;
   if (platform === 'windows') {
@@ -4112,7 +4117,7 @@ function _renderCachedModelsData(list, data, host) {
 
   if (!allModels.length) {
     if (!host) {
-      list.innerHTML = '<div class="hwfit-loading" style="flex-direction:column;gap:6px;text-align:center;"><div>No cached models found</div><div style="font-size:11px;opacity:0.55;max-width:420px;line-height:1.4;">Docker Local uses Odysseus’s cache in <code>data/huggingface</code>. Download a model here, or copy an existing host HuggingFace cache into that folder once.</div></div>';
+      list.innerHTML = '<div class="hwfit-loading" style="flex-direction:column;gap:6px;text-align:center;"><div>No cached models found</div><div style="font-size:11px;opacity:0.55;max-width:420px;line-height:1.4;">Download a model from Hugging Face, or add an existing model folder in Settings.</div></div>';
     } else {
       list.innerHTML = '<div class="hwfit-loading" style="flex-direction:column;gap:8px;text-align:center;"><div>No cached models found</div><div style="font-size:11px;opacity:0.55;max-width:420px;line-height:1.4;">No complete model folders were found on this server.</div><button type="button" class="hwfit-gpu-btn serve-empty-scan-btn" style="height:26px;padding:3px 10px;">Refresh</button></div>';
       list.querySelector('.serve-empty-scan-btn')?.addEventListener('click', () => {
@@ -4232,16 +4237,17 @@ export async function _fetchCachedModels(fresh = false, opts = {}) {
         if (normalized) modelDirs.push(normalized);
       }
     }
+    for (const dir of [selectedServer?.modelDir, selectedServer?.downloadDir || (!host && _envState.localDownloadDir) || '~/models', !host && _envState.localH3DownloadDir]) {
+      const normalized = dir ? _normalizeCookbookModelDir(dir) : '';
+      if (normalized && !modelDirs.includes(normalized)) modelDirs.push(normalized);
+    }
     // Sync the header dir pills to THIS server (the one whose models we're listing).
     // They were rendered once from _es.remoteHost, which can differ from the
     // cache-server dropdown — so the title showed only ~/.cache even while listing
     // models from a custom model directory. Keep them in lock-step with the actual scan host.
     const _dirsEl = document.querySelector('.cookbook-serve-dirs');
     if (_dirsEl && selectedServer) {
-      const _allDirs = (Array.isArray(selectedServer.modelDirs) && selectedServer.modelDirs.length
-        ? selectedServer.modelDirs
-        : [selectedServer.modelDir || (!host && _envState.localHfCacheDir) || '~/.cache/huggingface/hub'])
-        .map(d => _normalizeCookbookModelDir(d)).filter(Boolean);
+      const _allDirs = modelDirs;
       _dirsEl.innerHTML = _allDirs.map(d => `<span class="cookbook-serve-dir-pill">${esc(d)}</span>`).join('')
         + '<span class="cookbook-serve-dir-edit" title="Edit in Settings">edit</span>';
       _dirsEl.querySelector('.cookbook-serve-dir-edit')?.addEventListener('click', () => {

@@ -61,6 +61,11 @@ def normalize_local_cache_settings(environment):
         for key in ("modelDir", "downloadDir"):
             if key in server:
                 server[key] = canonical(server[key])
+        # Read/write old-client profiles with their migrated download target.
+        # Scan roots remain valid compatibility locations and are preserved.
+        if server.get("downloadDir"):
+            from src.model_library import migrated_library_root
+            server["downloadDir"] = migrated_library_root(server["downloadDir"])
         if isinstance(server.get("modelDirs"), list):
             directories = []
             seen = set()

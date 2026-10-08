@@ -123,3 +123,6 @@ _scratch/
 
 # Downloaded, independently versioned model runtimes.
 /runtimes/
+
+# Downloaded model weights and local repository metadata.
+/models/

@@ -2629,7 +2629,7 @@ function _wireTabEvents(body) {
       const _hsrv = selectedServer || {};
       let env = host ? (_hsrv.env || 'none') : _envState.env;
       let envPath = host ? (_hsrv.envPath || '') : _envState.envPath;
-      const payload = { repo_id: repo };
+      const payload = { repo_id: repo, layout: 'directory' };
       if (ollamaName) payload.backend = 'ollama';
       if (autoInclude || pickerInclude) payload.include = autoInclude || pickerInclude;
       if (_envState.hfToken && !ollamaName) payload.hf_token = _envState.hfToken;

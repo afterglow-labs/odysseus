@@ -70,6 +70,16 @@ function _downloadDisplayName(name, task) {
   return part ? `${name} · ${part}` : name;
 }
 
+function _downloadDestination(task) {
+  const payload = task?.payload || {};
+  if (payload.download_dir) return payload.download_dir;
+  if (payload.layout === 'directory') {
+    const root = payload.model_root || payload.local_dir || (task.remoteHost ? '~/models' : _envState.localDownloadDir || '~/models');
+    return `${String(root).replace(/[\\/]+$/, '')}/${payload.repo_id || ''}`;
+  }
+  return payload.cache_dir || payload.local_dir || (task.remoteHost ? '~/.cache/huggingface/hub' : _envState.localHfCacheDir || '~/.cache/huggingface/hub');
+}
+
 function _downloadNameFromPayload(name, payload) {
   const rawName = String(name || '').trim();
   // Defensive: failed/restarted downloads can inherit the wrapper executable
@@ -1640,6 +1650,9 @@ async function _retryDownload(name, payload, replaceSessionId = '') {
     const _payload = isDependency
       ? { ...payload }
       : { ...(payload || {}), disable_hf_transfer: true };
+    if (!isDependency && !_payload.layout) {
+      _payload.layout = replaceSessionId && !_payload.download_dir ? 'cache' : 'directory';
+    }
     if (isDependency && !_payload._cmd) throw new Error('The original install command is missing. Use Install in Dependencies.');
     // Older cards did not save activation. An absolute venv Python command
     // still selects its environment; plain python plus a conda/venv name does not.
@@ -1669,6 +1682,12 @@ async function _retryDownload(name, payload, replaceSessionId = '') {
       uiModule.showToast(failureLabel + String(data.detail || data.error || `HTTP ${res.status}`));
       if (replaceSessionId) _updateTask(replaceSessionId, { status: 'crashed', _retrying: false });
       return;
+    }
+    if (!isDependency) {
+      if (data.download_dir) _payload.download_dir = data.download_dir;
+      if (data.model_root) _payload.model_root = data.model_root;
+      if (data.cache_dir) _payload.cache_dir = data.cache_dir;
+      if (data.layout) _payload.layout = data.layout;
     }
     if (replaceSessionId) {
       const tasks = _loadTasks();
@@ -2587,7 +2606,7 @@ export function _renderRunningTab() {
         <span class="cookbook-task-status ${_bdg.cls}"${_bdgTitle}>${esc(_bdg.text)}</span>
         <button type="button" class="cookbook-task-menu-btn" title="Actions">&#8942;</button>
       </div>
-      <div class="cookbook-task-sub"><span class="cookbook-task-session">${esc(task.sessionId)}</span><span class="cookbook-task-uptime" style="display:${((task.type === 'serve' || task.type === 'download') && task.status === 'running') ? '' : 'none'}"></span>${(task.type === 'download') ? `<span class="cookbook-task-dldir" title="Download destination" style="font-size:9px;color:var(--fg-muted);font-family:'Fira Code',monospace;opacity:0.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40ch;">Dir: ${esc(task.payload?.cache_dir || task.payload?.local_dir || (task.remoteHost ? '~/.cache/huggingface/hub' : _envState.localHfCacheDir || '~/.cache/huggingface/hub'))}</span>` : ''}</div>
+      <div class="cookbook-task-sub"><span class="cookbook-task-session">${esc(task.sessionId)}</span><span class="cookbook-task-uptime" style="display:${((task.type === 'serve' || task.type === 'download') && task.status === 'running') ? '' : 'none'}"></span>${(task.type === 'download') ? `<span class="cookbook-task-dldir" title="Download destination" style="font-size:9px;color:var(--fg-muted);font-family:'Fira Code',monospace;opacity:0.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40ch;">Dir: ${esc(_downloadDestination(task))}</span>` : ''}</div>
       <div class="cookbook-output-wrap cookbook-task-collapsible${(_mobileCollapseDefault && !_shouldAutoExpandTaskOutput(task)) ? ' cookbook-task-collapsed' : ''}"><pre class="cookbook-output-pre">${esc(task.output || '')}</pre><button type="button" class="copy-code cookbook-output-copy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div>
     `;
 
