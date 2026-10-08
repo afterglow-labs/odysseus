@@ -10,7 +10,7 @@ import time
 import uuid
 
 from src.h3_video import JOB_ID, TERMINAL, _locked, _read, _write
-from src.video_job_edit import _draft, _inputs, revision, validate
+from src.video_job_edit import _draft, _inputs, revision, validate, persist_legacy_inputs, input_source_name
 from src.video_submission import UUID, ensure_upload_space
 from src.video_workflow import specification
 
@@ -148,7 +148,8 @@ def edit_jobs(manager, owner, family, chosen, patch):
         try:
             for item in prepared:
                 original = item["manifest"]
-                _write(item["directory"] / "manifest.json", {**original, "config": item["config"], "revision": revision(original) + 1})
+                normalized = persist_legacy_inputs(original, item["inputs"], family)
+                _write(item["directory"] / "manifest.json", {**normalized, "config": item["config"], "revision": revision(original) + 1})
                 written.append(item)
         except OSError as exc:
             rollback_errors = []
@@ -210,8 +211,8 @@ def _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, recei
                         target = directory / (uuid.uuid4().hex + Path(value["path"]).suffix.lower())
                         _clone_file(value["path"], target)
                         paths.append(str(target.resolve()))
-                    uploads[field] = paths if family == "h3" and field not in {"first_frame", "last_frame"} else paths[0] if paths else []
-                _write(directory / "submission.json", {"input_names": names, "source_name": item["manifest"].get("source_name"),
+                    uploads[field] = paths if family == "h3" and field not in {"first_frame", "last_frame", "source_video"} else paths[0] if paths else []
+                _write(directory / "submission.json", {"input_names": names, "source_name": input_source_name(item["inputs"], family),
                                                        "submission_id": key, "rerun_of": original_id})
                 entries.append({"id": identifier, "source_id": original_id, "config": item["config"], "uploads": uploads, "accepted": False})
             receipt.update(prepared=True, entries=entries)

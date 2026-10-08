@@ -54,7 +54,7 @@ def test_auth_before_transfer_staging_and_ticket_owner_check(api):
         assert 'gpu' not in recipe['config'] and 'private-machine-id' not in json.dumps(recipe)
     imported = client.post('/api/video/h3/workflow/import', content=json.dumps(document()), headers={'content-type':'application/octet-stream'})
     assert imported.status_code == 200, imported.text
-    assert imported.json()['workflow'] == document()
+    assert imported.json()['workflow'] == {**document(), 'input_layout': 'source-guide-v1'}
     assert imported.json()['attachments'] == []
     assert not list(root.rglob('upload.zip'))
 

@@ -66,7 +66,7 @@ const components=[
  {id:'turbo',role:'lora',variant:'ref2va',name:'Turbo'},
 ];
 const defaults={mode:'ref2va',model:'ref',encoder:'encoder',video_vae:'video_vae',audio_vae:'audio_vae',lora:'',gpu:'gpu',vae_gpu:'',width:960,height:544,frames:124,steps:20,seed:42,lora_scale:1,sampler:'euler',scheduler:'simple',shift_video:12,shift_audio:3,reference_size:'match'};
-const inventory={components,gpus:[{id:'gpu',name:'GPU',nvfp4:true}],runtime_ready:true,batch_jobs:true,lora_stack:true,max_loras:8,defaults};
+const inventory={components,gpus:[{id:'gpu',name:'GPU',nvfp4:true}],runtime_ready:true,batch_jobs:true,lora_stack:true,max_loras:8,vfx_references:true,defaults};
 const calls=[];
 globalThis.fetch=async(url,options={})=>{calls.push({url,...options});let data={};
  if(url.endsWith('/inventory'))data=inventory;
@@ -92,10 +92,10 @@ showH3Video();await flush();
 await change('prompt','Keep this exact prompt');await change('steps','27');
 await change('lora','vfx');
 assert.equal(byId('prompt').value,'Keep this exact prompt');assert.equal(byId('steps').value,'27');
-assert.equal(byId('reference_videos').parentElement.children[0].textContent,'Source video');
-assert.equal(byId('reference_videos').multiple,false);
-assert.equal(byId('reference_images').parentElement.hidden,true);assert.equal(byId('reference_audio').disabled,true);
-assert.equal(byId('frames').disabled,true);assert.equal(byId('reference_size').disabled,true);
+assert.equal(byId('source_video').parentElement.children[0].textContent,'Source video');
+assert.equal(byId('source_video').multiple,false);assert.equal(byId('reference_videos').multiple,true);
+assert.equal(byId('reference_images').parentElement.hidden,false);assert.equal(byId('reference_audio').disabled,false);
+assert.equal(byId('frames').disabled,true);assert.equal(byId('reference_size').disabled,false);
 assert.equal(byId('frames').options.find(option=>option.value==='73').hidden,false);
 assert.ok(elements.some(node=>!node.hidden&&node.textContent.startsWith('Matches source video.')));
 await change('lora','turbo');
@@ -105,49 +105,57 @@ assert.equal(byId('frames').value,'124');assert.equal(byId('prompt').value,'Keep
 """)
 
 
-def test_stale_images_and_audio_remain_removable_and_block_all_vfx_submission_paths():
+def test_vfx_keeps_images_videos_and_audio_as_separate_references_and_sends_image_context():
     run_js(r"""
-showH3Video();await flush();await change('prompt','Glow');
+showH3Video();await flush();await change('prompt','Use the jacket in <Picture 1>');
 const image=new File(['image'],'face.png'),audio=new File(['audio'],'voice.wav');
 await attach('reference_images',image);await attach('reference_audio',audio);await attach('reference_videos',source());
-await change('lora','vfx');
-for(const key of ['reference_images','reference_audio']){assert.equal(byId(key).parentElement.hidden,false);assert.equal(byId(key).disabled,true);}
-assert.equal(generate().disabled,true);assert.match(batch.issue,/Remove the preserved/);
-assert.equal(byText('Enhance prompt').disabled,true);await form().fire('submit');
-assert.equal(calls.filter(call=>call.method==='POST').length,0);
-const imageRemove=byId('reference_images').parentElement.children[2].children[0].children[1];imageRemove.onclick();
-assert.equal(byId('reference_images').parentElement.hidden,true);assert.equal(generate().disabled,true);
-byId('reference_audio').parentElement.children[2].children[0].children[1].onclick();
+await change('lora','vfx');await attach('source_video',new File(['edit'],'edit.mp4'));
+for(const key of ['source_video','reference_images','reference_videos','reference_audio']){assert.equal(byId(key).parentElement.hidden,false);assert.equal(byId(key).disabled,false);}
 assert.equal(generate().disabled,false);assert.equal(batch.enabled,true);
+assert.equal(byText('Enhance prompt').disabled,false);await byText('Enhance prompt').fire('click');
+const body=calls.find(call=>call.url.endsWith('/enhance-prompt')).body;
+assert.equal(body.getAll('reference_images').length,1);assert.equal(body.getAll('reference_images')[0].name,'face.png');
+const payload=JSON.parse(body.get('config'));
+assert.equal(payload.recipe,'vfx_edit');assert.equal(payload.reference_counts.source_video,1);
+assert.equal(payload.reference_counts.reference_images,1);assert.equal(payload.reference_counts.reference_videos,1);assert.equal(payload.reference_counts.reference_audio,1);
+assert.equal(byId('reference_videos').parentElement.children[2].children[0].children[0].textContent.startsWith('<Video 1>'),true);
+assert.equal(byId('source_video').parentElement.children[2].children[0].children[0].textContent.startsWith('Source video'),true);
 """)
 
 
-def test_multiple_videos_are_preserved_and_batch_snapshot_has_one_video_per_job():
+def test_vfx_batch_uses_each_source_with_shared_reference_videos_and_ordinary_batch_is_unchanged():
     run_js(r"""
 showH3Video();await flush();await change('prompt','Glow');
-await attach('reference_videos',source(),new File(['two'],'second.mp4'));await change('lora','vfx');
-assert.equal(generate().disabled,true);assert.equal(byId('reference_videos').parentElement.children[2].children.length,2);
-assert.ok(elements.some(node=>node.textContent.startsWith('VFX Edit accepts one source video')));
+const refs=[source(),new File(['two'],'second.mp4')];
+await attach('reference_videos',...refs);await change('lora','vfx');
+assert.equal(byId('reference_videos').parentElement.children[2].children.length,2);
+assert.equal(byId('source_video').parentElement.children[2].children.length,0);
 batch.active=true;batch.onChange();
 assert.equal(batch.enabled,true);const snapshot=batch.getSnapshot();
-assert.equal(snapshot.videoField,'reference_videos');assert.equal(snapshot.config.lora,'vfx');
-assert.equal(snapshot.uploads.reference_videos,undefined);
-assert.deepEqual(snapshot.uploads.reference_images,[]);assert.deepEqual(snapshot.uploads.reference_audio,[]);
-assert.equal(byId('reference_videos').parentElement.children[2].children.length,2);
-batch.active=false;batch.onChange();assert.equal(generate().disabled,true);
+assert.equal(snapshot.videoField,'source_video');assert.equal(snapshot.config.lora,'vfx');
+assert.deepEqual(snapshot.uploads.reference_videos,refs);assert.equal(snapshot.uploads.source_video,undefined);
+assert.equal(byId('reference_videos').parentElement.hidden,false);assert.equal(byId('source_video').parentElement.hidden,true);
+await byText('Enhance prompt').fire('click');
+const payload=JSON.parse(calls.find(call=>call.url.endsWith('/enhance-prompt')).body);
+assert.equal(payload.reference_counts.source_video,1);assert.equal(payload.reference_counts.reference_videos,2);
+await change('lora','turbo');const ordinary=batch.getSnapshot();
+assert.equal(ordinary.videoField,'reference_videos');assert.equal(ordinary.uploads.reference_videos,undefined);
+assert.equal(byId('reference_videos').parentElement.hidden,true);batch.active=false;batch.onChange();
+assert.equal(byId('reference_videos').parentElement.hidden,false);
 """)
 
 
 def test_vfx_rejects_missing_source_and_enhances_using_recipe_and_retained_video_count():
     run_js(r"""
 showH3Video();await flush();await change('prompt','Glow');await change('lora','vfx');
-await form().fire('submit');assert.ok(elements.some(node=>node.textContent==='Choose a source video for VFX Edit.'));
+await form().fire('submit');assert.ok(elements.some(node=>node.textContent.startsWith('Choose a source video for VFX Edit.')));
 assert.equal(calls.filter(call=>call.method==='POST').length,0);
 editor.active={id:'queued',revision:2};
 editorOptions.applyEdit({config:{...defaults,lora:'vfx',prompt:'Glow'},inputs:{reference_videos:[{index:0,name:'saved.mp4',size:7}]}});
 assert.equal(byText('Enhance prompt').disabled,false);await byText('Enhance prompt').fire('click');
 const payload=JSON.parse(calls.find(call=>call.url.endsWith('/enhance-prompt')).body);
-assert.equal(payload.recipe,'vfx_edit');assert.equal(payload.reference_counts.reference_videos,1);
+assert.equal(payload.recipe,'vfx_edit');assert.equal(payload.reference_counts.source_video,1);assert.equal(payload.reference_counts.reference_videos,0);
 assert.equal(byId('prompt').value,'Add a blue glow around the hands.');
 """)
 
@@ -178,5 +186,31 @@ byId('first_frame').parentElement.children[2].children[0].children[1].onclick();
 await change('lora','turbo');assert.equal(byId('frames').value,'73');assert.equal(byId('frames').disabled,false);
 assert.equal(generate().disabled,true);assert.match(batch.issue,/editing the queued job/);
 assert.ok(elements.some(node=>node.textContent.includes('Choose a length of at least 124 frames')));
-await change('frames','124');assert.equal(generate().disabled,false);
+await change('frames','124');assert.equal(generate().disabled,true);
+byId('source_video').parentElement.children[2].children[0].children[1].onclick();assert.equal(generate().disabled,false);
+""")
+
+
+def test_modern_vfx_reference_video_is_not_promoted_to_source_and_ffp_uses_same_controls():
+    run_js(r"""
+inventory.components.push({id:'ffp',role:'lora',variant:'ref2va',recipe:'vfx_edit',name:'VFX Edit FFP'});
+showH3Video();await flush();editor.active={id:'queued',revision:1};
+editorOptions.applyEdit({config:{...defaults,lora:'ffp',prompt:'Keep <Video 1> as a reference'},inputs:{source_video:[],reference_videos:[{index:0,name:'reference.mp4',size:3}]}});
+assert.equal(byId('source_video').parentElement.hidden,false);assert.equal(byId('source_video').parentElement.children[2].children.length,0);
+assert.equal(byId('reference_videos').parentElement.children[2].children.length,1);
+await form().fire('submit');assert.equal(calls.filter(call=>call.method==='PATCH').length,0);
+assert.ok(elements.some(node=>node.textContent.startsWith('Choose a source video')));
+assert.equal(byId('reference_images').disabled,false);assert.equal(byId('reference_audio').disabled,false);
+""")
+
+
+def test_source_only_job_is_valid_and_reference_source_fields_submit_independently():
+    run_js(r"""
+showH3Video();await flush();await change('lora','vfx');await change('prompt','Use <Picture 1> as clothing guidance');
+const clip=new File(['source'],'edit.mp4'),ref=new File(['ref'],'guidance.mp4');
+await attach('source_video',clip);await attach('reference_videos',ref);
+await form().fire('submit');
+const body=calls.find(call=>call.method==='POST'&&call.url.endsWith('/jobs')).body;
+assert.deepEqual(body.getAll('source_video'),[clip]);assert.deepEqual(body.getAll('reference_videos'),[ref]);
+assert.equal(JSON.parse(body.get('config')).prompt,'Use <Picture 1> as clothing guidance');
 """)

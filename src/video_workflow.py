@@ -17,8 +17,10 @@ import zlib
 
 from src.h3_video import _locked, _read, _write
 from src.h3_loras import MAX_LORAS, lora_entries
+from src.h3_vfx import normalize_vfx_inputs
 
 FORMAT, VERSION = "odysseus-video-workflow", 1
+INPUT_LAYOUT = "source-guide-v1"
 CHUNK, JSON_LIMIT, MAX_ENTRIES, TTL = 1024 * 1024, 128 * 1024, 64, 7200
 RESERVE_BYTES = 512 * 1024 * 1024
 ID = re.compile(r"^[a-f0-9]{32}$")
@@ -135,8 +137,10 @@ def validate_document(value, family):
         raise ValueError("Unsupported Odysseus workflow format or version")
     if value.get("family") != family:
         raise ValueError("Import this workflow into its matching H3 or BFS editor")
-    if value.keys() - {"format", "version", "family", "config", "components", "attachments"}:
+    if value.keys() - {"format", "version", "family", "config", "components", "attachments", "input_layout"}:
         raise ValueError("Unknown workflow metadata")
+    if "input_layout" in value and (family != "h3" or value["input_layout"] != INPUT_LAYOUT):
+        raise ValueError("Unknown workflow input layout")
     portable_config(value.get("config"), family)
     _, roles, extensions = specification(family, value["config"])
     components, attachments = value.get("components"), value.get("attachments")
@@ -186,13 +190,37 @@ def validate_document(value, family):
         refs = sum(counts.get(k, 0) for k in ("reference_images", "reference_videos", "reference_audio"))
         if (refs > 12 or mode == "t2va" and counts
                 or mode == "ref2va" and (counts.get("first_frame") or counts.get("last_frame"))
-                or mode == "fl2va" and refs):
+                or mode == "fl2va" and (refs or counts.get("source_video"))):
             raise ValueError("Attachments do not match the H3 workflow mode")
     else:
         from src.bfs_video import BY_ID
         if any(field not in BY_ID[value["config"]["workflow_id"]]["source_requirements"] for field in counts):
             raise ValueError("Attachments do not match the BFS workflow")
     return declared
+
+
+def normalize_portable_inputs(document):
+    """Map legacy VFX attachment roles without renaming their ZIP members."""
+    if document["family"] != "h3":
+        return document
+    result = {**document, "input_layout": INPUT_LAYOUT}
+    if "input_layout" in document:
+        return result
+    config, components = document["config"], document["components"]
+    if "lora_strengths" in config:
+        canonical = {"loras": [{"path": components[f"lora_{i}"]["name"], "strength": strength}
+                                for i, strength in enumerate(config["lora_strengths"])]}
+    else:
+        canonical = {"lora": components.get("lora", {}).get("name", ""), "lora_scale": config.get("lora_scale", 1)}
+    grouped = {}
+    for item in document["attachments"]:
+        grouped.setdefault(item["field"], []).append(item)
+    normalized = normalize_vfx_inputs(canonical, grouped)
+    if "source_video" not in grouped and normalized.get("source_video"):
+        promoted = normalized["source_video"][0]
+        result["attachments"] = [{**item, "field": "source_video"} if item is promoted else dict(item)
+                                 for item in document["attachments"]]
+    return result
 
 
 def resolve_draft(raw, inventory, family):
@@ -250,6 +278,8 @@ def make_recipe(config, selected, uploads, family, options):
     document = {"format": FORMAT, "version": VERSION, "family": family,
                 "config": portable_config({k: v for k, v in config.items() if k in settings}, family),
                 "components": {}, "attachments": []}
+    if family == "h3":
+        document["input_layout"] = INPUT_LAYOUT
     assets = []
     for role, value in selected.items():
         if role not in roles or not value:
@@ -396,18 +426,8 @@ def job_export(manager, job_id, owner, family, options):
         selected = {r: config[r] for r in roles if config.get(r)}
         uploads = {}
         if options["include_attachments"]:
-            source = manifest.get("uploads", manifest)
-            for field in extensions:
-                values = source.get(field) or []
-                values = [values] if isinstance(values, str) else values
-                if not isinstance(values, list):
-                    raise ValueError("Invalid saved attachments")
-                uploads[field] = []
-                for value in values:
-                    path = Path(value)
-                    if path.is_symlink() or not path.is_file() or path.resolve().parent != directory.resolve():
-                        raise ValueError("A saved attachment is unavailable or outside its job")
-                    uploads[field].append({"path": str(path), "name": path.name})
+            from src.video_job_edit import _inputs
+            uploads = _inputs(directory, manifest, extensions)
         document, assets = make_recipe(config, selected, uploads, family, options)
         # Descriptors are opened while deletion is locked; an ongoing download
         # stays valid if its job is later removed.
@@ -515,6 +535,7 @@ class WorkflowTransfers:
         return path, item["name"]
 
     def _finish_import(self, directory, owner, document, weights):
+        document = normalize_portable_inputs(document)
         inventory = self.manager.inventory()
         resolved = {}
         for role, reference in document["components"].items():

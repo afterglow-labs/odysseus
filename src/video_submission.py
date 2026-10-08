@@ -77,7 +77,7 @@ def input_metadata(uploads, family):
         name = str(upload.filename or "").replace("\\", "/").rsplit("/", 1)[-1]
         return "".join(c for c in name if c.isprintable())[:255] or "Unnamed input"
     names = {field: [filename(item) for item in files] for field, files in uploads.items() if files}
-    sources = names.get("reference_videos" if family == "h3" else "source_video", [])
+    sources = names.get("source_video") or names.get("reference_videos" if family == "h3" else "source_video", [])
     return {"input_names": names, "source_name": sources[-1] if sources else None}
 
 

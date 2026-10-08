@@ -20,6 +20,7 @@ import time
 FPS = 24
 AUDIO_RATE = 32000
 VFX_EDIT_LORA = "minimax_h3_vfx_edit_v1.0_r128.safetensors"
+VFX_EDIT_LORAS = {VFX_EDIT_LORA, "minimax_h3_vfx_edit_v1.0_r128_ffp.safetensors"}
 RUNTIME_REVISION = "5c460d8172fe30761ff67c0df3d5643bb74e0d70"
 GPU_UUID = re.compile(r"GPU-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
@@ -51,8 +52,8 @@ class Progress:
 
 
 def is_vfx_edit(config):
-    """Only the installed standard adapter opts into the source-guide recipe."""
-    return any(Path(item["path"]).name.lower() == VFX_EDIT_LORA and item["strength"] != 0
+    """Both published editing adapters use an aligned source plus optional refs."""
+    return any(Path(item["path"]).name.lower() in VFX_EDIT_LORAS and item["strength"] != 0
                for item in lora_stack(config))
 
 
@@ -168,25 +169,34 @@ def validate_job(manifest):
         if not isinstance(values, list) or len(values) > limit:
             raise ValueError(f"At most {limit} {name.replace('_', ' ')} are supported")
         media[name] = values
-    for name in ("first_frame", "last_frame"):
+    for name in ("first_frame", "last_frame", "source_video"):
         media[name] = uploads.get(name) or None
-    if is_vfx_edit(config):
+    if media["source_video"] is not None and not isinstance(media["source_video"], str):
+        raise ValueError("VFX Edit needs exactly one source video path")
+    vfx_edit = is_vfx_edit(config)
+    if vfx_edit:
         if config["mode"] != "ref2va":
             raise ValueError("VFX Edit requires reference mode with a Ref2VA base model")
-        if len(media["reference_videos"]) != 1:
+        # Earlier jobs stored the aligned source in their only video-reference
+        # slot. Migrate that contract locally without mutating saved manifests.
+        # An explicit source field (even empty) always prevents this fallback.
+        if "source_video" not in uploads and len(media["reference_videos"]) == 1:
+            media["source_video"] = media["reference_videos"][0]
+            media["reference_videos"] = []
+        if not media["source_video"]:
             raise ValueError("VFX Edit needs exactly one source video")
-        if media["reference_images"] or media["reference_audio"] or media["first_frame"] or media["last_frame"]:
-            raise ValueError("Standard VFX Edit accepts only the source video; remove images, audio references and keyframes")
-        if re.search(r"<(?:Picture|Video|Audio|Subject)\s+\d+>", config["prompt"], re.IGNORECASE):
-            raise ValueError("VFX Edit uses an aligned source guide; describe the edit without numbered Picture, Video, Audio, or Subject markers")
+        if media["first_frame"] or media["last_frame"]:
+            raise ValueError("VFX Edit uses native image references, not first/last keyframes")
         config["prompt"] = vfx_edit_prompt(config["prompt"])
         if len(config["prompt"]) > 16000:
             raise ValueError("VFX Edit prompt, including vfx_edit:, must be at most 16,000 characters")
+    elif media["source_video"]:
+        raise ValueError("A source video requires an active VFX Edit LoRA")
     total = sum(len(media[name]) for name in ("reference_images", "reference_videos", "reference_audio"))
     if total > 12:
         raise ValueError("At most 12 references are supported")
     if config["mode"] == "ref2va":
-        if not media["reference_images"] and not media["reference_videos"]:
+        if not vfx_edit and not media["reference_images"] and not media["reference_videos"]:
             raise ValueError("Reference mode needs at least one reference image or video; audio alone is unsupported")
         if media["first_frame"] or media["last_frame"]:
             raise ValueError("First/last frames belong to first/last-frame mode")
@@ -314,9 +324,9 @@ def read_video(path):
 
 
 def prepare_media(media, config):
-    if is_vfx_edit(config):
-        return prepare_vfx_media(media, config)
-    prepared = {}
+    # Prepare the guide first so native references use the source-aligned
+    # canvas and sampling length. The source never occupies a native ref slot.
+    prepared = prepare_vfx_media(media, config) if is_vfx_edit(config) else {}
     area = config["width"] * config["height"]
     for name in ("first_frame", "last_frame"):
         if media[name]:
@@ -368,7 +378,7 @@ def prepare_vfx_media(media, config):
     """Pad the complete source for sampling, retaining its original output length."""
     import torch
 
-    frames, soundtrack, _, _ = read_video(media["reference_videos"][0])
+    frames, soundtrack, _, _ = read_video(media["source_video"])
     output_frames = len(frames)
     if output_frames < 73:
         raise ValueError("VFX Edit needs at least 73 source frames at 24 fps (about 3.05 seconds)")
@@ -635,9 +645,17 @@ class H3Runtime:
         common = dict(clip=clip, vae=vae, prompt=config["prompt"], width=config["width"],
                       height=config["height"], length=config["frames"])
         if is_vfx_edit(config):
-            # With no keyframes, this is the author's CLIPTextEncode + empty
-            # AV latent branch. The source must not enter native references.
-            positive, latent = self.h3.MiniMaxH3ImageToVideo.execute(**common)
+            # The author's FFP branch conditions native image references before
+            # adding the aligned source. The core retains minimax_refs alongside
+            # minimax_keyframes; native videos/audio follow the same ref channel.
+            refs = {key: prepared.get(key, {}) for key in (
+                "ref_images", "ref_videos", "ref_video_audios", "ref_audios")}
+            if any(refs.values()):
+                positive, latent = self.h3.MiniMaxH3ReferenceToVideo.execute(
+                    **common, audio_vae=audio_vae, ref_image_size=config["reference_size"], **refs)
+            else:
+                # No-reference branch: text conditioning and an empty AV latent.
+                positive, latent = self.h3.MiniMaxH3ImageToVideo.execute(**common)
             positive = self.h3.MiniMaxH3AddGuide.execute(
                 positive=positive, latent=latent, frame_idx=0, vae=vae,
                 audio_vae=audio_vae, image=prepared["guide_video"], audio=prepared["guide_audio"])[0]

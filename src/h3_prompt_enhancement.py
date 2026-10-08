@@ -32,7 +32,7 @@ REFERENCE_PATTERN = re.compile(r"<(Picture|Video|Audio)\s+(\d+)>", re.I)
 QUOTE_PATTERN = re.compile(r'"([^"\n]+)"|“([^”\n]+)”|「([^」\n]+)」|(?<!\w)\'([^\'\n]+)\'(?!\w)')
 UNAVAILABLE = "Enable a chat model in Model Endpoints or launch one in Cookbook to enhance prompts."
 COUNT_LIMITS = {"reference_images": 9, "reference_videos": 3, "reference_audio": 3,
-                "first_frame": 1, "last_frame": 1}
+                "first_frame": 1, "last_frame": 1, "source_video": 1}
 IMAGE_FIELDS = ("first_frame", "last_frame", "reference_images")
 IMAGE_FORMATS = {"JPEG": ("image/jpeg", {".jpg", ".jpeg"}),
                  "PNG": ("image/png", {".png"}), "WEBP": ("image/webp", {".webp"})}
@@ -263,12 +263,17 @@ def validate_request(data):
         if type(value) is not int or not 0 <= value <= limit:
             raise ValueError(f"Invalid {key.replace('_', ' ')} count")
         normalized[key] = value
+    # Older clients put the source guide in their only video-reference slot.
+    # An explicit source count (including zero) uses the new separate layout.
+    if recipe and "source_video" not in counts and normalized["reference_videos"] == 1:
+        normalized["source_video"] = 1
+        normalized["reference_videos"] = 0
     refs = sum(normalized[key] for key in ("reference_images", "reference_videos", "reference_audio"))
     keyframes = normalized["first_frame"] + normalized["last_frame"]
     if refs > 12 or (mode == "t2va" and (refs or keyframes)) or (mode == "fl2va" and refs) or (mode == "ref2va" and keyframes):
         raise ValueError("Reference counts do not match the selected H3 mode")
-    if recipe and (normalized["reference_videos"] > 1 or any(value for key, value in normalized.items() if key != "reference_videos")):
-        raise ValueError("VFX Edit uses one source video without additional references")
+    if normalized["source_video"] and not recipe:
+        raise ValueError("A source video guide requires the VFX Edit recipe")
     result["reference_counts"] = normalized
     return result
 
@@ -347,8 +352,11 @@ Return only a concise English edit instruction beginning with vfx_edit: for the 
 State the requested change, then what must remain unchanged. Preserve the user's scope, constraints,
 quoted dialogue and visible text. Do not add actions, people, story, camera, lighting, sound, music,
 style, or other changes the user did not request. Do not ask to preserve the property being changed.
-The full source clip is an aligned video guide, not a native numbered reference. Do not introduce
-Picture, Video, Audio, or Subject markers or structured reference-generation sections.
+The full source clip is an aligned video guide, not a native numbered reference. It is separate from
+the optional numbered reference images, videos and audio. Preserve their markers and the user's stated
+roles. Use <Picture N>, <Video N> and <Audio N> only for supplied references, never for the source guide.
+An edited first-frame reference can use <Picture 1>; explain its role when requested by the user.
+Do not invent reference contents or turn a reference into a new requested change.
 The final video uses the original soundtrack. Do not invent replacement audio or dialogue.
 The source duration and aspect ratio are matched during rendering; supplied canvas settings are a
 resolution budget, not permission to alter timing or framing. You cannot see or hear the source.
@@ -398,8 +406,6 @@ def _rewritten_prompt(text, original, counts):
 async def enhance_prompt(owner, request_data, images=None):
     config = validate_request(request_data)
     vfx_edit = config.get("recipe") == "vfx_edit"
-    if vfx_edit and images:
-        raise ValueError("Standard VFX Edit does not use reference images")
     try:
         async with asyncio.timeout(120), _client() as client:
             enhancer = await _resolve_selection(owner, config["endpoint_id"], config["model"])
@@ -429,8 +435,6 @@ async def enhance_prompt(owner, request_data, images=None):
                 generation_options={"thinking": "off", "reasoning_effort": "none"})
             prompt = _rewritten_prompt(response, config["prompt"], config["reference_counts"])
             if vfx_edit:
-                if re.search(r"<(?:Picture|Video|Audio|Subject)\s+\d+>", prompt, re.I):
-                    raise EnhancementError(502, "The enhancer introduced numbered references that VFX Edit does not use. Your draft was preserved.")
                 if not prompt.lower().startswith("vfx_edit:"):
                     prompt = "vfx_edit: " + prompt
                 if len(prompt) > MAX_PROMPT:

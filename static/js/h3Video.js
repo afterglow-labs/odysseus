@@ -312,7 +312,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
       [...state.retained.map(file => ({ file, saved: true })), ...state.files.map(file => ({ file, saved: false }))].forEach(({ file, saved }, index) => {
         const item = el('li');
         const referenceLabel = { reference_images: 'Picture', reference_videos: 'Video', reference_audio: 'Audio' }[key];
-        const prefix = key === 'reference_videos' && isVfxEdit() ? 'Source video · ' : referenceLabel ? `<${referenceLabel} ${index + 1}> · ` : '';
+        const prefix = key === 'source_video' ? 'Source video · ' : referenceLabel ? `<${referenceLabel} ${index + 1}> · ` : '';
         const name = el('span', '', `${prefix}${file.name} · ${(file.size / 1048576).toFixed(1)} MB${saved ? ' · Saved on server' : ''}`);
         const remove = button('Remove'); remove.setAttribute('aria-label', `Remove ${file.name}`);
         remove.onclick = () => { if (saved) state.retained.splice(index, 1); else state.files.splice(index - state.retained.length, 1); editRevision++; render(); updateReady(); };
@@ -330,6 +330,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   }
   upload('first_frame', 'First frame', 'image/jpeg,image/png,image/webp', false, 'fl2va');
   upload('last_frame', 'Last frame', 'image/jpeg,image/png,image/webp', false, 'fl2va');
+  upload('source_video', 'Source video', 'video/*', false, 'ref2va');
   upload('reference_images', 'Reference images', 'image/jpeg,image/png,image/webp', true, 'ref2va');
   upload('reference_videos', 'Reference videos', 'video/*', true, 'ref2va');
   upload('reference_audio', 'Reference audio (optional)', 'audio/*', true, 'ref2va');
@@ -415,22 +416,24 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     return !isVfxEdit() && Number(fields.frames.value) < 124 ? 'This duration is available only for VFX Edit. Choose a length of at least 124 frames.' : '';
   }
   const batchActive = () => !jobEditor?.active && fields.mode.value === 'ref2va' && !!batchQueue?.active;
+  const batchVideoField = () => isVfxEdit() ? 'source_video' : 'reference_videos';
   function vfxInputsIssue({ requireSource = false, batch = batchActive() } = {}) {
-    if (!isVfxEdit()) return '';
-    const extra = Object.entries(uploads).filter(([key]) => key !== 'reference_videos' && inputCount(key));
-    if (extra.length) return `VFX Edit accepts only a source video. Remove the preserved ${extra.map(([, state]) => state.label.toLowerCase()).join(', ')} below, or choose another LoRA to use them.`;
-    if (!batch && inputCount('reference_videos') > 1) return 'VFX Edit accepts one source video per job. Remove extra videos, or use Batch job to queue one source per job.';
-    if (requireSource && !batch && !inputCount('reference_videos')) return 'Choose a source video for VFX Edit.';
+    if (!isVfxEdit()) return inputCount('source_video') ? 'The source video requires an active VFX Edit LoRA. Enable it or remove the source video.' : '';
+    if (inventory?.vfx_references !== true) return 'Separate VFX source and reference inputs need the updated Odysseus server. Restart the server and refresh components.';
+    const keyframes = ['first_frame', 'last_frame'].filter(key => inputCount(key));
+    if (keyframes.length) return 'VFX Edit uses Reference mode. Remove the preserved first/last keyframes, or use reference images instead.';
+    if (!batch && inputCount('source_video') > 1) return 'VFX Edit accepts one source video per job. Remove extra source videos, or use Batch job.';
+    if (requireSource && !batch && !inputCount('source_video')) return 'Choose a source video for VFX Edit. Reference videos are separate guidance inputs.';
     return '';
   }
   function updateInputs() {
     const vfx = isVfxEdit();
     for (const [key, state] of Object.entries(uploads)) {
-      const unused = vfx && key !== 'reference_videos';
-      state.wrap.hidden = unused ? !inputCount(key) : state.wrap.dataset.mode !== fields.mode.value || (key === 'reference_videos' && batchActive());
+      const unused = vfx && ['first_frame', 'last_frame'].includes(key) || !vfx && key === 'source_video';
+      state.wrap.hidden = unused ? !inputCount(key) : state.wrap.dataset.mode !== fields.mode.value || (key === batchVideoField() && batchActive());
       state.input.disabled = unused || state.wrap.dataset.mode !== fields.mode.value;
-      state.input.multiple = state.multiple && !(vfx && key === 'reference_videos');
-      state.heading.textContent = unused && inputCount(key) ? `${state.label} · remove to use VFX Edit` : vfx && key === 'reference_videos' ? 'Source video' : state.label;
+      state.input.multiple = state.multiple;
+      state.heading.textContent = unused && inputCount(key) ? `${state.label} · unused in this mode` : state.label;
     }
     vfxInputError.textContent = vfxInputsIssue(); vfxInputError.hidden = !vfxInputError.textContent;
   }
@@ -453,7 +456,8 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     if (!prompt.value.trim()) return 'Enter the prompt to use for every video.';
     if (Number(fields.width.value) * Number(fields.height.value) > 1032192) return 'Choose dimensions totaling at most 1,032,192 pixels.';
     const images = uploads.reference_images.files.length, audio = uploads.reference_audio.files.length;
-    if (images > 9 || audio > 3 || images + audio + 1 > 12) return 'Each batch job supports up to 9 shared images, 3 shared audio files, and 12 references total including its video.';
+    const videos = isVfxEdit() ? uploads.reference_videos.files.length : 1;
+    if (images > 9 || videos > 3 || audio > 3 || images + audio + videos > 12) return 'Each batch job supports up to 9 reference images, 3 reference videos, 3 reference audio files, and 12 references total. The VFX source video is separate.';
     if (!form.checkValidity()) return 'Check the video settings before adding the batch.';
     return '';
   }
@@ -462,9 +466,9 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     const issue = batchIssue(); if (issue) throw new Error(issue);
     save(); setError('');
     return {
-      config: { ...config(), prompt: prompt.value.trim() }, videoField: 'reference_videos',
+      config: { ...config(), prompt: prompt.value.trim() }, videoField: batchVideoField(),
       uploads: Object.fromEntries(Object.entries(uploads)
-        .filter(([key, state]) => key !== 'reference_videos' && state.wrap.dataset.mode === 'ref2va')
+        .filter(([key, state]) => key !== batchVideoField() && state.wrap.dataset.mode === 'ref2va')
         .map(([key, state]) => [key, [...state.files]])),
     };
   }
@@ -500,7 +504,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     updateEnhancerControls();
   }
   function updateEnhancerControls() {
-    const retainedImages = Object.entries(uploads).some(([key, state]) => state.wrap.dataset.mode === fields.mode.value && key !== 'reference_videos' && key !== 'reference_audio' && state.retained.length);
+    const retainedImages = Object.entries(uploads).some(([key, state]) => state.wrap.dataset.mode === fields.mode.value && ['first_frame', 'last_frame', 'reference_images'].includes(key) && state.retained.length);
     enhanceButton.disabled = !!queueControls?.busy || retainedImages || !!vfxInputsIssue() || jobEditor?.loading || transferBusy || enhancing || submitting || enhancerChecking || !selectedEnhancer() || !prompt.value.trim();
     enhanceButton.textContent = enhancing ? 'Enhancing…' : 'Enhance prompt';
     restoreButton.hidden = originalPrompt === null; restoreButton.disabled = enhancing || submitting;
@@ -518,7 +522,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
       enhancerContext.textContent = `${count ? `Sends ${count} reference image${count === 1 ? '' : 's'} to the selected enhancement model.` : 'No reference images attached for enhancement.'} ${batchActive() ? 'Batch enhancement describes one video per job. ' : ''}Video and audio references provide counts only; their contents are not sent.`;
     } else enhancerContext.textContent = 'Enhancement uses your prompt and video settings. Text mode does not send attached images.';
     if (retainedImages) enhancerContext.textContent = 'Saved images stay attached to this job. To use Enhance prompt with their image context, select those images again first.';
-    if (isVfxEdit()) enhancerContext.textContent = 'Enhancement makes a concise VFX edit instruction. Source video contents are not sent to the model; describe the change you want in your prompt.';
+    if (isVfxEdit() && !retainedImages) enhancerContext.textContent = `Enhancement makes a concise VFX edit instruction${uploads.reference_images.files.length ? ' and sends your reference images for context' : ''}. Source and reference video/audio contents are not sent; describe their roles in your prompt. The source video is not a numbered reference.`;
   }
   function enhancementPayload() {
     return {
@@ -527,7 +531,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
       prompt: prompt.value.trim(), mode: fields.mode.value,
       frames: Number(fields.frames.value), width: Number(fields.width.value), height: Number(fields.height.value),
       reference_counts: Object.fromEntries(Object.entries(uploads).map(([key, state]) =>
-        [key, key === 'reference_videos' && batchActive() ? 1 : state.wrap.dataset.mode === fields.mode.value ? inputCount(key) : 0])),
+        [key, key === batchVideoField() && batchActive() ? 1 : state.wrap.dataset.mode === fields.mode.value ? inputCount(key) : 0])),
     };
   }
   function validSelection(value) {
@@ -667,8 +671,9 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     sourceTimingHelp.hidden = !vfx;
     batchQueue?.setAvailable(fields.mode.value === 'ref2va');
     batchContainer.hidden = fields.mode.value !== 'ref2va';
-    fields.reference_size.disabled = vfx || fields.mode.value !== 'ref2va';
-    modeHelp.textContent = vfx ? 'VFX Edit uses one source video as an aligned guide and retains its original sound. Write a concise description of the edit; vfx_edit: is applied automatically. Use Batch job for multiple source videos.' : fields.mode.value === 'fl2va' ? 'Choose a first frame, a last frame, or both to guide the video.' : fields.mode.value === 'ref2va' ? 'Add an image or video, with optional audio. In your prompt, use <Picture 1>, <Video 1>, or <Audio 1> to reference uploads. Clips: 2–15 seconds, with 15 seconds total per video/audio type.' : 'Text mode uses the first / last frame model without image inputs.';
+    fields.reference_size.disabled = fields.mode.value !== 'ref2va';
+    batchQueue?.setVideoField?.(batchVideoField());
+    modeHelp.textContent = vfx ? 'VFX Edit changes one source video and retains its original sound. Add optional reference images, videos or audio and describe their roles with <Picture 1>, <Video 1> or <Audio 1>. The source video is a separate guide, not <Video 1>. Use Batch job for one source per job with the same references.' : fields.mode.value === 'fl2va' ? 'Choose a first frame, a last frame, or both to guide the video.' : fields.mode.value === 'ref2va' ? 'Add an image or video, with optional audio. In your prompt, use <Picture 1>, <Video 1>, or <Audio 1> to reference uploads. Clips: 2–15 seconds, with 15 seconds total per video/audio type.' : 'Text mode uses the first / last frame model without image inputs.';
     const current = models.find(item => item.id === fields.model.value);
     componentPath.textContent = current?.path || '';
     componentPath.title = current?.path || '';
@@ -954,7 +959,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     if (vfxIssue) { setError(vfxIssue); return; }
     const applicable = Object.entries(uploads).filter(([, state]) => state.wrap.dataset.mode === values.mode);
     if (values.mode === 'fl2va' && !inputCount('first_frame') && !inputCount('last_frame')) { setError('Choose a first frame, a last frame, or both.'); uploads.first_frame.input.focus(); return; }
-    if (values.mode === 'ref2va' && !inputCount('reference_images') && !inputCount('reference_videos')) { setError('Add at least one reference image or video. Audio alone is not supported.'); return; }
+    if (values.mode === 'ref2va' && !isVfxEdit() && !inputCount('reference_images') && !inputCount('reference_videos')) { setError('Add at least one reference image or video. Audio alone is not supported.'); return; }
     const editing = jobEditor.active;
     const body = editing ? videoJobEditFormData(editing, values,
       Object.fromEntries(applicable.map(([key, state]) => [key, state.files])),
@@ -1004,6 +1009,15 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   closeButton.onclick = close; window.addEventListener('keydown', onKey, true); closeButton.focus();
   function applyEditorDraft(values, attached, retained = {}) {
     loraEditor.setValue(h3LoraStack(values));
+    // Old VFX jobs used the only reference video as their source guide. New
+    // records explicitly contain source_video (even when empty), so never
+    // reinterpret one of their reference videos as a source.
+    if (isVfxEdit() && !Object.prototype.hasOwnProperty.call(attached, 'source_video')
+      && !Object.prototype.hasOwnProperty.call(retained, 'source_video')
+      && (attached.reference_videos?.length || 0) + (retained.reference_videos?.length || 0) === 1) {
+      attached = { ...attached, source_video: attached.reference_videos || [], reference_videos: [] };
+      retained = { ...retained, source_video: retained.reference_videos || [], reference_videos: [] };
+    }
     for (const key of [...SETTINGS, 'prompt']) {
       if (values[key] === undefined) continue;
       const control = fields[key], value = String(values[key]);

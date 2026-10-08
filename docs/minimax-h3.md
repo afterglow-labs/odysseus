@@ -196,23 +196,35 @@ visible for repair instead of being silently dropped.
 
 ### VFX Edit LoRA
 
-Select the Ref2VA model and
-`minimax_h3_vfx_edit_v1.0_r128.safetensors` in any **LoRA** row, at a nonzero strength, to use
-VFX Edit. This is a standard adapter: it does not use the BFS workflow or require
-another UI. The source video becomes an aligned guide for the edit, and its
-original soundtrack is retained when present. A silent source stays silent.
+Select the Ref2VA model and either
+`minimax_h3_vfx_edit_v1.0_r128.safetensors` or the VFX Edit FFP variant in any
+**LoRA** row, at a nonzero strength. The source video becomes an aligned guide
+for the edit, and its original soundtrack is retained when present. A silent
+source stays silent.
 
-Choose one **Source video** and write a concise instruction describing the change,
-such as "Add glowing blue energy around the dancer's hands." The server adds
-`vfx_edit:` once when submitting; selecting the adapter preserves your draft
-prompt. **Enhance prompt** uses guidance for concise edits. The enhancement model
-does not receive the video itself, so describe the requested change in your text.
+Choose one **Source video**: this is the clip being edited. The separate
+**Reference images**, **Reference videos**, and **Reference audio** inputs remain
+available to guide the edit. Specify each reference's role in the prompt using
+`<Picture 1>`, `<Video 1>`, or `<Audio 1>`. The source guide is not a numbered
+reference and does not consume `<Video 1>`. For example: "Use the jacket in
+<Picture 1> on the people in the source video. Keep everything else unchanged."
+The server adds `vfx_edit:` once when submitting; selecting the adapter preserves
+your draft prompt. **Enhance prompt** can send the reference images to your
+selected model for context; source/reference video and audio contents are not
+sent, so describe their intended roles in your prompt.
 
-VFX Edit accepts no first/last frames, reference images, or separate audio files.
-Inputs already in the draft remain available with **Remove** buttons and block
-submission until removed, or until you select another adapter. Multiple source
-videos can be queued with **Batch job**, one source per job. Existing queued jobs
-and their captured settings do not change when the draft's LoRA changes.
+VFX Edit uses Reference mode, so first/last keyframe inputs are not used. Existing
+keyframes remain visible and removable. The source and all reference channels are
+saved separately in jobs, queued edits, reruns, and workflow exports/imports.
+Older VFX jobs with one video in the old reference-video slot are migrated to the
+source slot; new reference videos are never promoted when an explicit source
+field is present.
+
+**Batch job** creates one VFX job per source video, sharing the same prompt,
+settings, reference images, reference videos and reference audio. In ordinary
+Reference mode without VFX Edit, batching still uses one reference video per job.
+Existing queued jobs and their captured settings do not change when the draft's
+LoRAs or attachments change.
 
 Output duration follows the source at 24 fps, with a minimum of 73 frames.
 The worker pads the guide to the next `17k + 5` frame count, then trims that
@@ -405,8 +417,8 @@ The manifest has `config`, `uploads`, `runtime_path`, `output_path` and
 `status_path`. Config includes the four absolute component paths, selected GPU,
 optional `vae_gpu` (empty means the main GPU),
 mode, prompt and controls above. Upload keys are `first_frame`, `last_frame`,
-`reference_images`, `reference_videos`, and `reference_audio`; the latter three
-are arrays. Top-level upload keys are also accepted for compatibility with the
+`source_video` (the single VFX source guide), `reference_images`,
+`reference_videos`, and `reference_audio`; reference fields are arrays. Top-level upload keys are also accepted for compatibility with the
 API supervisor. Output is an absolute `.mp4` path.
 
 Status JSON is replaced atomically and contains `phase`, `step`, `total_steps`

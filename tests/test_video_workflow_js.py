@@ -156,3 +156,13 @@ await assert.rejects(exportVideoWorkflow({family:'h3',config:{},signal:controlle
 await new Promise(r=>setTimeout(r,0));
 assert.equal(committed,false);assert.equal(rolledBack,true);assert.equal(cancelled,true);
 ''')
+
+
+def test_h3_import_keeps_source_video_distinct_from_reference_video():
+    run_js(r'''
+globalThis.window={location:{origin:'https://odysseus.test'}};
+const doc={format:'odysseus-video-workflow',version:1,family:'h3',config:{mode:'ref2va'},components:{}};
+globalThis.fetch=async(url,options)=>url.endsWith('/workflow/import')?{ok:true,json:async()=>({workflow:doc,inventory:{components:[]},attachments:[{field:'source_video',name:'source.mp4',url:'/api/video/h3/workflow/media/source'},{field:'reference_videos',name:'reference.mp4',url:'/api/video/h3/workflow/media/ref'}]})}:{ok:true,blob:async()=>new Blob(['video'],{type:'video/mp4'})};
+const result=await importVideoWorkflow(new File(['zip'],'workflow.zip'),{family:'h3',inventory:{}});
+assert.equal(result.uploads.source_video[0].name,'source.mp4');assert.equal(result.uploads.reference_videos[0].name,'reference.mp4');
+''')

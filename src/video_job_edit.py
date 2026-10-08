@@ -5,6 +5,7 @@ from pathlib import Path
 import uuid
 
 from src.h3_video import _locked, _read, _write
+from src.h3_vfx import normalize_vfx_inputs
 from src.video_workflow import specification, compatible
 
 
@@ -29,6 +30,10 @@ def _queued(manager, job_id, owner, expected=None):
 def _inputs(directory, manifest, extensions):
     source = manifest.get("uploads", manifest)
     names = manifest.get("input_names", {})
+    normalized = normalize_vfx_inputs(manifest.get("config", {}), source)
+    if "source_video" not in source and "source_video" in normalized and isinstance(names, dict):
+        names = {**names, "source_video": names.get("reference_videos", []), "reference_videos": []}
+    source = normalized
     result = {}
     for field in extensions:
         values = source.get(field) or []
@@ -49,6 +54,27 @@ def _inputs(directory, manifest, extensions):
             name = str(name).replace("\\", "/").rsplit("/", 1)[-1]
             name = "".join(c for c in name if c.isprintable())[:255] or path.name
             result[field].append({"index": index, "name": name, "size": path.stat().st_size, "path": str(path)})
+    return result
+
+
+def input_source_name(inputs, family):
+    """The guide/target clip names a VFX/BFS job; references keep their roles."""
+    field = "source_video" if inputs.get("source_video") or family == "bfs" else "reference_videos"
+    return (inputs.get(field) or [{}])[-1].get("name")
+
+
+def persist_legacy_inputs(manifest, inputs, family):
+    """Save promoted roles only as part of an explicitly requested job edit."""
+    source = manifest.get("uploads", manifest)
+    if family != "h3" or "source_video" in source or not inputs.get("source_video"):
+        return dict(manifest)
+    result = dict(manifest)
+    result.pop("uploads", None)
+    for field, values in inputs.items():
+        paths = [item["path"] for item in values]
+        result[field] = paths if field not in {"first_frame", "last_frame", "source_video"} else paths[0] if paths else []
+    result["input_names"] = {field: [item["name"] for item in values] for field, values in inputs.items() if values}
+    result["source_name"] = input_source_name(inputs, family)
     return result
 
 
@@ -128,7 +154,7 @@ def snapshot(manager, job_id, owner, family, *, expected=None, retain=None, inve
 def get_edit(manager, job_id, owner, family):
     result = snapshot(manager, job_id, owner, family)
     result["inputs"] = {field: [{k: item[k] for k in ("index", "name", "size")} for item in values]
-                        for field, values in result["inputs"].items() if values}
+                        for field, values in result["inputs"].items() if values or family == "h3" and field == "source_video"}
     return result
 
 
@@ -199,8 +225,8 @@ def commit_edit(manager, job_id, owner, family, raw, expected, retain, saved, na
             updated = dict(manifest)
             updated.pop("uploads", None)
             for field, values in inputs.items():
-                updated[field] = values if family == "h3" and field not in {"first_frame", "last_frame"} else values[0] if values else []
-            source_field = "reference_videos" if family == "h3" else "source_video"
+                updated[field] = values if family == "h3" and field not in {"first_frame", "last_frame", "source_video"} else values[0] if values else []
+            source_field = "source_video" if labels.get("source_video") or family == "bfs" else "reference_videos"
             updated.update(config=config, input_names=labels, source_name=(labels[source_field] or [None])[-1],
                            revision=expected + 1)
             # Supervisors from before editable queues read the manifest before

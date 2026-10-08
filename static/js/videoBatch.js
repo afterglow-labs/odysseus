@@ -14,8 +14,8 @@ const sessions = new Map();
 let unloadGuardInstalled = false;
 
 export function snapshotVideoBatch(value, family) {
-  const videoField = fieldFor(family);
-  if (!value?.config || value.videoField !== videoField) throw new Error('Choose a video workflow before adding a batch.');
+  const defaultField = fieldFor(family), videoField = value?.videoField;
+  if (!value?.config || !(videoField === defaultField || family === 'h3' && videoField === 'source_video')) throw new Error('Choose a video workflow before adding a batch.');
   const config = JSON.parse(JSON.stringify(value.config));
   const uploads = Object.fromEntries(Object.entries(value.uploads || {})
     .filter(([field]) => field !== videoField).map(([field, files]) => [field, [...files]]));
@@ -128,8 +128,13 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
   toggle.checked = retained?.checked || false;
   label.append(toggle, node('strong', '', 'Batch job')); panel.appendChild(label);
   const content = node('div', 'video-batch-content'); content.hidden = !toggle.checked; panel.appendChild(content);
-  content.appendChild(node('p', 'h3-video-muted', 'One video per job. Every file uses the same prompt, settings, and other attached inputs captured when you queue it. '
-    + (family === 'h3' ? 'Turn Batch job off to use multiple reference videos together in one job.' : 'Turn Batch job off to work with a single target video.')));
+  const explanation = node('p', 'h3-video-muted'); content.appendChild(explanation);
+  function describeVideoField(field) {
+    explanation.textContent = 'One video per job. Every file uses the same prompt, settings, and other attached inputs captured when you queue it. '
+      + (family === 'h3' && field === 'source_video' ? 'Each batch video is the VFX source to edit; your reference images, videos and audio are shared across every job.'
+        : family === 'h3' ? 'Turn Batch job off to use multiple reference videos together in one job.' : 'Turn Batch job off to work with a single target video.');
+  }
+  describeVideoField(fieldFor(family));
   const drop = node('div', 'video-batch-drop'); drop.tabIndex = 0; drop.setAttribute('role', 'button'); drop.setAttribute('aria-label', 'Add batch videos');
   drop.append(node('strong', '', 'Drop all your videos here'), node('span', 'h3-video-muted', 'or click to select multiple videos · MP4, MOV, M4V, WebM, MKV, AVI'));
   const input = node('input'); input.type = 'file'; input.multiple = true; input.accept = '.mp4,.mov,.m4v,.webm,.mkv,.avi'; input.hidden = true; input.dataset.batchFiles = '';
@@ -227,6 +232,7 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
   pauseButton.onclick = () => queue.pause(); clearButton.onclick = () => { queue.clear(); note.textContent = ''; error.hidden = true; };
   render();
   return {
+    setVideoField: describeVideoField,
     setEnabled(value, explanation = '', saved = {}) {
       enabled = !!value; reason = explanation;
       snapshotEnabled = saved.snapshotEnabled !== false; snapshotReason = saved.snapshotReason || ''; render();

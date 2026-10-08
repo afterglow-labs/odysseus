@@ -25,9 +25,10 @@ def stack(inventory, tmp_path):
     return inventory, raw
 
 
-def accept(stack, **changes):
+def accept(stack, uploads=None, **changes):
     inv, raw = stack
-    return h3.validate_config({**raw, **changes}, inv["components"], inv["gpus"], {"reference_videos": [None]})
+    return h3.validate_config({**raw, **changes}, inv["components"], inv["gpus"],
+                             {"source_video": [None]} if uploads is None else uploads)
 
 
 def test_stack_uses_each_strength_and_vfx_in_second_position(stack):
@@ -40,7 +41,8 @@ def test_stack_uses_each_strength_and_vfx_in_second_position(stack):
 
 def test_explicit_empty_stack_clears_legacy_adapter(stack):
     inv, raw = stack
-    result = accept(stack, loras=[], frames=124, lora=raw["loras"][1]["id"], lora_scale=1)
+    result = accept(stack, uploads={"reference_videos": [None]}, loras=[], frames=124,
+                    lora=raw["loras"][1]["id"], lora_scale=1)
     assert result["loras"] == [] and result["lora"] is None
     assert not result["prompt"].startswith("vfx_edit:")
 
@@ -62,7 +64,8 @@ def test_missing_duplicate_and_wrong_role_fail_before_queue(stack):
 
 def test_zero_strength_vfx_does_not_activate_guide_recipe(stack):
     _, raw = stack
-    result = accept(stack, frames=124, loras=[raw["loras"][0], {**raw["loras"][1], "strength": 0}])
+    result = accept(stack, uploads={"reference_videos": [None]}, frames=124,
+                    loras=[raw["loras"][0], {**raw["loras"][1], "strength": 0}])
     assert not result["prompt"].startswith("vfx_edit:")
     assert result["loras"][1]["strength"] == 0
 
@@ -80,17 +83,18 @@ def test_queue_draft_bulk_edit_and_rerun_keep_stack(stack):
     draft = _draft(saved, inv, "h3")
     assert draft["loras"] == raw["loras"]
     assert all("/" not in row["id"] for row in draft["loras"])
-    patched = _patched(saved, {"steps": 8}, inv, "h3", {"reference_videos": [None]})
+    inputs = {"source_video": [None], "reference_images": [None], "reference_videos": [None]}
+    patched = _patched(saved, {"steps": 8}, inv, "h3", inputs)
     assert patched["loras"] == saved["loras"] and patched["steps"] == 8
     replacement = [{**raw["loras"][1], "strength": 0.7}]
-    assert _patched(saved, {"loras": replacement}, inv, "h3", {"reference_videos": [None]})["loras"] == [
+    assert _patched(saved, {"loras": replacement}, inv, "h3", inputs)["loras"] == [
         {"path": saved["loras"][1]["path"], "strength": 0.7}]
 
 
 def test_legacy_strength_edit_keeps_other_adapters(stack):
     inv, _ = stack
     saved = accept(stack)
-    updated = _patched(saved, {"lora_scale": 0.9}, inv, "h3", {"reference_videos": [None]})
+    updated = _patched(saved, {"lora_scale": 0.9}, inv, "h3", {"source_video": [None]})
     assert [row["strength"] for row in updated["loras"]] == [0.9, 1.1]
     assert [row["strength"] for row in saved["loras"]] == [0.6, 1.1]
 

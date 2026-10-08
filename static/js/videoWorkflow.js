@@ -243,7 +243,7 @@ export async function importVideoWorkflow(file, { family, inventory, signal, onP
   const result = await uploadWorkflow(file, family, signal, onProgress);
   const resolved = resolveVideoWorkflow(result.workflow, { family, inventory: result.inventory || inventory, resolvedComponents: result.resolved_components || {} });
   for (const attachment of result.attachments || []) {
-    const allowed = family === 'h3' ? ['first_frame', 'last_frame', 'reference_images', 'reference_videos', 'reference_audio'] : ['identity_image', 'source_video', 'last_frame', 'mask_video'];
+    const allowed = family === 'h3' ? ['first_frame', 'last_frame', 'source_video', 'reference_images', 'reference_videos', 'reference_audio'] : ['identity_image', 'source_video', 'last_frame', 'mask_video'];
     if (!allowed.includes(attachment.field) || typeof attachment.name !== 'string' || /[\\/\x00]/.test(attachment.name)) throw new Error('Invalid workflow attachment.');
     const response = await fetch(localUrl(attachment.url, family), { credentials: 'same-origin', signal });
     if (!response.ok) throw new Error(`Could not restore ${attachment.name}.`);

@@ -25,6 +25,7 @@ import uuid
 
 from src.constants import BASE_DIR, COOKBOOK_STATE_FILE, DATA_DIR, GENERATED_IMAGES_DIR
 from src.hf_cache import effective_hf_cache
+from src.h3_vfx import VFX_LORAS, normalize_vfx_inputs
 from src.model_artifacts import _safetensors_kind
 
 log = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ TERMINAL = {"completed", "failed", "stopped"}
 _GPU_TELEMETRY_LOCK = threading.Lock()
 _GPU_TELEMETRY_CACHE = {"expires": 0., "payload": None}
 UPLOAD_EXTENSIONS = {
+    "source_video": {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"},
     "first_frame": {".jpg", ".jpeg", ".png", ".webp"},
     "last_frame": {".jpg", ".jpeg", ".png", ".webp"},
     "reference_images": {".jpg", ".jpeg", ".png", ".webp"},
@@ -207,7 +209,7 @@ def discover_components(roots):
                 # LightX2V uses ref2v/fl2v in LoRA names, while H3 checkpoints
                 # use ref2va/fl2va. They describe the same model families.
                 variant = "ref2va" if re.search(r"ref2va?(?:[_.-]|$)", lower) else "fl2va" if re.search(r"fl2va?(?:[_.-]|$)", lower) else "shared"
-                vfx_edit = role == "lora" and lower == VFX_EDIT_LORA
+                vfx_edit = role == "lora" and lower in VFX_LORAS
                 if vfx_edit:
                     variant = "ref2va"
                 components.append({"id": hashlib.sha256(str(resolved).encode()).hexdigest()[:32],
@@ -304,7 +306,7 @@ def validate_config(raw, components, gpus, uploads):
     config = {**DEFAULTS, **raw}
     by_id = {item["id"]: item for item in components}
     adapters = lora_entries(config)
-    vfx_edit = any(row["strength"] != 0 and by_id.get(row["id"], {}).get("name", "").lower() == VFX_EDIT_LORA for row in adapters)
+    vfx_edit = any(row["strength"] != 0 and by_id.get(row["id"], {}).get("name", "").lower() in VFX_LORAS for row in adapters)
     if "loras" in raw:
         config["lora_scale"] = adapters[0]["strength"] if adapters else 1
     if not isinstance(config["mode"], str) or config["mode"] not in {"t2va", "fl2va", "ref2va"}:
@@ -364,8 +366,9 @@ def validate_config(raw, components, gpus, uploads):
         config["loras"].append({"path": lora["path"], "strength": row["strength"]})
     config["lora"] = config["loras"][0]["path"] if config["loras"] else None
     config["lora_scale"] = config["loras"][0]["strength"] if config["loras"] else 1
+    uploads = normalize_vfx_inputs(config, uploads)
     counts = {key: len(uploads.get(key, [])) for key in UPLOAD_EXTENSIONS}
-    for key, limit in (("first_frame", 1), ("last_frame", 1), ("reference_images", 9),
+    for key, limit in (("source_video", 1), ("first_frame", 1), ("last_frame", 1), ("reference_images", 9),
                        ("reference_videos", 3), ("reference_audio", 3)):
         if counts[key] > limit:
             raise ValueError(f"At most {limit} {key.replace('_', ' ')} allowed")
@@ -373,19 +376,23 @@ def validate_config(raw, components, gpus, uploads):
     if reference_count > 12:
         raise ValueError("At most 12 reference files are allowed")
     if vfx_edit:
-        if config["mode"] != "ref2va" or counts["reference_videos"] != 1 or any(
-                counts[key] for key in counts if key != "reference_videos"):
-            raise ValueError("VFX Edit needs exactly one source video per job and no image, audio, or keyframe attachments")
-        if re.search(r"<(?:Picture|Video|Audio|Subject)\s+\d+>", prompt, re.I):
-            raise ValueError("VFX Edit uses the source as an aligned guide. Describe the edit directly without numbered Picture, Video, Audio, or Subject markers")
+        if config["mode"] != "ref2va" or counts["source_video"] != 1 or counts["first_frame"] or counts["last_frame"]:
+            raise ValueError("VFX Edit needs exactly one source video and Reference mode. Use reference images for an edited first frame.")
+        marker_limits = {"picture": counts["reference_images"], "subject": counts["reference_images"],
+                         "video": counts["reference_videos"], "audio": counts["reference_audio"] + counts["reference_videos"]}
+        for marker in re.finditer(r"<(Picture|Video|Audio|Subject)\s+(\d+)>", prompt, re.I):
+            if not 1 <= int(marker[2]) <= marker_limits[marker[1].lower()]:
+                raise ValueError("A numbered reference has no matching attachment. The source video is an aligned guide, not a numbered reference.")
         prompt = re.sub(r"^(?:vfx_edit:\s*)+", "", prompt.strip(), flags=re.I)
         if not prompt:
             raise ValueError("VFX Edit needs an edit instruction after vfx_edit:")
         config["prompt"] = "vfx_edit: " + prompt
         if len(config["prompt"]) > 16000:
             raise ValueError("The VFX Edit prompt including its prefix must be at most 16000 characters")
+    elif counts["source_video"]:
+        raise ValueError("A source video guide requires an active VFX Edit LoRA")
     if config["mode"] == "ref2va":
-        if not (counts["reference_images"] or counts["reference_videos"]) or counts["first_frame"] or counts["last_frame"]:
+        if not (vfx_edit or counts["reference_images"] or counts["reference_videos"]) or counts["first_frame"] or counts["last_frame"]:
             raise ValueError("Reference mode needs an image or video reference and does not accept first/last frames")
     elif config["mode"] == "fl2va":
         if not (counts["first_frame"] or counts["last_frame"]) or reference_count:
@@ -637,7 +644,7 @@ class H3JobManager:
             defaults["gpu"] = next((g["id"] for g in gpus if g.get("nvfp4")), gpus[0]["id"])
         preset, preset_error = installed_h3_preset(self.preset_file, components, gpus, defaults)
         return {"components": components, "gpus": gpus, "runtime_ready": not error, "batch_jobs": True,
-                "lora_stack": True, "max_loras": MAX_LORAS,
+                "lora_stack": True, "max_loras": MAX_LORAS, "vfx_references": True,
                 "runtime_error": error, "defaults": {**defaults, **(preset["config"] if preset else {})},
                 "base_defaults": defaults, "installed_preset": preset, "installed_preset_error": preset_error}
 

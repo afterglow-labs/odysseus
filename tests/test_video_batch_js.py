@@ -100,3 +100,20 @@ globalThis.XMLHttpRequest=class{constructor(){this.upload={};this.headers={}}ope
 const item={id:'stable-key',file:new File(['v'],'one.mp4'),snapshot:{config:{prompt:'Hi'},uploads:{},videoField:'reference_videos'}};
 const job=await submitVideoBatchJob('h3',item,p=>progress.push(p));assert.equal(job.id,'accepted');assert.equal(sent.headers['X-Odysseus-Submission-Id'],'stable-key');assert.equal(sent.body.getAll('reference_videos').length,1);assert.equal(progress[0].loaded,10);assert.equal(progress.at(-1).waiting,true);
 ''')
+
+
+def test_vfx_200_sources_keep_shared_reference_videos_images_and_audio_in_every_job():
+    run_js(r'''
+const references=[new File(['reference1'],'reference1.mp4'),new File(['reference2'],'reference2.mp4')];
+const image=new File(['image'],'clothing.png'),audio=new File(['sound'],'tone.wav');
+const sent=[];
+const q=new VideoBatchQueue({family:'h3',getSnapshot:()=>({config:{mode:'ref2va',prompt:'Use <Picture 1> only for the jacket',loras:[{id:'vfx',strength:1}]},videoField:'source_video',uploads:{source_video:[new File(['old'],'old.mp4')],reference_videos:references,reference_images:[image],reference_audio:[audio]}}),submit:async(family,item)=>{sent.push(videoBatchFormData(item));return {id:item.id,status:'queued'}}});
+q.add(Array.from({length:200},(_,index)=>new File(['source'],`source${index+1}.mp4`)));await q.run();
+assert.equal(sent.length,200);
+for(let index=0;index<sent.length;index++){
+ assert.equal(sent[index].getAll('source_video').length,1);assert.equal(sent[index].get('source_video').name,`source${index+1}.mp4`);
+ assert.deepEqual(sent[index].getAll('reference_videos'),references);assert.deepEqual(sent[index].getAll('reference_images'),[image]);assert.deepEqual(sent[index].getAll('reference_audio'),[audio]);
+ assert.deepEqual(JSON.parse(sent[index].get('config')).loras,[{id:'vfx',strength:1}]);
+}
+assert.equal(references.length,2);
+''')

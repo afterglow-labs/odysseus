@@ -25,27 +25,37 @@ def validate(bundle, uploads, **changes):
     return h3.validate_config({**raw, **changes}, inv["components"], inv["gpus"], uploads)
 
 
-def test_single_source_vfx_selection_canonicalizes_prefix_without_rewriting(vfx_inventory):
+@pytest.mark.parametrize("uploads", [{"source_video": [None]}, {"reference_videos": [None]}])
+def test_single_source_vfx_selection_canonicalizes_prefix_without_rewriting(vfx_inventory, uploads):
     _, raw = vfx_inventory
-    accepted = validate(vfx_inventory, {"reference_videos": [None]})
+    accepted = validate(vfx_inventory, uploads)
     assert accepted["prompt"] == "vfx_edit: " + raw["prompt"]
     assert accepted["frames"] == 73
-    assert validate(vfx_inventory, {"reference_videos": [None]}, prompt=accepted["prompt"])["prompt"] == accepted["prompt"]
+    assert validate(vfx_inventory, uploads, prompt=accepted["prompt"])["prompt"] == accepted["prompt"]
 
 
 @pytest.mark.parametrize("uploads", [{}, {"reference_videos": [None, None]},
-    {"reference_videos": [None], "reference_images": [None]},
-    {"reference_videos": [None], "reference_audio": [None]},
-    {"reference_videos": [None], "first_frame": [None]}])
+    {"source_video": [], "reference_videos": [None]}, {"source_video": [None, None]},
+    {"source_video": [None], "first_frame": [None]},
+    {"source_video": [None], "last_frame": [None]}])
 def test_vfx_rejects_incompatible_source_combinations(vfx_inventory, uploads):
-    with pytest.raises(ValueError, match="exactly one source video"):
+    with pytest.raises(ValueError, match="source video|keyframe|first.frame|last.frame"):
         validate(vfx_inventory, uploads)
 
 
-@pytest.mark.parametrize("prompt", ["Change <Video 1>", "Use <Picture 1>", "Preserve <Subject 1>", "Use <Audio 1>"])
-def test_vfx_cannot_mislabel_aligned_guide_as_native_reference(vfx_inventory, prompt):
-    with pytest.raises(ValueError, match="aligned guide"):
-        validate(vfx_inventory, {"reference_videos": [None]}, prompt=prompt)
+@pytest.mark.parametrize("prompt", ["Use <Video 1> motion", "Use the edited frame in <Picture 1>",
+                                    "Preserve <Subject 1> from <Picture 1>", "Use <Audio 1>"])
+def test_vfx_accepts_numbered_native_references_separate_from_source(vfx_inventory, prompt):
+    accepted = validate(vfx_inventory, {"source_video": [None], "reference_images": [None],
+        "reference_videos": [None], "reference_audio": [None]}, prompt=prompt)
+    assert accepted["prompt"] == "vfx_edit: " + prompt
+
+
+@pytest.mark.parametrize("refs", [{"reference_images": [None]}, {"reference_audio": [None]},
+                                 {"reference_images": [None], "reference_audio": [None]}])
+def test_legacy_source_accepts_additional_native_context(vfx_inventory, refs):
+    accepted = validate(vfx_inventory, {"reference_videos": [None], **refs})
+    assert accepted["prompt"].startswith("vfx_edit:")
 
 
 def test_short_vfx_frames_do_not_relax_generic_h3_validation(vfx_inventory):
@@ -80,6 +90,8 @@ def test_manual_vfx_enhancement_uses_edit_contract_and_source_timing(api, endpoi
     context = json.loads(message[1]["content"])
     assert context["recipe"] == "vfx_edit" and "duration_seconds" not in context
     assert "Match the source video" in context["timing"]
+    assert context["reference_counts"]["source_video"] == 1
+    assert context["reference_counts"]["reference_videos"] == 0
 
 
 def test_older_client_can_signal_vfx_enhancement_by_prefix(api, endpoints, inference):

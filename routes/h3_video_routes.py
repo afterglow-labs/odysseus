@@ -83,7 +83,7 @@ async def _store_uploads(directory, uploads, limit):
                 except Exception as exc:
                     raise HTTPException(400, "Invalid or excessively large reference image") from exc
             paths.append(str(path.resolve()))
-        saved[field] = paths[0] if field in {"first_frame", "last_frame"} and paths else paths
+        saved[field] = paths[0] if field in {"first_frame", "last_frame", "source_video"} and paths else paths
     return saved
 
 
@@ -190,11 +190,14 @@ def setup_h3_video_routes(manager=None):
                         raw_config = json.loads(raw_config)
                     except ValueError as exc:
                         raise HTTPException(400, "Invalid video config JSON") from exc
-                    uploads = {key: form.getlist(key) for key in UPLOAD_EXTENSIONS}
+                    uploads = {key: form.getlist(key) for key in UPLOAD_EXTENSIONS if key in form}
                     if any(not isinstance(value, UploadFile) for values in uploads.values() for value in values):
                         raise HTTPException(400, "Attachments must be uploaded files")
                     current = await asyncio.to_thread(manager.submission_inventory)
                     config = validate_config(raw_config, current["components"], current["gpus"], uploads)
+                    from src.h3_vfx import normalize_vfx_inputs
+                    uploads = normalize_vfx_inputs(config, uploads)
+                    uploads.setdefault("source_video", [])
                     if not current["runtime_ready"]:
                         raise HTTPException(503, current["runtime_error"])
                     directory = pending.stage()
