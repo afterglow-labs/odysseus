@@ -25,6 +25,18 @@ RUNTIME_REVISION = "5c460d8172fe30761ff67c0df3d5643bb74e0d70"
 GPU_UUID = re.compile(r"GPU-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
 
+def configure_cuda_allocator(environ=None):
+    """Apply this server's video-worker allocator setting before importing torch."""
+    environ = os.environ if environ is None else environ
+    configured = environ.get("ODYSSEUS_H3_PYTORCH_ALLOC_CONF")
+    if isinstance(configured, str) and configured.strip():
+        # Modern PyTorch reads this before the legacy PYTORCH_CUDA_ALLOC_CONF.
+        # Only this video worker changes; the API and other model servers retain
+        # their own allocator configuration.
+        environ["PYTORCH_ALLOC_CONF"] = configured.strip()
+        logging.info("Video worker PyTorch allocator configuration: %s", configured.strip())
+
+
 def configure_fast_storage(storage, roots=None):
     """Use explicitly trusted storage roots when WSL hides the backing NVMe.
 
@@ -563,9 +575,48 @@ class _LoRAInjectionStack:
             injection.eject(patcher)
 
 
+def configure_bounded_lora(bypass_hook_type, lora_type, *, max_residual_bytes=128 * 1024**2):
+    """Bound plain inference LoRA residuals without splitting the base forward.
+
+    In particular, NVFP4 activation scales must still see the complete input.
+    Only the additive, row-independent LoRA path is evaluated in pieces.
+    """
+    import torch
+    if max_residual_bytes <= 0:
+        raise ValueError("LoRA residual memory limit must be positive")
+    original = getattr(bypass_hook_type, "_odysseus_original_bypass_forward", bypass_hook_type._bypass_forward)
+    bypass_hook_type._odysseus_original_bypass_forward = original
+
+    def bounded_forward(hook, x, *args, **kwargs):
+        adapter = hook.adapter
+        if (torch.is_grad_enabled() or type(adapter) is not lora_type
+                or getattr(adapter, "is_conv", False) or x.ndim != 2):
+            return original(hook, x, *args, **kwargs)
+        up, down, _, mid, dora, reshape = adapter.weights
+        if (up.ndim != 2 or down.ndim != 2 or (mid is not None and mid.ndim != 2)
+                or dora is not None or reshape is not None):
+            return original(hook, x, *args, **kwargs)
+        chunk_rows = max(1, max_residual_bytes // (up.shape[0] * x.element_size()))
+        if x.shape[0] <= chunk_rows:
+            return original(hook, x, *args, **kwargs)
+        base_out = hook.original_forward(x, *args, **kwargs)
+        for start in range(0, x.shape[0], chunk_rows):
+            stop = start + chunk_rows
+            output_slice = base_out[start:stop]
+            # Keep native h(): alpha/rank, multiplier, optional mid projection,
+            # dtype casts and separate multiply rounding all remain intact.
+            output_slice.add_(adapter.h(x[start:stop], output_slice))
+        return adapter.g(base_out)
+
+    bypass_hook_type._bypass_forward = bounded_forward
+    logging.info("Plain inference LoRA residuals limited to %d MiB per tensor; base forwards retain full inputs",
+                 max_residual_bytes // 1024**2)
+
+
 class H3Runtime:
     """Small adapter over the pinned inference library; imports no server/main."""
     def __init__(self, runtime_path):
+        configure_cuda_allocator()
         runtime_path = Path(runtime_path)
         if not (runtime_path / "comfy_extras/nodes_minimax_h3.py").is_file():
             raise ValueError("MiniMax H3 runtime is missing; run scripts/setup_h3_runtime.py")
@@ -603,6 +654,9 @@ class H3Runtime:
         import comfy.utils
         import comfy.model_prefetch
         import comfy_aimdo.model_vbar
+        from comfy.weight_adapter.bypass import BypassForwardHook
+        from comfy.weight_adapter.lora import LoRAAdapter
+        configure_bounded_lora(BypassForwardHook, LoRAAdapter)
         import nodes
         from comfy_extras import nodes_audio, nodes_minimax_h3
         self.sd, self.sample, self.utils = comfy.sd, comfy.sample, comfy.utils

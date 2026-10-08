@@ -447,6 +447,15 @@ and allocation-watermark cleanup between conditioning and sampling, and again
 before decoding. After conditioning it unloads the Qwen encoder and clears
 unused allocator caches while retaining the VAEs on their selected GPU.
 
+`ODYSSEUS_H3_PYTORCH_ALLOC_CONF` sets the allocator configuration for video
+workers before PyTorch is imported, for example `expandable_segments:True`.
+Without it, existing PyTorch allocator environment settings are preserved.
+Plain inference LoRAs apply their additive residual in bounded chunks to avoid
+creating extra full-sequence tensors. The base model still sees its complete
+input, preserving NVFP4 activation scaling and attention context. Adapter
+strengths and stacking order are retained; training and custom adapters use
+their original implementation.
+
 Existing caches can be planned and migrated with
 `venv/bin/python scripts/migrate_model_library.py --help`. Planning is read-only.
 Execution verifies files, preserves repository/revision metadata, and records
