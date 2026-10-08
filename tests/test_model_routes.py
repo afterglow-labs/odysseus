@@ -1752,6 +1752,31 @@ def test_api_models_exposes_one_cookbook_model_with_legacy_alias(monkeypatch):
     assert result["items"][0]["model_aliases"] == {repo: actual}
 
 
+@pytest.mark.parametrize("actual", [
+    "/project/cache/hub/models--Example--Model-GGUF/snapshots/abc/model-Q8.gguf",
+    r"C:\cache\hub\models--Example--Model-GGUF\snapshots\abc\model-Q8.gguf",
+])
+def test_reused_local_endpoint_resolves_exact_hf_repository_alias(actual):
+    repo = "Example/Model-GGUF"
+    ep = _route_ep("82858cad", "http://localhost:8001/v1", name="Renamed endpoint",
+                   endpoint_kind="local", cached_models=[actual], pinned_models=[repo, "my-deployment"])
+    assert model_routes._cookbook_model_aliases(ep) == {repo: actual}
+    assert model_routes._picker_models_for_endpoint(ep, ep.base_url, "local") == ([actual, "my-deployment"], ["my-deployment"])
+    assert json.loads(ep.pinned_models) == [repo, "my-deployment"]
+
+
+@pytest.mark.parametrize("kind,cached,pin", [
+    ("api", ["/cache/models--Example--Model-GGUF/snapshots/a/model.gguf"], "Example/Model-GGUF"),
+    ("local", ["/cache/models--Example--Model-GGUF-Other/snapshots/a/model.gguf"], "Example/Model-GGUF"),
+    ("local", ["/cache/models--Example--Model-GGUF/snapshots/a/model.gguf"], "Other/Model-GGUF"),
+    ("local", ["/cache/models--Example--Model-GGUF/snapshots/a/q4.gguf", "/cache/models--Example--Model-GGUF/snapshots/a/q8.gguf"], "Example/Model-GGUF"),
+])
+def test_reused_endpoint_alias_requires_exact_unambiguous_local_repository(kind, cached, pin):
+    ep = _route_ep("82858cad", "http://localhost:8001/v1", name="Model-GGUF",
+                   endpoint_kind=kind, cached_models=cached, pinned_models=[pin])
+    assert model_routes._cookbook_model_aliases(ep) == {}
+
+
 def test_api_models_rejects_api_token_without_chat_scope(monkeypatch):
     router = model_routes.setup_model_routes(model_discovery=None)
 

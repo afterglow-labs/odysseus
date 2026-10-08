@@ -1373,10 +1373,23 @@ def _cookbook_model_aliases(ep) -> Dict[str, str]:
     cached = _cached_model_ids(ep)
     if len(cached) != 1:
         return {}
+    def same_cached_repository(model_id):
+        # Cookbook can reuse an existing local endpoint whose ID has no
+        # local- prefix. A repository's exact HF cache directory proves this
+        # pin names the one served GGUF; a similar basename does not.
+        if (_endpoint_kind(ep) != "local"
+                or (getattr(ep, "model_type", None) or "llm") != "llm"
+                or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", model_id)):
+            return False
+        actual = cached[0].replace("\\", "/")
+        folder = "models--" + model_id.replace("/", "--")
+        return actual.lower().endswith(".gguf") and folder in actual.split("/")[:-1]
+
     return {
         mid: cached[0]
         for mid in _normalize_model_ids(getattr(ep, "pinned_models", None))
-        if mid != cached[0] and _is_cookbook_launch_placeholder(ep, mid)
+        if mid != cached[0] and (_is_cookbook_launch_placeholder(ep, mid)
+                                or same_cached_repository(mid))
     }
 
 
