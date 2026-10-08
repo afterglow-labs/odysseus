@@ -42,15 +42,18 @@ def _owned(manager, job_id, owner):
 
 
 def _order(row):
-    return row.get("queue_order", int((row.get("created_at") or 0) * 1_000_000_000)), row.get("id", "")
+    order = row.get("queue_order")
+    if order is None:
+        order = int((row.get("created_at") or 0) * 1_000_000_000)
+    return order, row.get("id", "")
 
 
-def _light(directory, state, inventory, family):
+def _light(directory, state, inventory, family, *, resolved_paths=None):
     manifest = _read(directory / "manifest.json")
     config = manifest.get("config")
     result = {key: state.get(key) for key in ("id", "status", "created_at", "started_at", "finished_at", "queue_order")}
     result.update(revision=revision(manifest), source_name=manifest.get("source_name", state.get("source_name")),
-                  config=_draft(config, inventory, family) if isinstance(config, dict) else {})
+                  config=_draft(config, inventory, family, resolved_paths=resolved_paths) if isinstance(config, dict) else {})
     return result
 
 
@@ -71,7 +74,7 @@ def list_jobs(manager, owner, family, status="queued"):
                 continue
             entries.append((directory, state))
     inventory = manager.submission_inventory() if entries else {"components": []}
-    jobs = []
+    jobs, resolved_paths = [], {}
     for directory, _ in entries:
         # Deletion/edit can change the snapshot while inventory is scanned.
         try:
@@ -81,13 +84,13 @@ def list_jobs(manager, owner, family, status="queued"):
                     continue
                 if status == "finished" and state.get("status") not in TERMINAL:
                     continue
-                jobs.append(_light(directory, state, inventory, family))
+                jobs.append(_light(directory, state, inventory, family, resolved_paths=resolved_paths))
         except FileNotFoundError:
             continue
     return sorted(jobs, key=_order)
 
 
-def _patched(config, patch, inventory, family, inputs):
+def _patched(config, patch, inventory, family, inputs, *, resolved_paths=None):
     if not isinstance(patch, dict):
         raise ValueError("Parameter changes must be a JSON object")
     settings, roles, _ = specification(family, config)
@@ -95,7 +98,7 @@ def _patched(config, patch, inventory, family, inputs):
     allowed |= roles | {"vae_gpu", "loras"} if family == "h3" else {"components"}
     if patch.keys() - allowed:
         raise ValueError("Cannot bulk edit setting: " + sorted(patch.keys() - allowed)[0])
-    raw = _draft(config, inventory, family)
+    raw = _draft(config, inventory, family, resolved_paths=resolved_paths)
     if family == "bfs" and "components" in patch:
         changes = patch["components"]
         if not isinstance(changes, dict) or changes.keys() - roles:
@@ -112,7 +115,7 @@ def _patched(config, patch, inventory, family, inputs):
 
 
 def _prepare_locked(manager, owner, family, chosen, patch, inventory, *, queued):
-    prepared = []
+    prepared, resolved_paths = [], {}
     for item in chosen:
         directory, state = _owned(manager, item["id"], owner)
         if queued and (state.get("status") != "queued" or (directory / "cancel").exists()):
@@ -125,7 +128,7 @@ def _prepare_locked(manager, owner, family, chosen, patch, inventory, *, queued)
             raise ValueError("A selected job has no usable workflow settings")
         _, _, extensions = specification(family, config)
         inputs = _inputs(directory, manifest, extensions)
-        updated = _patched(config, patch, inventory, family, inputs)
+        updated = _patched(config, patch, inventory, family, inputs, resolved_paths=resolved_paths)
         prepared.append({"directory": directory, "state": state, "manifest": manifest, "config": updated, "inputs": inputs})
     return sorted(prepared, key=lambda item: _order(item["state"]))
 
@@ -161,7 +164,8 @@ def edit_jobs(manager, owner, family, chosen, patch):
             if rollback_errors:
                 raise RuntimeError("Disk error while saving; refresh the queue to inspect revisions for: " + ", ".join(rollback_errors)) from exc
             raise RuntimeError("Could not save the bulk edit; all original settings were restored") from exc
-        jobs = [_light(item["directory"], item["state"], inventory, family) for item in prepared]
+        resolved_paths = {}
+        jobs = [_light(item["directory"], item["state"], inventory, family, resolved_paths=resolved_paths) for item in prepared]
     return {"updated": len(jobs), "succeeded": len(jobs), "failed": 0, "jobs": jobs}
 
 

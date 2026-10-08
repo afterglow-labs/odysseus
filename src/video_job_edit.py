@@ -78,7 +78,18 @@ def persist_legacy_inputs(manifest, inputs, family):
     return result
 
 
-def _draft(config, inventory, family):
+def _draft(config, inventory, family, *, resolved_paths=None):
+    # Inventory paths can cross a network mount. Resolve each distinct path
+    # once per snapshot request, not once per component per saved job. Keep this
+    # cache request-scoped so a moved/relinked model is reconsidered next time.
+    resolved_paths = {} if resolved_paths is None else resolved_paths
+
+    def resolve(value):
+        key = str(value)
+        if key not in resolved_paths:
+            resolved_paths[key] = Path(value).resolve()
+        return resolved_paths[key]
+
     settings, roles, _ = specification(family, config)
     result = {key: value for key, value in config.items() if key in settings | {"gpu", "vae_gpu"}}
     choices = {}
@@ -90,10 +101,10 @@ def _draft(config, inventory, family):
         # IDs, not server paths, are the only accepted component selections.
         # Keep an unavailable selection visible instead of replacing it with a
         # different checkpoint when a cache has moved or disconnected.
-        path = Path(value).resolve()
+        path = resolve(value)
         choices[role] = next((row["id"] for row in inventory["components"]
-                              if Path(row["path"]).resolve() == path
-                              and compatible(row, role, family, config)),
+                              if compatible(row, role, family, config)
+                              and resolve(row["path"]) == path),
                              hashlib.sha256(str(path).encode()).hexdigest()[:32])
     if family == "bfs":
         result["components"] = choices
@@ -116,9 +127,9 @@ def _draft(config, inventory, family):
             from src.h3_loras import lora_entries
             result["loras"] = []
             for row in lora_entries(config, "path"):
-                path = Path(row["path"]).resolve()
+                path = resolve(row["path"])
                 identity = next((item["id"] for item in inventory["components"]
-                                 if item.get("role") == "lora" and Path(item["path"]).resolve() == path),
+                                 if item.get("role") == "lora" and resolve(item["path"]) == path),
                                 hashlib.sha256(str(path).encode()).hexdigest()[:32])
                 result["loras"].append({"id": identity, "strength": row["strength"]})
     return result
