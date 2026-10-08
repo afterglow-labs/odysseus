@@ -6,6 +6,7 @@ identities can be cancelled. No shell commands or caller-supplied paths are used
 """
 
 from contextlib import contextmanager
+import csv
 import hashlib
 import importlib.util
 import json
@@ -23,19 +24,26 @@ import time
 import uuid
 
 from src.constants import BASE_DIR, COOKBOOK_STATE_FILE, DATA_DIR, GENERATED_IMAGES_DIR
+from src.hf_cache import effective_hf_cache
 from src.model_artifacts import _safetensors_kind
 
 log = logging.getLogger(__name__)
 PROJECT_ROOT = Path(BASE_DIR).resolve()
 JOB_ROOT = Path(DATA_DIR) / "video_jobs" / "h3"
+H3_DEFAULTS_FILE = Path(DATA_DIR) / "h3_video_defaults.json"
+VFX_EDIT_LORA = "minimax_h3_vfx_edit_v1.0_r128.safetensors"
 RUNTIME_ROOT = PROJECT_ROOT / "runtimes" / "minimax-h3" / "ComfyUI"
 ACTIVE = {"queued", "running"}
 JOB_ID = re.compile(r"^[a-f0-9]{32}$")
 MARKER = "ODYSSEUS_H3_JOB"
+SUPERVISOR_CONTROL_VERSION = 1
 DEFAULTS = {"mode": "t2va", "width": 960, "height": 544, "frames": 124,
             "steps": 20, "seed": 42, "sampler": "euler", "scheduler": "simple",
             "shift_video": 12.0, "shift_audio": 3.0, "lora_scale": 1.0,
-            "reference_size": "match", "gpu": "0"}
+            "reference_size": "match", "gpu": "0", "vae_gpu": ""}
+TERMINAL = {"completed", "failed", "stopped"}
+_GPU_TELEMETRY_LOCK = threading.Lock()
+_GPU_TELEMETRY_CACHE = {"expires": 0., "payload": None}
 UPLOAD_EXTENSIONS = {
     "first_frame": {".jpg", ".jpeg", ".png", ".webp"},
     "last_frame": {".jpg", ".jpeg", ".png", ".webp"},
@@ -68,12 +76,62 @@ def _write(path, value):
 
 
 @contextmanager
-def _locked(path):
+def _locked(path, *, blocking=True):
     import fcntl
     with Path(path).open("a") as stream:
         os.chmod(path, 0o600)
-        fcntl.flock(stream, fcntl.LOCK_EX)
-        yield
+        try:
+            fcntl.flock(stream, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        except BlockingIOError:
+            yield None
+            return
+        yield stream
+
+
+def _queue_entries(root, *, reconcile=False):
+    """Both workflow families share one FIFO, including pre-queue running jobs."""
+    root = Path(root)
+    roots = [root]
+    if root.name in {"h3", "bfs"}:
+        roots.append(root.with_name("bfs" if root.name == "h3" else "h3"))
+    entries = []
+    processes = None
+    for base in roots:
+        if not base.is_dir():
+            continue
+        manager = H3JobManager(root=base)
+        for directory in base.iterdir():
+            if not directory.is_dir() or not JOB_ID.fullmatch(directory.name):
+                continue
+            state = _read(directory / "state.json")
+            if state.get("status") not in ACTIVE:
+                continue
+            if reconcile:
+                if processes is None:
+                    processes = _snapshot()
+                state = manager._state(directory.name, snapshot=processes)
+            if state.get("status") in ACTIVE:
+                entries.append((directory, state))
+    return sorted(entries, key=lambda entry: (
+        entry[1].get("queue_order", int(entry[1].get("created_at", 0) * 1_000_000_000)), entry[0].name))
+
+
+def _has_turn(directory):
+    # Called while holding the execution lock, then the submission lock. Never
+    # wait for either lock while holding a job lock (cancel takes only job locks).
+    with _locked(directory.parent.parent / "video-render.lock"):
+        entries = _queue_entries(directory.parent, reconcile=True)
+        if any(state["status"] == "running" for _, state in entries):
+            return False
+        paused = _read(directory.parent.parent / "video-queue-control.json").get("paused_owners", {})
+        paused = paused if isinstance(paused, dict) else {}
+        eligible = [(path, state) for path, state in entries if not paused.get(str(state.get("owner")), False)]
+        return bool(eligible and eligible[0][0] == directory)
+
+
+def _owner_queue_paused(directory, owner):
+    paused = _read(directory.parent.parent / "video-queue-control.json").get("paused_owners", {})
+    return bool(isinstance(paused, dict) and paused.get(str(owner), False))
 
 
 def _redact(value):
@@ -92,8 +150,10 @@ def _tail(path, limit=8000):
 
 
 def cache_roots(project=PROJECT_ROOT, state_file=COOKBOOK_STATE_FILE):
-    roots = [Path(project) / "cache/huggingface/hub", Path.home() / ".cache/huggingface/hub",
+    roots = [Path(project) / "cache/huggingface/hub",
              Path(project) / "runtimes/minimax-h3/models"]
+    if any(os.environ.get(key) for key in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_HOME", "XDG_CACHE_HOME")):
+        roots.append(Path(effective_hf_cache()))
     state = _read(state_file)
     environment = state.get("env") if isinstance(state.get("env"), dict) else {}
     servers = environment.get("servers") if isinstance(environment.get("servers"), list) else []
@@ -144,17 +204,24 @@ def discover_components(roots):
                     role = "model"
                 else:
                     continue
-                variant = "ref2va" if "ref2va" in lower else "fl2va" if "fl2va" in lower else "shared"
+                # LightX2V uses ref2v/fl2v in LoRA names, while H3 checkpoints
+                # use ref2va/fl2va. They describe the same model families.
+                variant = "ref2va" if re.search(r"ref2va?(?:[_.-]|$)", lower) else "fl2va" if re.search(r"fl2va?(?:[_.-]|$)", lower) else "shared"
+                vfx_edit = role == "lora" and lower == VFX_EDIT_LORA
+                if vfx_edit:
+                    variant = "ref2va"
                 components.append({"id": hashlib.sha256(str(resolved).encode()).hexdigest()[:32],
                                    "name": name, "path": str(path.absolute()), "role": role,
-                                   "variant": variant, "nvfp4": "nvfp4" in lower})
+                                   "variant": variant, "nvfp4": "nvfp4" in lower,
+                                   **({"recipe": "vfx_edit"} if vfx_edit else {})})
     return sorted(components, key=lambda row: (row["role"], row["name"], row["path"]))
 
 
 def gpu_inventory():
+    from src.nvidia_smi import run_nvidia_smi
     try:
-        result = subprocess.run(["nvidia-smi", "--query-gpu=uuid,name,compute_cap",
-                                 "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=5)
+        result = run_nvidia_smi(["--query-gpu=uuid,name,compute_cap",
+                                 "--format=csv,noheader,nounits"], timeout=5)
         if result.returncode:
             return []
         gpus = []
@@ -169,6 +236,46 @@ def gpu_inventory():
         return gpus
     except (OSError, subprocess.SubprocessError):
         return []
+
+
+def gpu_telemetry():
+    """Short-lived read-only driver telemetry; never initialize a CUDA context."""
+    from src.nvidia_smi import run_nvidia_smi
+    with _GPU_TELEMETRY_LOCK:
+        if _GPU_TELEMETRY_CACHE["expires"] > time.monotonic():
+            payload = _GPU_TELEMETRY_CACHE["payload"]
+        else:
+            payload = {"gpus": []}
+            try:
+                result = run_nvidia_smi([
+                    "--query-gpu=uuid,name,memory.used,memory.total,utilization.gpu",
+                    "--format=csv,noheader,nounits"], timeout=2)
+                if result.returncode:
+                    raise RuntimeError("Driver query failed")
+                for values in csv.reader(result.stdout.splitlines()):
+                    if len(values) != 5:
+                        continue
+                    identity, name, used, total, utilization = [value.strip() for value in values]
+                    if not identity.startswith("GPU-"):
+                        continue
+                    def number(raw, maximum=None):
+                        try:
+                            value = float(raw)
+                            if not math.isfinite(value) or value < 0 or (maximum is not None and value > maximum):
+                                return None
+                            return round(value)
+                        except ValueError:
+                            return None
+                    payload["gpus"].append({"id": identity, "name": name,
+                                           "memory_used_mib": number(used), "memory_total_mib": number(total),
+                                           "utilization_percent": number(utilization, 100)})
+                if not payload["gpus"]:
+                    payload["error"] = "No NVIDIA GPU telemetry is available"
+            except (OSError, subprocess.SubprocessError, RuntimeError):
+                payload["error"] = "NVIDIA GPU telemetry is temporarily unavailable"
+            _GPU_TELEMETRY_CACHE.update(expires=time.monotonic() + 2., payload=payload)
+        # Do not expose mutable cache data to inventory/UI callers.
+        return {**payload, "gpus": [dict(row) for row in payload["gpus"]]}
 
 
 def runtime_error(runtime=RUNTIME_ROOT, worker=None):
@@ -190,16 +297,22 @@ def runtime_error(runtime=RUNTIME_ROOT, worker=None):
 def validate_config(raw, components, gpus, uploads):
     if not isinstance(raw, dict):
         raise ValueError("config must be a JSON object")
-    allowed = set(DEFAULTS) | {"prompt", "model", "encoder", "video_vae", "audio_vae", "lora"}
+    from src.h3_loras import lora_entries
+    allowed = set(DEFAULTS) | {"prompt", "model", "encoder", "video_vae", "audio_vae", "lora", "loras"}
     if set(raw) - allowed:
         raise ValueError("Unknown generation setting: " + sorted(set(raw) - allowed)[0])
     config = {**DEFAULTS, **raw}
+    by_id = {item["id"]: item for item in components}
+    adapters = lora_entries(config)
+    vfx_edit = any(row["strength"] != 0 and by_id.get(row["id"], {}).get("name", "").lower() == VFX_EDIT_LORA for row in adapters)
+    if "loras" in raw:
+        config["lora_scale"] = adapters[0]["strength"] if adapters else 1
     if not isinstance(config["mode"], str) or config["mode"] not in {"t2va", "fl2va", "ref2va"}:
         raise ValueError("Choose text, first/last frame, or reference generation")
     prompt = config.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 16000:
         raise ValueError("A prompt of 1–16,000 characters is required")
-    for key, low, high in (("width", 256, 1920), ("height", 256, 1920), ("frames", 124, 362),
+    for key, low, high in (("width", 256, 1920), ("height", 256, 1920), ("frames", 73 if vfx_edit else 124, 362),
                            ("steps", 1, 100), ("seed", 0, 2**63 - 1)):
         value = config[key]
         if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
@@ -222,12 +335,11 @@ def validate_config(raw, components, gpus, uploads):
     if gpu is None:
         raise ValueError("Choose an available NVIDIA GPU")
     config["gpu"] = gpu["id"]
-    by_id = {item["id"]: item for item in components}
+    vae_gpu = config["vae_gpu"]
+    if not isinstance(vae_gpu, str) or (vae_gpu and not any(g["id"] == vae_gpu for g in gpus)):
+        raise ValueError("Choose an available NVIDIA GPU for the VAEs, or use the model GPU")
     selected = {}
-    for role in ("model", "encoder", "video_vae", "audio_vae", "lora"):
-        if role == "lora" and config.get(role) in (None, ""):
-            config[role] = None
-            continue
+    for role in ("model", "encoder", "video_vae", "audio_vae"):
         item = by_id.get(config.get(role)) if isinstance(config.get(role), str) else None
         if item is None or item["role"] != role or not Path(item["path"]).is_file():
             raise ValueError(f"Choose a cached {role.replace('_', ' ')} from the component list")
@@ -238,6 +350,20 @@ def validate_config(raw, components, gpus, uploads):
     wanted = "ref2va" if config["mode"] == "ref2va" else "fl2va"
     if selected["model"]["variant"] != wanted:
         raise ValueError(f"{config['mode']} requires a {wanted.upper()} checkpoint")
+    config["loras"], paths = [], set()
+    for row in adapters:
+        lora = by_id.get(row["id"])
+        if not lora or lora["role"] != "lora" or not Path(lora["path"]).is_file():
+            raise ValueError("Choose a cached lora from the component list")
+        path = Path(lora["path"]).resolve()
+        if path in paths:
+            raise ValueError("The same LoRA file cannot be selected more than once")
+        paths.add(path)
+        if row["strength"] != 0 and lora.get("variant", "shared") not in {"shared", wanted}:
+            raise ValueError(f"{lora['name']} is a {lora['variant'].upper()} LoRA; choose a compatible LoRA for {config['mode']} mode")
+        config["loras"].append({"path": lora["path"], "strength": row["strength"]})
+    config["lora"] = config["loras"][0]["path"] if config["loras"] else None
+    config["lora_scale"] = config["loras"][0]["strength"] if config["loras"] else 1
     counts = {key: len(uploads.get(key, [])) for key in UPLOAD_EXTENSIONS}
     for key, limit in (("first_frame", 1), ("last_frame", 1), ("reference_images", 9),
                        ("reference_videos", 3), ("reference_audio", 3)):
@@ -246,6 +372,18 @@ def validate_config(raw, components, gpus, uploads):
     reference_count = sum(counts[key] for key in ("reference_images", "reference_videos", "reference_audio"))
     if reference_count > 12:
         raise ValueError("At most 12 reference files are allowed")
+    if vfx_edit:
+        if config["mode"] != "ref2va" or counts["reference_videos"] != 1 or any(
+                counts[key] for key in counts if key != "reference_videos"):
+            raise ValueError("VFX Edit needs exactly one source video per job and no image, audio, or keyframe attachments")
+        if re.search(r"<(?:Picture|Video|Audio|Subject)\s+\d+>", prompt, re.I):
+            raise ValueError("VFX Edit uses the source as an aligned guide. Describe the edit directly without numbered Picture, Video, Audio, or Subject markers")
+        prompt = re.sub(r"^(?:vfx_edit:\s*)+", "", prompt.strip(), flags=re.I)
+        if not prompt:
+            raise ValueError("VFX Edit needs an edit instruction after vfx_edit:")
+        config["prompt"] = "vfx_edit: " + prompt
+        if len(config["prompt"]) > 16000:
+            raise ValueError("The VFX Edit prompt including its prefix must be at most 16000 characters")
     if config["mode"] == "ref2va":
         if not (counts["reference_images"] or counts["reference_videos"]) or counts["first_frame"] or counts["last_frame"]:
             raise ValueError("Reference mode needs an image or video reference and does not accept first/last frames")
@@ -270,6 +408,62 @@ def _live_record(record, snapshot=None):
 def _identity(pid):
     value = _snapshot().get(pid)
     return {"pid": pid, "start": value[1]} if value else None
+
+
+def _verify_waiting_supervisor(directory, previous):
+    """Validate an exact recorded waiter before changing its process."""
+    current = _snapshot()
+    if _live_record(previous, current):
+        excluded = {1, os.getpid()}
+        ancestor = os.getppid()
+        while ancestor and ancestor not in excluded:
+            excluded.add(ancestor)
+            ancestor = current.get(ancestor, (0, ""))[0]
+        if previous["pid"] in excluded:
+            raise RuntimeError("Could not verify the queued job's supervisor")
+        if sys.platform.startswith("linux"):
+            try:
+                command = Path(f"/proc/{previous['pid']}/cmdline").read_bytes().split(b"\0")
+                expected = [b"-m", b"src.h3_video", b"--supervise", str((directory / "manifest.json").resolve()).encode()]
+                if command[1:5] != expected:
+                    raise RuntimeError("Could not verify the queued job's supervisor")
+            except FileNotFoundError:
+                if _live_record(previous):
+                    raise RuntimeError("Could not verify the queued job's supervisor")
+
+
+def _stop_supervisor(record):
+    """Stop one verified waiting supervisor, never its process group."""
+    if not _live_record(record):
+        return
+    pid = record["pid"]
+    if pid in {1, os.getpid(), os.getppid()}:
+        raise RuntimeError("Could not verify the queued job's supervisor")
+    handle = None
+    try:
+        if hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal"):
+            handle = os.pidfd_open(pid)
+        for sig, wait in ((signal.SIGTERM, 1.0), (signal.SIGKILL, 2.0)):
+            if not _live_record(record):
+                return
+            try:
+                if handle is not None:
+                    signal.pidfd_send_signal(handle, sig)
+                else:
+                    os.kill(pid, sig)
+            except ProcessLookupError:
+                return
+            deadline = time.monotonic() + wait
+            while time.monotonic() < deadline:
+                if not _live_record(record):
+                    return
+                time.sleep(.025)
+        raise RuntimeError("Could not update this queued job's supervisor; retry Edit")
+    except ProcessLookupError:
+        return
+    finally:
+        if handle is not None:
+            os.close(handle)
 
 
 def _owned_workers(directory):
@@ -333,6 +527,10 @@ def _save_gallery(manifest, state):
     metadata = {key: value for key, value in manifest["config"].items()
                 if key not in {"model", "encoder", "video_vae", "audio_vae", "lora"}}
     metadata["job_id"] = state["id"]
+    progress = _read(manifest["status_path"])
+    for key in ("frames", "fps", "duration", "width", "height", "audio_mode"):
+        if key in progress:
+            metadata[key] = progress[key]
     metadata["lora"] = Path(manifest["config"]["lora"]).name if manifest["config"].get("lora") else None
     with SessionLocal() as db:
         row = db.query(GalleryImage).filter(GalleryImage.id == state["id"]).first()
@@ -340,7 +538,7 @@ def _save_gallery(manifest, state):
             row = GalleryImage(id=state["id"], filename=state["filename"], owner=state["owner"],
                                prompt=manifest["config"]["prompt"], model=Path(manifest["config"]["model"]).name,
                                caption=json.dumps(metadata), size=f"{metadata['width']}x{metadata['height']}",
-                               tags="video,minimax-h3,generated", width=metadata["width"], height=metadata["height"],
+                               tags=("video,bfs," + manifest["config"]["family"] + ",generated") if manifest["config"].get("workflow_id") else "video,minimax-h3,generated", width=metadata["width"], height=metadata["height"],
                                file_size=source.stat().st_size)
             db.add(row)
         temporary = target.with_suffix(".tmp")
@@ -350,29 +548,108 @@ def _save_gallery(manifest, state):
         db.commit()
 
 
+def installed_h3_preset(path, components, gpus, defaults):
+    """Resolve an optional local installation preset against this exact scan.
+
+    Only new drafts consume these defaults. Submission/edit/rerun validation
+    never merges them, so installing a LoRA cannot rewrite existing jobs.
+    """
+    path = Path(path)
+    if not path.is_file():
+        return None, ""
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(document, dict) or set(document) != {"format_version", "id", "name", "config"}:
+            raise ValueError("Expected format_version, id, name, and config")
+        if type(document["format_version"]) is not int or document["format_version"] != 1:
+            raise ValueError("Unsupported preset format")
+        if not isinstance(document["id"], str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,95}", document["id"]):
+            raise ValueError("Invalid preset id")
+        if not isinstance(document["name"], str) or not document["name"].strip() or len(document["name"]) > 160:
+            raise ValueError("Invalid preset name")
+        values = document["config"]
+        roles = {"model", "encoder", "video_vae", "audio_vae", "lora"}
+        allowed = roles | {"mode", "steps", "sampler", "scheduler", "shift_video", "shift_audio", "lora_scale", "loras"}
+        if (not isinstance(values, dict) or set(values) - allowed or not {"mode", "model"} <= set(values)
+                or not {"lora", "loras"} & set(values)):
+            raise ValueError("Preset requires mode, model, and lora, with recognized settings only")
+        resolved = dict(values)
+        for role in roles & set(values):
+            value = values[role]
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"Invalid {role} selection")
+            matches = [item for item in components if item["role"] == role and
+                       (item["id"] == value or Path(item["path"]).resolve() == Path(value).expanduser().resolve())]
+            if len(matches) != 1:
+                raise ValueError(f"Installed {role.replace('_', ' ')} was not found in the cached component scan")
+            resolved[role] = matches[0]["id"]
+        if "loras" in values:
+            from src.h3_loras import lora_entries
+            resolved["loras"] = []
+            for row in lora_entries(values):
+                value = row["id"]
+                matches = [item for item in components if item["role"] == "lora" and
+                           (item["id"] == value or Path(item["path"]).resolve() == Path(value).expanduser().resolve())]
+                if len(matches) != 1:
+                    raise ValueError("Installed lora was not found in the cached component scan")
+                resolved["loras"].append({"id": matches[0]["id"], "strength": row["strength"]})
+        candidate = {**defaults, **resolved, "prompt": "Installed H3 preset validation"}
+        for role in roles - {"model", "lora"}:
+            if role not in candidate:
+                item = next((item for item in components if item["role"] == role), None)
+                if item:
+                    candidate[role] = item["id"]
+        inputs = {"reference_videos": [None]} if candidate["mode"] == "ref2va" else {"first_frame": [None]} if candidate["mode"] == "fl2va" else {}
+        validate_config(candidate, components, gpus, inputs)
+        revision = hashlib.sha256(json.dumps({"id": document["id"], "config": resolved}, sort_keys=True).encode()).hexdigest()[:24]
+        return {"id": document["id"], "name": document["name"], "revision": revision, "config": resolved}, ""
+    except (OSError, ValueError, TypeError, RuntimeError) as error:
+        return None, f"Installed H3 preset unavailable: {error}"
+
+
 class H3JobManager:
     def __init__(self, root=JOB_ROOT, *, project=PROJECT_ROOT, runtime=RUNTIME_ROOT,
-                 worker=None, gallery_directory=GENERATED_IMAGES_DIR):
+                 worker=None, gallery_directory=GENERATED_IMAGES_DIR, preset_file=H3_DEFAULTS_FILE):
         self.root, self.project, self.runtime = Path(root), Path(project), Path(runtime)
         self.worker = Path(worker or self.project / "scripts/h3_video_worker.py")
         self.gallery_directory = Path(gallery_directory)
+        self.preset_file = Path(preset_file)
+        self._submission_inventory_lock = threading.Lock()
+        self._submission_inventory_cache = None
+
+    def submission_inventory(self):
+        """Reuse one short scan across a burst of serial batch uploads."""
+        with self._submission_inventory_lock:
+            cached = self._submission_inventory_cache
+            if cached is None or cached[0] <= time.monotonic():
+                inventory = self.inventory()
+                cached = (time.monotonic() + 10, inventory)
+                self._submission_inventory_cache = cached
+            return cached[1]
 
     def inventory(self):
+        from src.h3_loras import MAX_LORAS
         components = discover_components(cache_roots(self.project))
         gpus = gpu_inventory()
         error = runtime_error(self.runtime, self.worker)
         defaults = dict(DEFAULTS)
         if gpus:
             defaults["gpu"] = next((g["id"] for g in gpus if g.get("nvfp4")), gpus[0]["id"])
-        return {"components": components, "gpus": gpus, "runtime_ready": not error,
-                "runtime_error": error, "defaults": defaults}
+        preset, preset_error = installed_h3_preset(self.preset_file, components, gpus, defaults)
+        return {"components": components, "gpus": gpus, "runtime_ready": not error, "batch_jobs": True,
+                "lora_stack": True, "max_loras": MAX_LORAS,
+                "runtime_error": error, "defaults": {**defaults, **(preset["config"] if preset else {})},
+                "base_defaults": defaults, "installed_preset": preset, "installed_preset_error": preset_error}
 
     def directory(self, job_id):
         if not isinstance(job_id, str) or not JOB_ID.fullmatch(job_id):
             raise FileNotFoundError("Video job not found")
-        return self.root / job_id
+        directory = self.root / job_id
+        if directory.is_symlink():
+            raise FileNotFoundError("Video job not found")
+        return directory
 
-    def _state(self, job_id, owner=None):
+    def _state(self, job_id, owner=None, *, snapshot=None):
         directory = self.directory(job_id)
         state = _read(directory / "state.json")
         if not state or (owner is not None and state.get("owner") != owner):
@@ -380,23 +657,40 @@ class H3JobManager:
         if state.get("status") in ACTIVE:
             with _locked(directory / "job.lock"):
                 state = _read(directory / "state.json")
-                if state.get("status") in ACTIVE and not _live_record(state.get("supervisor")):
+                if state.get("status") in ACTIVE and not _live_record(state.get("supervisor"), snapshot):
                     active = _owned_workers(directory)
                     if active:
-                        state["phase"] = "Supervisor interrupted; stop this job before starting another"
+                        state.update(status="running", phase="Supervisor interrupted; stop this job to continue the queue")
                     elif time.time() - state.get("created_at", 0) > 15:
                         state.update(status="failed", error="Render process ended without a completion receipt", phase="failed", finished_at=time.time())
                     _write(directory / "state.json", state)
         return state
 
-    def view(self, job_id, owner):
-        state = self._state(job_id, owner)
+    def view(self, job_id, owner, *, queue_positions=None, snapshot=None):
+        state = self._state(job_id, owner, snapshot=snapshot)
         directory = self.directory(job_id)
+        # Read the current atomic launch snapshot after verifying ownership.
+        # Older/interrupted jobs may not have a usable manifest.
+        manifest = _read(directory / "manifest.json")
+        config = manifest.get("config")
+        prompt = config.get("prompt") if isinstance(config, dict) else None
         progress = _read(directory / "progress.json")
-        result = {key: state.get(key) for key in ("id", "status", "phase", "error", "filename", "created_at", "finished_at")}
-        if state["status"] in ACTIVE:
+        result = {key: state.get(key) for key in ("id", "status", "phase", "error", "filename", "created_at", "started_at", "finished_at")}
+        source_name = manifest.get("source_name", state.get("source_name"))
+        result["source_name"] = source_name if isinstance(source_name, str) else None
+        result["revision"] = manifest.get("revision", 0)
+        result["submission_id"] = state.get("submission_id") if isinstance(state.get("submission_id"), str) else None
+        if state["status"] == "queued" and queue_positions is None:
+            waiting = [path.name for path, row in _queue_entries(self.root) if row["status"] == "queued"]
+            queue_positions = {identifier: index + 1 for index, identifier in enumerate(waiting)}
+        result["queue_position"] = (queue_positions or {}).get(job_id) if state["status"] == "queued" else None
+        result["prompt"] = prompt if isinstance(prompt, str) else None
+        result["gpu"] = config.get("gpu") if isinstance(config, dict) and isinstance(config.get("gpu"), str) else None
+        result["vae_gpu"] = config.get("vae_gpu", "") if isinstance(config, dict) and isinstance(config.get("vae_gpu", ""), str) else ""
+        if state["status"] == "running":
             result["phase"] = progress.get("phase", result["phase"])
-        result.update(step=progress.get("step", 0), total_steps=progress.get("total_steps", state.get("steps", 0)),
+        steps = config.get("steps", state.get("steps", 0)) if isinstance(config, dict) else state.get("steps", 0)
+        result.update(step=progress.get("step", 0), total_steps=progress.get("total_steps", steps),
                       log_tail=_tail(directory / "render.log"),
                       url=f"/api/video/h3/jobs/{job_id}/video" if state["status"] == "completed" else None)
         if result.get("error"):
@@ -406,40 +700,52 @@ class H3JobManager:
     def jobs(self, owner):
         if not self.root.is_dir():
             return []
+        # A large batch needs one queue scan and one process enumeration per
+        # list response, not one of each for every queued job.
+        queued = _queue_entries(self.root)
+        waiting = [path.name for path, row in queued if row["status"] == "queued"]
+        positions = {identifier: index + 1 for index, identifier in enumerate(waiting)}
+        snapshot = _snapshot() if queued else {}
         result = []
         for directory in self.root.iterdir():
             if directory.is_dir() and JOB_ID.fullmatch(directory.name):
                 try:
-                    result.append(self.view(directory.name, owner))
+                    result.append(self.view(directory.name, owner, queue_positions=positions, snapshot=snapshot))
                 except FileNotFoundError:
                     pass
         return sorted(result, key=lambda row: row["created_at"], reverse=True)
 
-    def stage(self):
+    def stage(self, job_id=None):
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        job_id = uuid.uuid4().hex
-        directory = self.root / job_id
+        job_id = job_id or uuid.uuid4().hex
+        directory = self.directory(job_id)
         directory.mkdir(mode=0o700)
         return directory
 
     def launch(self, directory, owner, config, uploads):
         directory = Path(directory)
-        with _locked(self.root / "active.lock"):
-            for other in self.root.iterdir():
-                if other.is_dir() and JOB_ID.fullmatch(other.name) and (other / "state.json").exists():
-                    if self._state(other.name).get("status") in ACTIVE:
-                        raise RuntimeError("Another H3 video is rendering. Stop it or wait for completion first.")
+        # Persist the FIFO receipt before starting a lightweight supervisor. Its
+        # worker will acquire the separate execution lock only when it has turn.
+        with _locked(self.root.parent / "video-render.lock"):
             if shutil.disk_usage(self.root).free < 512 * 1024 * 1024:
                 raise RuntimeError("At least 512 MB of free space is required for a video render")
-            state = {"id": directory.name, "owner": owner, "status": "queued", "phase": "starting",
-                     "error": None, "filename": directory.name + ".mp4", "created_at": time.time(), "steps": config["steps"]}
-            manifest = {"config": config, **uploads, "runtime_path": str(self.runtime.resolve()),
+            previous = _read(self.root.parent / "video-queue.json").get("last_order", 0)
+            order = max(time.time_ns(), previous + 1)
+            _write(self.root.parent / "video-queue.json", {"last_order": order})
+            state = {"id": directory.name, "owner": owner, "status": "queued", "phase": "queued", "queue_order": order,
+                     "error": None, "filename": directory.name + ".mp4", "created_at": time.time(), "steps": config["steps"],
+                     "supervisor_edit_version": 1, "supervisor_control_version": SUPERVISOR_CONTROL_VERSION}
+            submission = _read(directory / "submission.json")
+            state.update(source_name=submission.get("source_name"), submission_id=submission.get("submission_id"))
+            manifest = {"config": config, "revision": 0, **uploads, "runtime_path": str(self.runtime.resolve()),
                         "output_path": str((directory / "output.mp4").resolve()),
                         "status_path": str((directory / "progress.json").resolve()),
                         "worker_path": str(self.worker.resolve()), "gallery_directory": str(self.gallery_directory.resolve()),
                         "project_path": str(self.project.resolve())}
-            _write(directory / "state.json", state)
+            manifest.update(input_names=submission.get("input_names", {}), source_name=state["source_name"],
+                            submission_id=state["submission_id"])
             _write(directory / "manifest.json", manifest)
+            _write(directory / "state.json", state)
             env = os.environ.copy()
             env[MARKER] = directory.name
             env["PYTHONUNBUFFERED"] = "1"
@@ -458,6 +764,46 @@ class H3JobManager:
             threading.Thread(target=process.wait, daemon=True).start()
             return self.view(directory.name, owner)
 
+    def upgrade_queued_supervisor(self, directory, state):
+        """Called only under job.lock, before an edited manifest is published.
+
+        Old waiting supervisors may have imported the manifest-before-lock
+        renderer. Replace just this job's waiter. Start the replacement first
+        so a spawn failure leaves the original queue receipt and waiter intact.
+        Neither waiter can start a worker until this job lock is released.
+        """
+        if (state.get("supervisor_edit_version", 0) >= 1
+                and state.get("supervisor_control_version", 0) >= SUPERVISOR_CONTROL_VERSION):
+            return
+        if state.get("status") != "queued" or state.get("worker") or _owned_workers(directory):
+            raise RuntimeError("This job has started rendering and cannot be edited")
+        previous = state.get("supervisor")
+        _verify_waiting_supervisor(directory, previous)
+        env = os.environ.copy()
+        env[MARKER], env["PYTHONUNBUFFERED"] = directory.name, "1"
+        try:
+            with (directory / "render.log").open("ab") as output:
+                process = subprocess.Popen([sys.executable, "-m", "src.h3_video", "--supervise",
+                                            str((directory / "manifest.json").resolve())],
+                                           cwd=self.project, env=env, stdout=output, stderr=subprocess.STDOUT,
+                                           stdin=subprocess.DEVNULL, start_new_session=True)
+        except OSError as exc:
+            raise RuntimeError("Could not prepare the queued job for editing; its original settings are unchanged") from exc
+        replacement = _identity(process.pid)
+        if replacement is None:
+            process.wait(timeout=3)
+            raise RuntimeError("The updated video supervisor ended before the edit was saved")
+        try:
+            _stop_supervisor(previous)
+        except BaseException:
+            _stop_supervisor(replacement)
+            process.wait(timeout=3)
+            raise
+        state.update(supervisor=replacement, supervisor_edit_version=1,
+                     supervisor_control_version=SUPERVISOR_CONTROL_VERSION)
+        _write(directory / "state.json", state)
+        threading.Thread(target=process.wait, daemon=True).start()
+
     def cancel(self, job_id, owner):
         state = self._state(job_id, owner)
         directory = self.directory(job_id)
@@ -474,6 +820,68 @@ class H3JobManager:
                 _write(directory / "state.json", state)
         return self.view(job_id, owner)
 
+    def delete(self, job_id, owner):
+        """Remove only a terminal owned job whose complete process tree exited.
+
+        Submission and job locks serialize deletion with queue/cancel operations.
+        Keep the state receipt until the last filesystem operation so an I/O
+        failure leaves an owner-authorized record that can be retried safely.
+        """
+        self._state(job_id, owner)
+        directory = self.directory(job_id)
+        with _locked(self.root.parent / "video-render.lock"):
+            with _locked(directory / "job.lock"):
+                state = _read(directory / "state.json")
+                if not state or state.get("owner") != owner:
+                    raise FileNotFoundError("Video job not found")
+                if state.get("status") not in TERMINAL:
+                    raise RuntimeError("Stop the running or queued job before deleting it")
+                if _live_record(state.get("supervisor")) or _owned_workers(directory):
+                    raise RuntimeError("The video process is still exiting; wait for it to stop before deleting this job")
+                expected = job_id + ".mp4"
+                if state.get("id") != job_id or state.get("filename") != expected:
+                    raise RuntimeError("The saved video job has inconsistent output metadata")
+                self._delete_gallery(job_id, owner, expected)
+                try:
+                    for entry in directory.iterdir():
+                        if entry.name in {"state.json", "job.lock"}:
+                            continue
+                        if entry.is_dir() and not entry.is_symlink():
+                            shutil.rmtree(entry)
+                        else:
+                            entry.unlink(missing_ok=True)
+                    (directory / "state.json").unlink()
+                    (directory / "job.lock").unlink()
+                    directory.rmdir()
+                except OSError as exc:
+                    # Restore the receipt if final removal failed; a following
+                    # request can retry, and cannot reinterpret it as active.
+                    if directory.is_dir() and not (directory / "state.json").exists():
+                        _write(directory / "state.json", state)
+                    raise RuntimeError("Could not remove all video job files; retry Delete") from exc
+        return {"deleted": True, "id": job_id}
+
+    def _delete_gallery(self, job_id, owner, filename):
+        from core.database import GalleryAlbum, GalleryImage, SessionLocal
+        try:
+            with SessionLocal() as db:
+                row = db.query(GalleryImage).filter(GalleryImage.id == job_id).first()
+                collision = db.query(GalleryImage).filter(GalleryImage.filename == filename).first()
+                if (row is not None and (row.owner != owner or row.filename != filename)) or (collision is not None and collision.id != job_id):
+                    raise RuntimeError("The Gallery output does not match this video's owner and job")
+                if row is not None:
+                    db.query(GalleryAlbum).filter(GalleryAlbum.owner == owner, GalleryAlbum.cover_id == job_id).update(
+                        {GalleryAlbum.cover_id: None}, synchronize_session=False)
+                    db.delete(row)
+                    db.commit()
+            # Only this manager's configured gallery directory is trusted, never
+            # a path from a manifest. unlink removes a symlink, not its target.
+            (self.gallery_directory / filename).unlink(missing_ok=True)
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError("Could not remove the saved Gallery output; retry Delete") from exc
+
     def video_path(self, job_id, owner):
         state = self._state(job_id, owner)
         path = self.directory(job_id) / "output.mp4"
@@ -482,25 +890,30 @@ class H3JobManager:
         return path, state["filename"]
 
 
-def supervise(manifest_path):
-    """Detached supervisor persists completion even when the web server restarts."""
-    manifest_path = Path(manifest_path)
+def _render(manifest_path, execution_lock):
     directory = manifest_path.parent
-    manifest = _read(manifest_path)
     try:
-        with _locked(directory / "job.lock"):
+        # Dispatch commits under the same lock used by pause and bulk changes.
+        # The execution lease is already held; never acquire it while holding a
+        # submission or job lock. Release the submission lock after spawning so
+        # queue controls remain responsive throughout a long render.
+        with _locked(directory.parent.parent / "video-render.lock"), _locked(directory / "job.lock"):
             state = _read(directory / "state.json")
-            if (directory / "cancel").exists():
-                state.update(status="stopped", phase="stopped", finished_at=time.time())
-                _write(directory / "state.json", state)
+            if state.get("status") not in ACTIVE or (directory / "cancel").exists():
+                if state.get("status") in ACTIVE:
+                    state.update(status="stopped", phase="stopped", finished_at=time.time())
+                    _write(directory / "state.json", state)
                 return
+            if _owner_queue_paused(directory, state.get("owner")):
+                return False
+            manifest = _read(manifest_path)
             env = os.environ.copy()
             env[MARKER] = directory.name
             env["CUDA_VISIBLE_DEVICES"] = str(manifest["config"]["gpu"])
             process = subprocess.Popen([sys.executable, manifest["worker_path"], "--job", str(manifest_path)],
                                        cwd=manifest["project_path"], env=env, stdin=subprocess.DEVNULL,
-                                       start_new_session=True)
-            state.update(status="running", phase="loading model", worker=_identity(process.pid))
+                                       start_new_session=True, pass_fds=(execution_lock.fileno(),))
+            state.update(status="running", phase="loading model", started_at=time.time(), worker=_identity(process.pid))
             if state["worker"]:
                 _write(directory / "processes.json", {str(process.pid): state["worker"]["start"]})
             _write(directory / "state.json", state)
@@ -528,6 +941,10 @@ def supervise(manifest_path):
             _write(directory / "state.json", state)
     except BaseException as exc:
         log.exception("H3 supervisor failed")
+        # Even if bookkeeping fails after spawning, do not hand the execution
+        # slot to another job until shutdown has been checked. Surviving owned
+        # descendants remain recorded as running and block every waiting job.
+        stop_workers(directory, grace=0.25)
         with _locked(directory / "job.lock"):
             state = _read(directory / "state.json")
             # If descendants remain, keep the job stoppable and block relaunch.
@@ -536,6 +953,26 @@ def supervise(manifest_path):
             if not alive:
                 state["finished_at"] = time.time()
             _write(directory / "state.json", state)
+
+
+def supervise(manifest_path):
+    """Wait durably without loading models, then run one job with exclusive VRAM."""
+    manifest_path = Path(manifest_path).resolve()
+    directory = manifest_path.parent
+    while True:
+        with _locked(directory / "job.lock"):
+            state = _read(directory / "state.json")
+            if state.get("status") not in ACTIVE:
+                return
+            if (directory / "cancel").exists():
+                state.update(status="stopped", phase="stopped", error=None, finished_at=time.time())
+                _write(directory / "state.json", state)
+                return
+        with _locked(directory.parent.parent / "video-execution.lock", blocking=False) as lease:
+            if lease is not None and _has_turn(directory):
+                if _render(manifest_path, lease) is not False:
+                    return
+        time.sleep(0.5)
 
 
 if __name__ == "__main__":

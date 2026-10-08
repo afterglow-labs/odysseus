@@ -1780,14 +1780,13 @@ export function _expandModelRow(row, modelData) {
       //      reasoning/tool parser registered for it).
       // Both cases would otherwise fail 10s-3min into the launch with a
       // cryptic shell error. Best-effort: a venv activated only by the
-      // launch wrapper can false-negative the PATH check, in which case
-      // the launch proceeds and the existing diagnosis layer handles it.
-      if (_qrRunBackend === 'vllm' || _qrRunBackend === 'sglang') {
+      // launch wrapper can false-negative the PATH check. SGLang uses its
+      // backend preflight instead: its managed environment may intentionally
+      // differ from the server's global python3.
+      if (_qrRunBackend === 'vllm') {
         try {
           const _qrHostStr = _envState.remoteHost || '';
-          const _coreCheck = _qrRunBackend === 'vllm'
-            ? "command -v vllm >/dev/null 2>&1 && vllm --version 2>&1 | grep -oE '[0-9]+\\.[0-9]+(\\.[0-9]+)?' | head -1 || echo MISSING"
-            : "python3 -c 'import sglang, sys; sys.stdout.write(sglang.__version__)' 2>/dev/null || echo MISSING";
+          const _coreCheck = "command -v vllm >/dev/null 2>&1 && vllm --version 2>&1 | grep -oE '[0-9]+\\.[0-9]+(\\.[0-9]+)?' | head -1 || echo MISSING";
           const _wrappedCheck = _qrHostStr
             ? `ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new ${_qrHostStr} "bash -lc ${JSON.stringify(_coreCheck)}"`
             : `bash -lc ${JSON.stringify(_coreCheck)}`;
@@ -1803,10 +1802,8 @@ export function _expandModelRow(row, modelData) {
             const _stderr = String(_chk.stderr || '').trim();
             const _out = `${_stdout}\n${_stderr}`;
             if (_out.includes('MISSING')) {
-              const _pkg = _qrRunBackend === 'vllm' ? 'vLLM' : 'SGLang';
-              const _hint = _qrRunBackend === 'vllm'
-                ? 'uv pip install -U vllm --torch-backend auto'
-                : "pip install -U 'sglang[all]'";
+              const _pkg = 'vLLM';
+              const _hint = 'uv pip install -U vllm --torch-backend auto';
               uiModule.showError(`Can't launch: ${_pkg} isn't installed${_qrHostStr ? ' on ' + _qrHostStr : ''}. Install it first:\n${_hint}`);
               return;
             }
@@ -1817,10 +1814,8 @@ export function _expandModelRow(row, modelData) {
             const _verMatch = _stdout.match(/(\d+\.\d+(?:\.\d+)?)/);
             const _curVer = _verMatch ? _verMatch[1] : '';
             if (_minVer && _curVer && _cmpSemver(_curVer, _minVer) < 0) {
-              const _pkg = _qrRunBackend === 'vllm' ? 'vLLM' : 'SGLang';
-              const _hint = _qrRunBackend === 'vllm'
-                ? 'uv pip install -U vllm --torch-backend auto'
-                : "pip install -U 'sglang[all]'";
+              const _pkg = 'vLLM';
+              const _hint = 'uv pip install -U vllm --torch-backend auto';
               uiModule.showError(`Can't launch: ${modelData.name} needs ${_pkg} ≥ ${_minVer}, but ${_curVer} is installed${_qrHostStr ? ' on ' + _qrHostStr : ''}. Upgrade:\n${_hint}`);
               return;
             }

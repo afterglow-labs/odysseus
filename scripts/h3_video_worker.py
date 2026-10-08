@@ -19,7 +19,9 @@ import time
 
 FPS = 24
 AUDIO_RATE = 32000
+VFX_EDIT_LORA = "minimax_h3_vfx_edit_v1.0_r128.safetensors"
 RUNTIME_REVISION = "5c460d8172fe30761ff67c0df3d5643bb74e0d70"
+GPU_UUID = re.compile(r"GPU-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
 
 def atomic_json(path, value):
@@ -36,6 +38,7 @@ class Progress:
         self.total_steps = total_steps
         self.step = 0
         self.started = time.time()
+        self.details = {}
 
     def __call__(self, phase, step=None, **extra):
         if step is not None:
@@ -43,7 +46,54 @@ class Progress:
         atomic_json(self.path, {"phase": phase, "step": self.step,
                                "total_steps": self.total_steps,
                                "elapsed_seconds": round(time.time() - self.started, 2),
+                               **self.details,
                                **extra})
+
+
+def is_vfx_edit(config):
+    """Only the installed standard adapter opts into the source-guide recipe."""
+    return any(Path(item["path"]).name.lower() == VFX_EDIT_LORA and item["strength"] != 0
+               for item in lora_stack(config))
+
+
+def lora_stack(config):
+    """Read the ordered manifest stack; an explicit empty list disables LoRAs."""
+    if "loras" in config:
+        return config["loras"]
+    return ([{"path": config["lora"], "strength": config.get("lora_scale", 1)}]
+            if config.get("lora") else [])
+
+
+def validate_loras(config):
+    adapters = lora_stack(config)
+    if not isinstance(adapters, list) or len(adapters) > 8:
+        raise ValueError("loras must be a list of at most 8 adapters")
+    result, seen = [], set()
+    for index, item in enumerate(adapters, 1):
+        if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+            raise ValueError(f"LoRA {index} must have an absolute .safetensors path")
+        path = Path(item["path"])
+        if not path.is_absolute() or not path.is_file() or path.suffix.lower() != ".safetensors":
+            raise ValueError(f"LoRA {index} must be an existing absolute .safetensors path")
+        identity = path.resolve()
+        if identity in seen:
+            raise ValueError("Each LoRA may appear only once in the stack")
+        seen.add(identity)
+        try:
+            strength = _number(item, "strength", 1, -4, 4)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"LoRA {index} strength must be a finite number between -4 and 4") from error
+        result.append({"path": str(path), "strength": strength})
+    config["loras"] = result
+    config["lora"] = result[0]["path"] if result else None
+    config["lora_scale"] = result[0]["strength"] if result else 1.0
+
+
+def vfx_edit_prompt(prompt):
+    body = re.sub(r"^(?:vfx_edit:\s*)+", "", prompt.strip(), flags=re.IGNORECASE)
+    if not body:
+        raise ValueError("VFX Edit needs an edit instruction after vfx_edit:")
+    return "vfx_edit: " + body
 
 
 def _number(config, name, default, low, high, integral=False):
@@ -56,6 +106,21 @@ def _number(config, name, default, low, high, integral=False):
     return int(value) if integral else value
 
 
+def visible_gpu_ids(config):
+    """Primary first, optional VAE UUID second; called before importing torch."""
+    primary = str(config.get("gpu", "0"))
+    if not (primary.isascii() and primary.isdecimal()) and not GPU_UUID.fullmatch(primary):
+        raise ValueError("Choose one GPU index or NVIDIA GPU UUID for MiniMax H3")
+    vae = config.get("vae_gpu", "")
+    if vae is None:
+        vae = ""
+    if not isinstance(vae, str) or (vae and not GPU_UUID.fullmatch(vae)):
+        raise ValueError("Choose an NVIDIA GPU UUID for the separate VAE GPU, or leave it empty")
+    if not vae or vae.lower() == primary.lower():
+        return (primary,)
+    return primary, vae
+
+
 def validate_job(manifest):
     config = dict(manifest["config"])
     uploads = manifest.get("uploads", manifest)
@@ -66,18 +131,16 @@ def validate_job(manifest):
         raise ValueError("A prompt is required")
     if len(config["prompt"]) > 16000:
         raise ValueError("Prompt is too long")
-    for name in ("model", "encoder", "video_vae", "audio_vae", "lora"):
+    for name in ("model", "encoder", "video_vae", "audio_vae"):
         value = config.get(name)
-        if name == "lora" and not value:
-            continue
         path = Path(value or "")
         if not path.is_absolute() or not path.is_file() or path.suffix.lower() != ".safetensors":
             raise ValueError(f"{name} must be an existing absolute .safetensors path")
         config[name] = str(path)
-    gpu = str(config.get("gpu", "0"))
-    if not re.fullmatch(r"(?:\d+|GPU-[0-9a-fA-F-]{36})", gpu):
-        raise ValueError("Choose one GPU index or NVIDIA GPU UUID for MiniMax H3")
-    config["gpu"] = gpu
+    validate_loras(config)
+    devices = visible_gpu_ids(config)
+    config["gpu"] = devices[0]
+    config["vae_gpu"] = devices[1] if len(devices) > 1 else ""
     for name, default, low, high in (("width", 960, 32, 2048), ("height", 544, 32, 2048),
                                    ("frames", 124, 5, 362), ("steps", 20, 1, 100)):
         config[name] = _number(config, name, default, low, high, True)
@@ -91,8 +154,7 @@ def validate_job(manifest):
     if isinstance(seed, bool) or str(seed).strip() != str(int(seed)) or not 0 <= int(seed) <= 2**64 - 1:
         raise ValueError("seed must be an unsigned 64-bit integer")
     config["seed"] = int(seed)
-    for name, default, low, high in (("shift_video", 12, 0.01, 100), ("shift_audio", 3, 0.01, 100),
-                                   ("lora_scale", 1, -4, 4)):
+    for name, default, low, high in (("shift_video", 12, 0.01, 100), ("shift_audio", 3, 0.01, 100)):
         config[name] = _number(config, name, default, low, high)
     for name, default, choices in (("sampler", "euler", {"euler", "res_multistep"}),
                                    ("scheduler", "simple", {"simple", "normal"}),
@@ -108,6 +170,18 @@ def validate_job(manifest):
         media[name] = values
     for name in ("first_frame", "last_frame"):
         media[name] = uploads.get(name) or None
+    if is_vfx_edit(config):
+        if config["mode"] != "ref2va":
+            raise ValueError("VFX Edit requires reference mode with a Ref2VA base model")
+        if len(media["reference_videos"]) != 1:
+            raise ValueError("VFX Edit needs exactly one source video")
+        if media["reference_images"] or media["reference_audio"] or media["first_frame"] or media["last_frame"]:
+            raise ValueError("Standard VFX Edit accepts only the source video; remove images, audio references and keyframes")
+        if re.search(r"<(?:Picture|Video|Audio|Subject)\s+\d+>", config["prompt"], re.IGNORECASE):
+            raise ValueError("VFX Edit uses an aligned source guide; describe the edit without numbered Picture, Video, Audio, or Subject markers")
+        config["prompt"] = vfx_edit_prompt(config["prompt"])
+        if len(config["prompt"]) > 16000:
+            raise ValueError("VFX Edit prompt, including vfx_edit:, must be at most 16,000 characters")
     total = sum(len(media[name]) for name in ("reference_images", "reference_videos", "reference_audio"))
     if total > 12:
         raise ValueError("At most 12 references are supported")
@@ -240,6 +314,8 @@ def read_video(path):
 
 
 def prepare_media(media, config):
+    if is_vfx_edit(config):
+        return prepare_vfx_media(media, config)
     prepared = {}
     area = config["width"] * config["height"]
     for name in ("first_frame", "last_frame"):
@@ -276,8 +352,53 @@ def prepare_media(media, config):
     return prepared
 
 
+def _vfx_canvas(width, height, area):
+    """Keep source aspect within the selected pixel budget and H3's grid."""
+    scale = min(math.sqrt(area / (width * height)), 2048 / width, 2048 / height)
+    out_w, out_h = (max(32, round(axis * scale / 32) * 32) for axis in (width, height))
+    ratio = width / height
+    while out_w * out_h > area:
+        candidates = [(w, h) for w, h in ((out_w - 32, out_h), (out_w, out_h - 32))
+                      if w >= 32 and h >= 32]
+        out_w, out_h = min(candidates, key=lambda size: abs(math.log(size[0] / size[1] / ratio)))
+    return out_w, out_h
+
+
+def prepare_vfx_media(media, config):
+    """Pad the complete source for sampling, retaining its original output length."""
+    import torch
+
+    frames, soundtrack, _, _ = read_video(media["reference_videos"][0])
+    output_frames = len(frames)
+    if output_frames < 73:
+        raise ValueError("VFX Edit needs at least 73 source frames at 24 fps (about 3.05 seconds)")
+    sampling_frames = output_frames + (5 - output_frames) % 17
+    if sampling_frames > 362:
+        raise ValueError("VFX Edit source video must not exceed 15 seconds")
+    config["frames"] = sampling_frames
+    config["width"], config["height"] = _vfx_canvas(
+        frames.shape[2], frames.shape[1], config["width"] * config["height"])
+    # H3 crops non-grid guides down. Repeat only the last frame to fill its
+    # grid, then remove those padding frames after decoding, before muxing.
+    padding = sampling_frames - output_frames
+    if padding:
+        frames = torch.cat((frames, frames[-1:].expand(padding, *frames.shape[1:])), dim=0)
+    silence = {"waveform": torch.zeros((1, 2, round(sampling_frames / FPS * AUDIO_RATE)),
+                                       dtype=torch.float32, device="cpu"),
+               "sample_rate": AUDIO_RATE}
+    soundtrack = soundtrack if soundtrack is not None else silence
+    soundtrack = {**soundtrack, "waveform": soundtrack["waveform"][
+        ..., :round(output_frames / FPS * soundtrack["sample_rate"])]}
+    logging.info("VFX Edit source guide: %d output frames, %d sampling frames at %d fps, %dx%d; retaining the source soundtrack",
+                 output_frames, sampling_frames, FPS, config["width"], config["height"])
+    # The author's standard graph guides with EmptyAudio. Preserve the actual
+    # source soundtrack separately for muxing; a silent source stays silent.
+    return {"guide_video": frames, "guide_audio": silence,
+            "source_audio": soundtrack, "output_frames": output_frames}
+
+
 def mux_mp4(output_path, frames, audio, fps=FPS):
-    """Encode RGB frames and generated audio into one atomic H.264/AAC MP4."""
+    """Encode RGB frames and their selected audio into one atomic H.264/AAC MP4."""
     import av
     import numpy as np
 
@@ -342,6 +463,34 @@ def mux_mp4(output_path, frames, audio, fps=FPS):
         temporary.unlink(missing_ok=True)
 
 
+class _LoRAInjectionStack:
+    """Compose forward wrappers and undo them in reverse nesting order.
+
+    The pinned core replaces the ``bypass_lora`` slot for each adapter, and
+    normally ejects injection lists in forward order. Retaining one composite
+    avoids dropping earlier adapters or leaving stale wrappers after offload.
+    """
+    def __init__(self, injections):
+        self.injections = tuple(
+            child for injection in injections
+            for child in (injection.injections if isinstance(injection, _LoRAInjectionStack) else (injection,)))
+
+    def inject(self, patcher):
+        applied = []
+        try:
+            for injection in self.injections:
+                applied.append(injection)
+                injection.inject(patcher)
+        except BaseException:
+            for injection in reversed(applied):
+                injection.eject(patcher)
+            raise
+
+    def eject(self, patcher):
+        for injection in reversed(self.injections):
+            injection.eject(patcher)
+
+
 class H3Runtime:
     """Small adapter over the pinned inference library; imports no server/main."""
     def __init__(self, runtime_path):
@@ -384,35 +533,115 @@ class H3Runtime:
         self.nodes, self.audio, self.h3 = nodes, nodes_audio, nodes_minimax_h3
 
     def load(self, config, progress):
-        if "nvfp4" in Path(config["model"]).name.lower():
-            import torch
-            if not torch.cuda.is_available() or torch.cuda.get_device_capability(0)[0] < 10:
-                raise ValueError("NVFP4 MiniMax H3 weights require a Blackwell GPU; choose the RTX 5090 or use other weights")
+        import torch
+        devices = visible_gpu_ids(config)
+        if not torch.cuda.is_available() or torch.cuda.device_count() < len(devices):
+            raise ValueError("The selected H3 GPU devices are not visible to CUDA; select their GPU UUIDs again")
+        primary_device = torch.device("cuda", 0)
+        vae_device = torch.device("cuda", 1 if len(devices) > 1 else 0)
+        self._gpu_devices = tuple(torch.device("cuda", i) for i in range(len(devices)))
+        if any("nvfp4" in Path(config[key]).name.lower() for key in ("model", "encoder")):
+            if torch.cuda.get_device_capability(primary_device)[0] < 10:
+                raise ValueError("NVFP4 MiniMax H3 transformer/encoder weights require a Blackwell primary GPU; choose the RTX 5090 or use other weights")
+        logging.info("Transformer and Qwen encoder: %s (%s)", primary_device, torch.cuda.get_device_name(primary_device))
+        logging.info("Video and audio VAEs: %s (%s); cached on that device while memory allows, with CPU offload available",
+                     vae_device, torch.cuda.get_device_name(vae_device))
         progress("loading_model")
-        model = self.sd.load_diffusion_model(config["model"])
+        model = self.sd.load_diffusion_model(config["model"], model_options={"load_device": primary_device})
         if type(model.model).__name__ != "MiniMaxH3":
             raise ValueError("The selected transformer is not a MiniMax H3 base model")
-        if config.get("lora"):
-            progress("loading_adapter")
-            lora = self.utils.load_torch_file(config["lora"], safe_load=True)
-            model, _ = self.sd.load_lora_for_models(model, None, lora, config["lora_scale"], 0)
-            if config["lora_scale"] != 0 and not model.patches:
-                raise ValueError("The selected LoRA has no weights compatible with this MiniMax H3 model")
+        if lora_stack(config):
+            model = self.load_loras(model, config, progress)
         progress("loading_encoder")
-        clip = self.sd.load_clip([config["encoder"]], clip_type=self.sd.CLIPType.MINIMAX)
+        clip = self.sd.load_clip([config["encoder"]], clip_type=self.sd.CLIPType.MINIMAX,
+                                 model_options={"load_device": primary_device})
         progress("loading_video_vae")
         video_sd, video_metadata = self.utils.load_torch_file(config["video_vae"], safe_load=True, return_metadata=True)
-        vae = self.sd.VAE(sd=video_sd, metadata=video_metadata)
+        vae = self.sd.VAE(sd=video_sd, metadata=video_metadata, device=vae_device)
         vae.throw_exception_if_invalid()
         progress("loading_audio_vae")
         audio_sd, audio_metadata = self.utils.load_torch_file(config["audio_vae"], safe_load=True, return_metadata=True)
-        audio_vae = self.sd.VAE(sd=audio_sd, metadata=audio_metadata)
+        audio_vae = self.sd.VAE(sd=audio_sd, metadata=audio_metadata, device=vae_device)
         audio_vae.throw_exception_if_invalid()
+        if len(devices) > 1:
+            # The pinned VAE adapter enters its own CUDA context and moves
+            # inputs to self.device. CPU intermediates give both cards a safe
+            # handoff without requiring peer-to-peer transfers. Keep its CPU
+            # offload policy so memory pressure can still evict cached weights.
+            vae.output_device = audio_vae.output_device = torch.device("cpu")
         return model, clip, vae, audio_vae
+
+    def load_loras(self, model, config, progress):
+        adapters = lora_stack(config)
+        for index, adapter in enumerate(adapters, 1):
+            logging.info("LoRA %d/%d: %s, strength %.3g", index, len(adapters),
+                         Path(adapter["path"]).name, adapter["strength"])
+            model = self.load_lora(model, {**config, "lora": adapter["path"],
+                                          "lora_scale": adapter["strength"]}, progress)
+        return model
+
+    def load_lora(self, model, config, progress):
+        """Keep LoRA residuals out of the NVFP4 base-weight quantization path."""
+        strength = config["lora_scale"]
+        if strength == 0:
+            logging.info("LoRA disabled: strength is zero")
+            return model
+        # Layer metadata also covers renamed checkpoints. Inspecting modules
+        # does not materialize tensor data or move any weights onto the GPU.
+        modules = getattr(model.model, "modules", None)
+        nvfp4 = (any(getattr(layer, "quant_format", None) == "nvfp4" for layer in modules())
+                 if callable(modules) else False)
+        nvfp4 = nvfp4 or "nvfp4" in Path(config["model"]).name.lower()
+        if nvfp4:
+            loader = getattr(self.sd, "load_bypass_lora_for_models", None)
+            if not callable(loader):
+                raise RuntimeError("The H3 runtime needs bypass LoRA support for NVFP4; update the private H3 runtime")
+        else:
+            loader = self.sd.load_lora_for_models
+        progress("loading_adapter")
+        lora = self.utils.load_torch_file(config["lora"], safe_load=True)
+        previous_patches = {key: len(value) for key, value in getattr(model, "patches", {}).items()}
+        previous_injections = list(getattr(model, "injections", {}).get("bypass_lora", [])) if nvfp4 else []
+        updated, _ = loader(model, None, lora, strength, 0)
+        # Bypass adapters register forward-pass injections rather than weight
+        # patches. The pinned core only adds this entry when it finds a hook.
+        injections = getattr(updated, "injections", {}).get("bypass_lora", []) if nvfp4 else []
+        added_injections = [item for item in injections if not any(item is old for old in previous_injections)]
+        added_patches = any(len(value) > previous_patches.get(key, 0)
+                            for key, value in getattr(updated, "patches", {}).items())
+        if not added_patches and not added_injections:
+            raise ValueError(f"The selected LoRA {Path(config['lora']).name} has no weights compatible with this MiniMax H3 model")
+        if previous_injections and added_injections:
+            combined = [_LoRAInjectionStack([*previous_injections, *added_injections])]
+            updated.set_injections("bypass_lora", combined)
+        logging.info("LoRA applied: %s, strength %.3g, %s", Path(config["lora"]).name, strength,
+                     "NVFP4 bypass (base weights unchanged)" if nvfp4 else "weight patches")
+        return updated
+
+    def log_gpu_memory(self, phase):
+        devices = getattr(self, "_gpu_devices", ())
+        if not devices:
+            return
+        import torch
+        for device in devices:
+            free, total = torch.cuda.mem_get_info(device)
+            logging.info("GPU memory %s: %s (%s), allocated %.0f MiB, reserved %.0f MiB, free %.0f / %.0f MiB",
+                         phase, device, torch.cuda.get_device_name(device),
+                         torch.cuda.memory_allocated(device) / 1024**2,
+                         torch.cuda.memory_reserved(device) / 1024**2,
+                         free / 1024**2, total / 1024**2)
 
     def condition(self, config, prepared, clip, vae, audio_vae):
         common = dict(clip=clip, vae=vae, prompt=config["prompt"], width=config["width"],
                       height=config["height"], length=config["frames"])
+        if is_vfx_edit(config):
+            # With no keyframes, this is the author's CLIPTextEncode + empty
+            # AV latent branch. The source must not enter native references.
+            positive, latent = self.h3.MiniMaxH3ImageToVideo.execute(**common)
+            positive = self.h3.MiniMaxH3AddGuide.execute(
+                positive=positive, latent=latent, frame_idx=0, vae=vae,
+                audio_vae=audio_vae, image=prepared["guide_video"], audio=prepared["guide_audio"])[0]
+            return positive, latent
         if config["mode"] == "ref2va":
             return self.h3.MiniMaxH3ReferenceToVideo.execute(
                 **common, audio_vae=audio_vae, ref_image_size=config["reference_size"],
@@ -421,6 +650,9 @@ class H3Runtime:
             **common, first_frame=prepared.get("first_frame"), last_frame=prepared.get("last_frame"))
 
     def generate(self, config, model, positive, latent, progress):
+        # Also covers BFS H3, whose dedicated guide conditioning bypasses
+        # H3Runtime.condition but enters this same sampler boundary.
+        H3Runtime.log_gpu_memory(self, "after conditioning")
         model = self.h3.MiniMaxH3SigmaShift.execute(model, config["shift_video"], config["shift_audio"])[0]
         latent_image = latent["samples"]
         noise = self.sample.prepare_noise(latent_image, config["seed"])
@@ -431,22 +663,31 @@ class H3Runtime:
                                      callback=callback, disable_pbar=False, seed=config["seed"])
         return {**latent, "samples": samples}
 
-    def decode(self, samples, vae, audio_vae, progress):
+    def decode(self, samples, vae, audio_vae, progress, *, source_audio=None):
         progress("decoding_video")
         frames = self.nodes.VAEDecode().decode(vae, samples)[0]
-        progress("decoding_audio")
-        audio = self.audio.VAEDecodeAudio.execute(audio_vae, samples)[0]
+        if source_audio is None:
+            progress("decoding_audio")
+            audio = self.audio.VAEDecodeAudio.execute(audio_vae, samples)[0]
+        else:
+            audio = source_audio
+        self.log_gpu_memory("after video/audio decode")
         return frames, audio
 
 
 def run_job(manifest, *, runtime_factory=H3Runtime, media_loader=prepare_media, muxer=mux_mp4):
     config, media = validate_job(manifest)
-    os.environ["CUDA_VISIBLE_DEVICES"] = config["gpu"]
+    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(visible_gpu_ids(config))
     progress = Progress(manifest["status_path"], config["steps"])
     progress("initializing_runtime")
     runtime = runtime_factory(manifest["runtime_path"])
     progress("preparing_media", frames=config["frames"], fps=FPS)
     prepared = media_loader(media, config)
+    if is_vfx_edit(config):
+        progress.details.update(frames=prepared["output_frames"], sampling_frames=config["frames"],
+                                fps=FPS, width=config["width"],
+                                height=config["height"], audio_mode="source")
+        progress("preparing_media")
     import torch
     with torch.inference_mode():
         model, clip, vae, audio_vae = runtime.load(config, progress)
@@ -454,7 +695,14 @@ def run_job(manifest, *, runtime_factory=H3Runtime, media_loader=prepare_media, 
         conditioned = runtime.condition(config, prepared, clip, vae, audio_vae)
         progress("sampling")
         samples = runtime.generate(config, model, conditioned[0], conditioned[1], progress)
-        frames, audio = runtime.decode(samples, vae, audio_vae, progress)
+        if is_vfx_edit(config):
+            frames, audio = runtime.decode(samples, vae, audio_vae, progress,
+                                           source_audio=prepared["source_audio"])
+            if len(frames) < prepared["output_frames"]:
+                raise RuntimeError("VFX Edit decoder returned fewer frames than the source video")
+            frames = frames[:prepared["output_frames"]]
+        else:
+            frames, audio = runtime.decode(samples, vae, audio_vae, progress)
     progress("encoding_mp4")
     muxer(manifest["output_path"], frames, audio)
     if not Path(manifest["output_path"]).is_file() or Path(manifest["output_path"]).stat().st_size == 0:

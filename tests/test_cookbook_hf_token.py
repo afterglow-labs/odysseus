@@ -113,6 +113,10 @@ async def test_download_runners_enable_visible_hf_progress(tmp_path, monkeypatch
     )
     assert response["error"] == "launch intentionally stopped"
     runner = next(tmp_path.glob("*.ps1" if platform == "windows" else "*.sh")).read_text()
+    # Successful HF CLI exit alone is insufficient: a zero-match include
+    # can return a nonexistent snapshot path. Validate once after retries.
+    assert "DOWNLOAD_EMPTY:" in runner
+    assert runner.index("DOWNLOAD_EMPTY:") < runner.index('DOWNLOAD_OK')
     if platform == "windows":
         assert '$env:HF_HUB_DISABLE_PROGRESS_BARS = "0"' in runner
         assert '$env:TQDM_DISABLE = "0"' in runner

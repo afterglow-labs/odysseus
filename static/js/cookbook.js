@@ -12,6 +12,7 @@ import { RECIPE_BACKENDS, recipesForBackend, pickRecipe, recipeCommands, RECIPE_
 import { dependencyIssues, showDependencyIssues } from './cookbookDependencyHealth.js';
 import { showEnvironmentPackages, showClearVram } from './cookbookMaintenance.js';
 import { showH3Video } from './h3Video.js';
+import { showBfsVideo } from './bfsVideo.js';
 import { _hwfitCache, _hwfitDebounce, _hwfitFetch, _hwfitInit, _hwfitRenderList, _hwfitRenderHw, _renderGpuToggles, _expandModelRow, _fitColors, _hwfitColumns, _cachedModelIds, _gpuToggleTotal, _resetGpuToggleState } from './cookbook-hwfit.js';
 
 // Sub-modules
@@ -30,6 +31,7 @@ import {
   initDownload,
   _setPanelField, _setPanelCheckbox,
   _wirePanelEvents, _runPanelCmd, _runModelDownload, _buildDownloadCmd,
+  _downloadDirForServer,
 } from './cookbookDownload.js';
 
 import {
@@ -67,6 +69,11 @@ export const _MODELDIR_CHECK_ON = '<svg width="13" height="13" viewBox="0 0 24 2
 function _normalizeCookbookModelDir(dir) {
   const d = String(dir || '').replaceAll('✕', '').replaceAll('✖', '').trim();
   return /^(home|mnt|media|data|opt|srv|var)\//.test(d) ? `/${d}` : d;
+}
+
+function _defaultModelDir(server) {
+  const isLocal = !server?.host || server.host.toLowerCase() === 'local';
+  return (isLocal && _envState.localHfCacheDir) || '~/.cache/huggingface/hub';
 }
 
 // Monochrome platform glyphs (currentColor) for a server's OS tag: a penguin for
@@ -604,10 +611,12 @@ function _gpuEnvVarName() {
   if (sb === 'rocm') return 'HIP_VISIBLE_DEVICES';
   return ''; // vulkan / metal / mps / apple / cpu / generic / unknown — no env-var pinning
 }
-function _gpuEnvPrefix(gpuId, isWindows = false) {
-  const id = String(gpuId || '').trim();
+function _gpuEnvPrefix(gpuId, isWindows = false, visibility = null) {
+  const id = String(visibility?.ids ?? gpuId ?? '').trim();
   if (!id) return '';
-  const varName = _gpuEnvVarName();
+  const varName = visibility
+    ? ({ cuda: 'CUDA_VISIBLE_DEVICES', rocm: 'HIP_VISIBLE_DEVICES' }[visibility.backend] || '')
+    : _gpuEnvVarName();
   if (!varName) return '';
   if (isWindows) return `$env:${varName}="${id}"; `;
   return `${varName}=${id} `;
@@ -691,7 +700,7 @@ export function _buildServeCmd(f, modelName, backend) {
     // the bare "auto" input that used to back gpu_id is gone, and the
     // button strip is the only source for which devices to pin.
     const gpuId = (f.gpus || f.gpu_id || '').toString().trim();
-    cmd += _gpuEnvPrefix(gpuId);
+    cmd += _gpuEnvPrefix(gpuId, false, f.gpu_visibility);
     if (f.moe_env) {
       const _opts = _detectModelOptimizations(modelName);
       if (_opts.envVars.length) {
@@ -755,7 +764,7 @@ export function _buildServeCmd(f, modelName, backend) {
     // the bare "auto" input that used to back gpu_id is gone, and the
     // button strip is the only source for which devices to pin.
     const gpuId = (f.gpus || f.gpu_id || '').toString().trim();
-    cmd += _gpuEnvPrefix(gpuId);
+    cmd += _gpuEnvPrefix(gpuId, false, f.gpu_visibility);
     const _isDsv4 = _isDeepSeekV4Model(modelName);
     let _extraEnv = (f.extra_env ?? '').toString().replace(/\s+/g, ' ').trim();
     if (_isDsv4 && !_envHasKey(_extraEnv, 'SGLANG_DSV4_COMPRESS_STATE_DTYPE')) {
@@ -829,11 +838,11 @@ export function _buildServeCmd(f, modelName, backend) {
       // No GPU env var in CPU mode - `-ngl 0` already disables offload
       // so CUDA_VISIBLE_DEVICES / HIP_VISIBLE_DEVICES would be misleading
       // clutter ("why is CUDA pinned for a CPU run?").
-      if ((!_isWin || _localWindows) && !_cpuOnly) p += _gpuEnvPrefix(gpuId);
+      if ((!_isWin || _localWindows) && !_cpuOnly) p += _gpuEnvPrefix(gpuId, false, f.gpu_visibility);
       return p;
     })();
     if (f.unified_mem && !_cpuOnly && _isWin && !_localWindows && _isCudaTarget) cmd += `$env:GGML_CUDA_ENABLE_UNIFIED_MEMORY="1"; `;
-    if (_isWin && !_localWindows && !_cpuOnly) cmd += _gpuEnvPrefix(gpuId, true);
+    if (_isWin && !_localWindows && !_cpuOnly) cmd += _gpuEnvPrefix(gpuId, true, f.gpu_visibility);
     const needsGgufPrelude = /^\$\(\{\s*find\s/.test(String(ggufPath || ''));
     const modelArg = needsGgufPrelude ? '"$MODEL_FILE"' : `"${ggufPath}"`;
     // Prefer native llama-server. The backend bootstrap resolves/builds the
@@ -951,7 +960,7 @@ export function _buildServeCmd(f, modelName, backend) {
     }
   } else if (backend === 'diffusers') {
     const gpuStr = f.gpus?.trim();
-    cmd += _gpuEnvPrefix(gpuStr);
+    cmd += _gpuEnvPrefix(gpuStr, false, f.gpu_visibility);
     const diffusersPy = _isWindows() ? 'python' : _py3Bin;
     const diffHost = f.host ? '0.0.0.0' : '127.0.0.1';
     cmd += `${diffusersPy} scripts/diffusion_server.py --model ${modelName} --host ${diffHost} --port ${f.port || '8100'}`;
@@ -2204,10 +2213,10 @@ function _wireTabEvents(body) {
       } else {
         srv = _serverByVal(val) || {};
       }
-      if (cacheDirEl) cacheDirEl.value = srv.modelDir || '~/.cache/huggingface/hub';
+      if (cacheDirEl) cacheDirEl.value = srv.modelDirs?.[0] || srv.modelDir || _defaultModelDir(srv);
       const dirsEl = document.querySelector('.cookbook-serve-dirs');
       if (dirsEl) {
-        const dirs = (Array.isArray(srv.modelDirs) ? srv.modelDirs : [srv.modelDir || '~/.cache/huggingface/hub']).map(d => _normalizeCookbookModelDir(d)).filter(Boolean);
+        const dirs = (Array.isArray(srv.modelDirs) ? srv.modelDirs : [srv.modelDir || _defaultModelDir(srv)]).map(d => _normalizeCookbookModelDir(d)).filter(Boolean);
         dirsEl.innerHTML = dirs.map(d => `<span class="cookbook-serve-dir-pill">${esc(d)}</span>`).join('') +
           '<span class="cookbook-serve-dir-edit" title="Edit in Settings">edit</span>';
         dirsEl.querySelector('.cookbook-serve-dir-edit')?.addEventListener('click', () => {
@@ -2270,6 +2279,7 @@ function _wireTabEvents(body) {
 
   const depsServer = document.getElementById('hwfit-deps-server');
   document.getElementById('cookbook-h3-video')?.addEventListener('click', event => showH3Video({}, event.currentTarget));
+  document.getElementById('cookbook-bfs-video')?.addEventListener('click', event => showBfsVideo({}, event.currentTarget));
   document.getElementById('cookbook-check-dependencies')?.addEventListener('click', () => _fetchDependencies({ showIssues: true }));
   document.getElementById('cookbook-clear-vram')?.addEventListener('click', event => {
     const server = _selectedServer();
@@ -2614,19 +2624,25 @@ function _wireTabEvents(body) {
       // downloads to the wrong server. The dropdown the user sees is the truth.
       const dlSrv = document.getElementById('hwfit-dl-server');
       const srvVal = dlSrv ? dlSrv.value : 'local';
-      let host = '';
-      if (srvVal !== 'local') {
-        host = _serverByVal(srvVal)?.host || '';
-      }
-      const _hsrv = _envState.servers.find(sv => sv.host === host) || {};
+      const selectedServer = _serverByVal(srvVal);
+      const host = selectedServer?.host || '';
+      const _hsrv = selectedServer || {};
       let env = host ? (_hsrv.env || 'none') : _envState.env;
       let envPath = host ? (_hsrv.envPath || '') : _envState.envPath;
       const payload = { repo_id: repo };
       if (ollamaName) payload.backend = 'ollama';
       if (autoInclude || pickerInclude) payload.include = autoInclude || pickerInclude;
       if (_envState.hfToken && !ollamaName) payload.hf_token = _envState.hfToken;
-      if (host) { payload.remote_host = host; const _sp3 = _getPort(host); if (_sp3) payload.ssh_port = _sp3; }
-      const srvPlatform = _getPlatform(host);
+      const downloadDir = _downloadDirForServer(selectedServer, host);
+      if (downloadDir && !ollamaName) payload.local_dir = downloadDir;
+      if (host) {
+        payload.remote_host = host;
+        payload.remote_server_key = _serverKey(_hsrv);
+        if (_hsrv.name) payload.remote_server_name = _hsrv.name;
+        const _sp3 = _hsrv.port || _getPort(host);
+        if (_sp3) payload.ssh_port = _sp3;
+      }
+      const srvPlatform = host ? (_hsrv.platform || _getPlatform(host)) : _getPlatform('local');
       if (srvPlatform) payload.platform = srvPlatform;
       if (srvPlatform === 'windows') {
         if (env === 'venv' && envPath) {
@@ -3045,14 +3061,15 @@ export function _serverEntryHtml(s, i, defaultServer, forceRemote, isNew) {
   html += `<span class="cookbook-dep-tag cookbook-dep-target" style="font-size:8px;flex-shrink:0;min-width:46px;text-align:center;visibility:hidden;">placeholder</span>`;
   html += `<span class="cookbook-srv-actions" style="display:inline-flex;gap:4px;align-items:center;width:78px;flex-shrink:0;justify-content:flex-end;"></span>`;
   html += `</div>`;
-  const modelDirs = Array.isArray(s.modelDirs) && s.modelDirs.length ? s.modelDirs : ['~/.cache/huggingface/hub'];
+  const defaultDir = isLocal ? _defaultModelDir(s) : '~/.cache/huggingface/hub';
+  const modelDirs = Array.isArray(s.modelDirs) && s.modelDirs.length ? s.modelDirs : [defaultDir];
   const activeDlDir = s.downloadDir || '';
   html += `<div class="cookbook-modeldirs" style="margin:2px 0 0 0;display:flex;flex-wrap:wrap;gap:4px;align-items:center;">`;
   html += `<span style="width:100%;font-size:13px;font-weight:600;margin-bottom:3px;">Model Directory <span style="font-weight:400;opacity:0.5;font-size:11px;">— check the one downloads should go to</span></span>`;
   for (let j = 0; j < modelDirs.length; j++) {
-    const isDefault = modelDirs[j] === '~/.cache/huggingface/hub';
+    const isDefault = modelDirs[j] === defaultDir;
     const dirVal = isDefault ? '' : modelDirs[j];
-    const isTarget = activeDlDir === dirVal;
+    const isTarget = activeDlDir === dirVal || (isDefault && activeDlDir === defaultDir);
     const dlBtn = `<span class="cookbook-modeldir-dl${isTarget ? ' active' : ''}" title="${isTarget ? 'Downloads go here' : 'Send downloads here'}" data-dl-dir="${esc(dirVal)}">${isTarget ? _MODELDIR_CHECK_ON : _MODELDIR_CHECK_OFF}</span>`;
     const rmBtn = isDefault ? '' : ' <span class="cookbook-modeldir-rm" title="Remove">✖</span>';
     html += `<span class="cookbook-modeldir-tag${isDefault ? ' cookbook-modeldir-default' : ''}${isTarget ? ' cookbook-modeldir-target' : ''}" data-dir-idx="${j}" data-dir="${esc(modelDirs[j])}">${dlBtn} ${esc(modelDirs[j])}${rmBtn}</span>`;
@@ -3130,7 +3147,7 @@ function _renderRecipes() {
     return true;
   });
   if (!_localSeen) {
-    _es.servers.unshift({ host: '', env: _es.env || 'none', envPath: _es.envPath || '', modelDir: '~/.cache/huggingface/hub', platform: _envState.hostPlatform || '' });
+    _es.servers.unshift({ host: '', env: _es.env || 'none', envPath: _es.envPath || '', modelDirs: [_defaultModelDir(null)], platform: _envState.hostPlatform || '' });
   }
   if (_es.remoteHost && !_es.servers.some(s => s.host === _es.remoteHost)) {
     _es.servers.push({ host: _es.remoteHost, env: _es.env || 'none', envPath: _es.envPath || '', modelDir: '~/.cache/huggingface/hub' });
@@ -3286,12 +3303,13 @@ function _renderRecipes() {
   // Serve group
   html += '<div class="cookbook-group hidden" data-backend-group="Serve">';
   html += '<div class="admin-card" style="flex:1;display:flex;flex-direction:column;overflow:hidden;">';
-  html += '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:2px;">';
+  html += '<div style="display:flex;align-items:baseline;flex-wrap:wrap;gap:8px;margin-bottom:2px;">';
   html += '<h2 style="margin:0;padding:0;line-height:1;">Serve <span id="serve-stats" class="memory-count" style="font-size:0.6em;opacity:0.6;font-weight:normal"></span></h2>';
   html += '<button type="button" class="memory-toolbar-btn" id="cookbook-h3-video" style="margin-left:auto;" title="Generate video on the local Odysseus server; remote SSH hosts are not supported">MiniMax H3 Video · Local</button>';
+  html += '<button type="button" class="memory-toolbar-btn" id="cookbook-bfs-video" title="Run BFS video workflows on the local Odysseus server; remote SSH hosts are not supported">BFS Video · Local</button>';
   html += '</div>';
   const _selSrv = _es.servers.find(s => s.host === _es.remoteHost) || _es.servers[0] || {};
-  const _srvDirs = (Array.isArray(_selSrv.modelDirs) ? _selSrv.modelDirs : [_selSrv.modelDir || '~/.cache/huggingface/hub']).map(d => _normalizeCookbookModelDir(d)).filter(Boolean);
+  const _srvDirs = (Array.isArray(_selSrv.modelDirs) ? _selSrv.modelDirs : [_selSrv.modelDir || _defaultModelDir(_selSrv)]).map(d => _normalizeCookbookModelDir(d)).filter(Boolean);
   html += '<div class="cookbook-serve-dirs" style="margin-top:6px;">';
   html += _srvDirs.map(d => `<span class="cookbook-serve-dir-pill">${esc(d)}</span>`).join('');
   html += '<span class="cookbook-serve-dir-edit" title="Edit in Settings">edit</span>';

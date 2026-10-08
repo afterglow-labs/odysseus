@@ -18,7 +18,10 @@ from fastapi import APIRouter, HTTPException, Request, Depends
 
 from src.auth_helpers import require_user
 from src.constants import COOKBOOK_STATE_FILE
+from src.hf_cache import download_cache_paths, effective_hf_cache, normalize_local_cache_settings
 from src.dependency_catalog import is_native_windows, unsupported_windows_requirements
+from src.sglang_local import local_sglang_command, append_sglang_prepare
+from src.sglang_runtime import managed_sglang_venv
 from pydantic import BaseModel
 
 from core.middleware import require_admin
@@ -41,8 +44,9 @@ from src.host_docker_access import (
     running_in_container,
 )
 from routes.cookbook_output import (
-    error_aware_output_tail, classify_dead_download,
-    HF_CACHE_COMPLETE_PROBE, HF_CACHE_INCOMPLETE_PROBE,
+    error_aware_output_tail, classify_dead_download, download_has_zero_files,
+    HF_CACHE_COMPLETE_PROBE, HF_CACHE_INCOMPLETE_PROBE, HF_CACHE_MATCHING_FILES_PROBE,
+    HF_DOWNLOAD_SPACE_PROBE, hf_download_attempt_lines,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,7 +58,7 @@ from routes.cookbook_helpers import (
     _safe_env_prefix, _local_windows_bash_env_prefix, _local_tooling_path_export, _append_serve_preflight_exit_lines,
     _append_serve_exit_code_lines, _append_llama_cpp_linux_accel_build_lines, _cached_model_scan_script,
     _append_llama_cpp_capability_preflight_lines,
-    load_stored_hf_token,
+    load_stored_hf_token, load_stored_local_download_dir,
     _append_vllm_linux_preflight_lines, _ollama_bind_from_cmd, _pip_install_fallback_chain,
     _pip_install_no_cache, _user_shell_path_bootstrap, _venv_safe_local_pip_install_cmd,
     _diagnose_serve_output, run_ssh_command_async,
@@ -528,7 +532,7 @@ def setup_cookbook_routes() -> APIRouter:
             (
                 r"sglang.*command not found|No module named sglang|SGLang is not installed",
                 "SGLang is not installed or not in PATH on this server.",
-                [{"label": "install SGLang in Cookbook Dependencies", "op": "dependency", "package": "sglang[all]"}],
+                [{"label": "install SGLang in Cookbook Dependencies", "op": "dependency", "package": "sglang>=0.5.21"}],
             ),
             (
                 r"No module named ['\"]?mlx_lm|mlx_lm.*command not found|MLX is not installed|MLX LM is not installed",
@@ -608,11 +612,15 @@ def setup_cookbook_routes() -> APIRouter:
             env = {}
             state["env"] = env
         if isinstance(env, dict):
+            normalize_local_cache_settings(env)
             token = _decrypt_secret(env.get("hfToken"))
             env.pop("hfToken", None)
             env["hfTokenConfigured"] = bool(token)
             env["hfTokenMasked"] = _mask_secret(token)
             env["hostPlatform"] = _client_host_platform()
+            env["localHfCacheDir"] = effective_hf_cache()
+            env["localDownloadDir"] = load_stored_local_download_dir(state_path=_cookbook_state_path) or effective_hf_cache()
+            env["localLegacyHfCacheDir"] = str(Path.home() / ".cache/huggingface/hub")
         return state
 
     def _state_for_storage(state, on_disk=None):
@@ -621,6 +629,7 @@ def setup_cookbook_routes() -> APIRouter:
         env = state.get("env") if isinstance(state, dict) else None
         disk_env = on_disk.get("env") if isinstance(on_disk, dict) and isinstance(on_disk.get("env"), dict) else {}
         if isinstance(env, dict):
+            normalize_local_cache_settings(env)
             incoming = env.get("hfToken")
             if incoming:
                 _validate_token(incoming)
@@ -632,6 +641,9 @@ def setup_cookbook_routes() -> APIRouter:
             env.pop("hfTokenMasked", None)
             env.pop("hfTokenConfigured", None)
             env.pop("hostPlatform", None)
+            env.pop("localHfCacheDir", None)
+            env.pop("localDownloadDir", None)
+            env.pop("localLegacyHfCacheDir", None)
         return state
 
     def _load_stored_hf_token() -> str:
@@ -1083,6 +1095,8 @@ def setup_cookbook_routes() -> APIRouter:
         validate_remote_host(req.remote_host)
         req.ssh_port = validate_ssh_port(req.ssh_port)
         req.local_dir = _validate_local_dir(req.local_dir)
+        if not is_ollama_download and not req.remote_host and not req.local_dir:
+            req.local_dir = _validate_local_dir(load_stored_local_download_dir(state_path=_cookbook_state_path))
         req.hf_token = "" if is_ollama_download else (req.hf_token or _load_stored_hf_token())
         _validate_token(req.hf_token)
         if req.remote_host and not req.env_prefix:
@@ -1091,15 +1105,27 @@ def setup_cookbook_routes() -> APIRouter:
         session_id = f"cookbook-{uuid.uuid4().hex[:8]}"
         wrapper_script = TMUX_LOG_DIR / f"{session_id}.sh"
 
-        # Custom download dir: point the HF cache at <dir>/hub via env vars
-        # (HF_HOME + HUGGINGFACE_HUB_CACHE) instead of --local-dir. local_dir
+        # Point at the selected hub via env vars instead of --local-dir. Accept
+        # either the HF home or its hub, without creating a nested hub/hub.
+        # Explicit exports also prevent an older tmux server's environment
+        # from overriding this app's private default cache. local_dir
         # produces a flat layout (<dir>/<name>/<file>) and the local-dir
         # bookkeeping files (.cache/huggingface/.gitignore.lock), and it
         # also breaks robust resume on flaky transfers — the blob-based hub
         # cache survives SSL ReadError mid-stream by reusing <sha>.incomplete,
         # local_dir does not. See issue #2722.
-        _dl_hf_home_shell = _shell_path(req.local_dir.rstrip("/")) if req.local_dir else None
-        _dl_pyarg = ""  # snapshot_download honors the env vars too — no kwarg needed
+        _dl_hf_home = _dl_hub = None
+        if not is_ollama_download and (req.local_dir or not req.remote_host):
+            _dl_hf_home, _dl_hub = download_cache_paths(req.local_dir)
+            if not req.remote_host:
+                _dl_hf_home = os.path.expanduser(_dl_hf_home)
+                _dl_hub = os.path.expanduser(_dl_hub)
+        # Request paths are validated; environment-derived paths are quoted
+        # as literals so unusual installation names cannot become shell code.
+        _dl_hf_home_shell = (_shell_path(_dl_hf_home) if req.remote_host else shlex.quote(_dl_hf_home)) if _dl_hf_home else None
+        _dl_hub_shell = (_shell_path(_dl_hub) if req.remote_host else shlex.quote(_dl_hub)) if _dl_hub else None
+        # The Python fallback must select the same files as CLI and preflight.
+        _dl_pyarg = f", allow_patterns=['{req.include}']" if req.include else ""
 
         # Build the hf download command. Redirection to suppress the interactive
         # "update available? [Y/n]" prompt is added per-platform further down
@@ -1125,8 +1151,8 @@ def setup_cookbook_routes() -> APIRouter:
             # standard HF cache (gives us the models--org--name/blobs/... layout
             # with resumable .incomplete blobs).
             lines.append(f"export HF_HOME={_dl_hf_home_shell}")
-            lines.append(f"export HUGGINGFACE_HUB_CACHE={_dl_hf_home_shell}/hub")
-            lines.append(f"export HF_HUB_CACHE={_dl_hf_home_shell}/hub")
+            lines.append(f"export HUGGINGFACE_HUB_CACHE={_dl_hub_shell}")
+            lines.append(f"export HF_HUB_CACHE={_dl_hub_shell}")
         # Ensure pip-user scripts (e.g. hf CLI installed via --user) are on PATH
         lines.append('export PATH="$HOME/.local/bin:$HOME/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"')
         # When Odysseus runs from a venv (e.g. native macOS install), put its bin
@@ -1184,10 +1210,9 @@ def setup_cookbook_routes() -> APIRouter:
                 # Mirror the bash branch — point the HF cache at the user's dir
                 # via env vars instead of --local-dir, so resume works on flaky
                 # transfers (issue #2722).
-                _dl_ps = _ps_squote(req.local_dir.rstrip("/"))
-                ps_lines.append(f"$env:HF_HOME = '{_dl_ps}'")
-                ps_lines.append(f"$env:HUGGINGFACE_HUB_CACHE = '{_dl_ps}/hub'")
-                ps_lines.append(f"$env:HF_HUB_CACHE = '{_dl_ps}/hub'")
+                ps_lines.append(f"$env:HF_HOME = '{_ps_squote(_dl_hf_home)}'")
+                ps_lines.append(f"$env:HUGGINGFACE_HUB_CACHE = '{_ps_squote(_dl_hub)}'")
+                ps_lines.append(f"$env:HF_HUB_CACHE = '{_ps_squote(_dl_hub)}'")
             if req.env_prefix:
                 ps_lines.append(_safe_env_prefix(req.env_prefix))
             if is_ollama_download:
@@ -1196,9 +1221,16 @@ def setup_cookbook_routes() -> APIRouter:
                 ps_lines.append('if ($LASTEXITCODE -eq 0) { Write-Host ""; Write-Host "DOWNLOAD_OK" } else { Write-Host ""; Write-Host "DOWNLOAD_FAILED (exit $LASTEXITCODE)" }')
             else:
                 # Try hf CLI, fall back to Python huggingface_hub, then auto-install
+                ps_preflight = (
+                    "python -c '" + _ps_squote(HF_DOWNLOAD_SPACE_PROBE)
+                    + "' '" + _ps_squote(req.repo_id) + "' '" + _ps_squote(req.include or "") + "'"
+                )
+                ps_preflight_check = 'if ($LASTEXITCODE -ne 0) { throw "Download preflight failed (exit $LASTEXITCODE); see the error above." }'
                 ps_lines.append('try {{')
                 ps_lines.append('  $hfPath = Get-Command hf -ErrorAction SilentlyContinue')
                 ps_lines.append('  if ($hfPath) {{')
+                ps_lines.append('    ' + ps_preflight)
+                ps_lines.append('    ' + ps_preflight_check)
                 # Pipe $null to stdin to suppress interactive "update available? [Y/n]" prompt
                 ps_lines.append(f'    $null | {hf_cmd}')
                 ps_lines.append('  }} else {{')
@@ -1207,14 +1239,23 @@ def setup_cookbook_routes() -> APIRouter:
                 ps_lines.append('      Write-Host "hf CLI not found, using Python huggingface_hub..."')
                 ps_lines.append('      python -m pip install -q hf_transfer 2>$null')
                 ps_lines.append('      $env:HF_HUB_ENABLE_HF_TRANSFER = "1"')
+                ps_lines.append('      ' + ps_preflight)
+                ps_lines.append('      ' + ps_preflight_check)
                 ps_lines.append(f"      python -c \"import os; from huggingface_hub import snapshot_download; snapshot_download('{req.repo_id}'{_dl_pyarg}, max_workers=8)\"")
                 ps_lines.append('    }} else {{')
                 ps_lines.append('      Write-Host "Installing huggingface-hub..."')
                 ps_lines.append('      python -m pip install -q huggingface-hub hf_transfer')
                 ps_lines.append('      $env:HF_HUB_ENABLE_HF_TRANSFER = "1"')
+                ps_lines.append('      ' + ps_preflight)
+                ps_lines.append('      ' + ps_preflight_check)
                 ps_lines.append(f"      python -c \"import os; from huggingface_hub import snapshot_download; snapshot_download('{req.repo_id}'{_dl_pyarg}, max_workers=8)\"")
                 ps_lines.append('    }}')
                 ps_lines.append('  }}')
+                ps_lines.append(
+                    "  if ($LASTEXITCODE -eq 0) { python -c '"
+                    + _ps_squote(HF_CACHE_MATCHING_FILES_PROBE)
+                    + "' '" + _ps_squote(req.repo_id) + "' '" + _ps_squote(req.include or "") + "' }"
+                )
                 ps_lines.append('  if ($LASTEXITCODE -eq 0) {{ Write-Host ""; Write-Host "DOWNLOAD_OK" }}')
                 ps_lines.append('  else {{ Write-Host ""; Write-Host "DOWNLOAD_FAILED (exit $LASTEXITCODE)" }}')
                 ps_lines.append('}} catch {{')
@@ -1254,8 +1295,8 @@ def setup_cookbook_routes() -> APIRouter:
                 runner_lines.append(f"export HF_TOKEN='{_bash_squote(req.hf_token)}'")
             if _dl_hf_home_shell and not is_ollama_download:
                 runner_lines.append(f"export HF_HOME={_dl_hf_home_shell}")
-                runner_lines.append(f"export HUGGINGFACE_HUB_CACHE={_dl_hf_home_shell}/hub")
-                runner_lines.append(f"export HF_HUB_CACHE={_dl_hf_home_shell}/hub")
+                runner_lines.append(f"export HUGGINGFACE_HUB_CACHE={_dl_hub_shell}")
+                runner_lines.append(f"export HF_HUB_CACHE={_dl_hub_shell}")
             if req.env_prefix:
                 runner_lines.append(_safe_env_prefix(req.env_prefix))
             else:
@@ -1316,15 +1357,25 @@ def setup_cookbook_routes() -> APIRouter:
             runner_lines.append('  _attempt=$((_attempt+1))')
             if is_ollama_download:
                 runner_lines.append('  eval "$ODYSSEUS_OLLAMA_PULL_CMD" < /dev/null')
+                runner_lines.append('  _ec=$?')
             else:
-                runner_lines.append(f'  "$ODYSSEUS_HF_CLI" {hf_download_args} < /dev/null')
-            runner_lines.append('  _ec=$?')
+                runner_lines.extend(hf_download_attempt_lines(
+                    '"$ODYSSEUS_PY"', f'"$ODYSSEUS_HF_CLI" {hf_download_args} < /dev/null',
+                    req.repo_id, req.include,
+                ))
             runner_lines.append('  if [ $_ec -eq 0 ]; then break; fi')
             runner_lines.append('  if [ $_attempt -lt $_max_retries ]; then')
             runner_lines.append('    echo ""; echo "Download attempt $_attempt failed (exit $_ec) — retrying in 30s..."')
             runner_lines.append('    sleep 30')
             runner_lines.append('  fi')
             runner_lines.append('done')
+            if not is_ollama_download:
+                runner_lines.append(
+                    'if [ $_ec -eq 0 ]; then "$ODYSSEUS_PY" -c '
+                    + shlex.quote(HF_CACHE_MATCHING_FILES_PROBE) + ' '
+                    + shlex.quote(req.repo_id) + ' ' + shlex.quote(req.include or '')
+                    + '; _ec=$?; fi'
+                )
             runner_lines.append('if [ $_ec -eq 0 ]; then echo ""; echo "DOWNLOAD_OK"; else echo ""; echo "DOWNLOAD_FAILED (exit $_ec after $_attempt attempts)"; fi')
             runner_lines.append(f"rm -f {remote_runner}")
             runner_lines.append('exec "${SHELL:-/bin/bash}"')
@@ -1358,14 +1409,26 @@ def setup_cookbook_routes() -> APIRouter:
             lines.append('_max_retries=10; _attempt=0; _ec=0')
             lines.append('while [ $_attempt -lt $_max_retries ]; do')
             lines.append('  _attempt=$((_attempt+1))')
-            lines.append(f'  {_hf_invoke}')
-            lines.append('  _ec=$?')
+            if is_ollama_download:
+                lines.append(f'  {_hf_invoke}')
+                lines.append('  _ec=$?')
+            else:
+                lines.extend(hf_download_attempt_lines(
+                    'python3', _hf_invoke, req.repo_id, req.include,
+                ))
             lines.append('  if [ $_ec -eq 0 ]; then break; fi')
             lines.append('  if [ $_attempt -lt $_max_retries ]; then')
             lines.append('    echo ""; echo "Download attempt $_attempt failed (exit $_ec) — retrying in 30s..."')
             lines.append('    sleep 30')
             lines.append('  fi')
             lines.append('done')
+            if not is_ollama_download:
+                lines.append(
+                    'if [ $_ec -eq 0 ]; then python3 -c '
+                    + shlex.quote(HF_CACHE_MATCHING_FILES_PROBE) + ' '
+                    + shlex.quote(req.repo_id) + ' ' + shlex.quote(req.include or '')
+                    + '; _ec=$?; fi'
+                )
             lines.append('if [ $_ec -eq 0 ]; then echo ""; echo "DOWNLOAD_OK"; else echo ""; echo "DOWNLOAD_FAILED (exit $_ec after $_attempt attempts)"; fi')
             if not IS_WINDOWS:
                 lines.append(f"rm -f '{wrapper_script}'")
@@ -1410,7 +1473,7 @@ def setup_cookbook_routes() -> APIRouter:
         except Exception:
             pass
 
-        return {"ok": True, "session_id": session_id, "remote": remote or "local"}
+        return {"ok": True, "session_id": session_id, "remote": remote or "local", "cache_dir": _dl_hub}
 
     @router.get("/api/model/cached")
     async def model_cached(request: Request, host: str | None = None, model_dir: str | None = None, ssh_port: str | None = None, platform: str | None = None):
@@ -2015,6 +2078,9 @@ def setup_cookbook_routes() -> APIRouter:
         req.cmd = _normalize_llama_cpp_python_cache_types(req.cmd) or ""
         req.cmd = _normalize_minimax_m3_vllm_cmd(req.cmd)
         req.cmd = _normalize_deepseek_v4_sglang_cmd(req.cmd)
+        req.cmd, managed_sglang = local_sglang_command(
+            req.cmd, remote_host=req.remote_host, env_prefix=req.env_prefix,
+        )
         req.cmd = _venv_safe_local_pip_install_cmd(
             req.cmd,
             local=not bool(req.remote_host),
@@ -2064,6 +2130,29 @@ def setup_cookbook_routes() -> APIRouter:
         session_id = f"serve-{uuid.uuid4().hex[:8]}"
         remote = req.remote_host
         is_windows = req.platform == "windows"
+
+        if req.gpus and not is_pip_install:
+            # The picker uses nvidia-smi indexes, which need not match CUDA's
+            # ordinals. Resolve on the actual launch host, including old presets.
+            from src.cookbook_gpu import resolve_nvidia_selection, replace_cuda_visibility
+            try:
+                inventory, gpu_error = await _run_nvidia_smi(
+                    "nvidia-smi --query-gpu=index,name,uuid --format=csv,noheader,nounits",
+                    remote, req.ssh_port,
+                )
+            except (FileNotFoundError, OSError):
+                inventory, gpu_error = None, "nvidia-smi unavailable"
+            if not gpu_error and inventory:
+                try:
+                    req.gpus = resolve_nvidia_selection(req.gpus, inventory)
+                except ValueError as error:
+                    raise HTTPException(400, str(error)) from error
+                # An inline numeric assignment would override the runner export.
+                req.cmd = replace_cuda_visibility(req.cmd, req.gpus)
+                if req.env_prefix:
+                    req.env_prefix = replace_cuda_visibility(req.env_prefix, req.gpus)
+            elif 'CUDA_VISIBLE_DEVICES' in req.cmd or 'GPU-' in req.gpus:
+                raise HTTPException(400, "Cannot verify selected NVIDIA GPUs on the launch server; refresh the GPU probe and retry.")
 
         # Ollama: if the user didn't pin a port, resolve the actual port we'll
         # bind to here (before runner construction) by probing the target host.
@@ -2201,6 +2290,13 @@ def setup_cookbook_routes() -> APIRouter:
                 runner_lines.append(_safe_env_prefix(_local_windows_bash_env_prefix(req.env_prefix) if local_windows else req.env_prefix))
             else:
                 runner_lines.append("deactivate 2>/dev/null; hash -r")
+            if managed_sglang:
+                if is_pip_install:
+                    append_sglang_prepare(runner_lines, app_python=sys.executable)
+                else:
+                    runner_lines.append(
+                        f'echo {shlex.quote("[odysseus] SGLang environment: " + str(managed_sglang_venv()))}'
+                    )
             _append_venv_nvidia_library_path_lines(runner_lines, cmd=req.cmd)
             if "sglang.launch_server" in req.cmd or "mlx_lm.server" in req.cmd or re.search(r"\bvllm\s+serve\b", req.cmd or ""):
                 _append_openai_port_preflight_lines(runner_lines, cmd=req.cmd, expected_model=req.repo_id)
@@ -2968,16 +3064,14 @@ def setup_cookbook_routes() -> APIRouter:
 
     async def _run_nvidia_smi(query: str, host: str | None, ssh_port: str | None, timeout: int = 8):
         """Run nvidia-smi locally or over SSH. Returns (stdout, error_or_None)."""
+        if not host:
+            from src.nvidia_smi import run_nvidia_smi_async
+            return await run_nvidia_smi_async(shlex.split(query)[1:], timeout=timeout)
         if host:
             pf = f"-p {ssh_port} " if ssh_port and ssh_port != "22" else ""
             cmd = f"ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no {pf}{host} '{query}'"
             proc = await asyncio.create_subprocess_shell(
                 cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-            )
-        else:
-            proc = await asyncio.create_subprocess_exec(
-                *shlex.split(query),
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
@@ -4388,9 +4482,8 @@ def setup_cookbook_routes() -> APIRouter:
             disappears before Cookbook captures the final DOWNLOAD_OK marker.
             In that case, trust the cache shape: a snapshot directory with files
             and no *.incomplete blobs means HuggingFace finished materializing the
-            model. cache_root is the task's custom download dir — the runner
-            pointed HF_HOME there, so the cache lives under <cache_root>/hub,
-            not wherever this probe's environment says.
+            model. cache_root is the task's chosen HF home or hub directory,
+            taking precedence over this probe's environment.
             """
             if not repo_id or "/" not in repo_id:
                 return False
@@ -4628,7 +4721,10 @@ def setup_cookbook_routes() -> APIRouter:
                 has_exit = exit_match is not None
                 exit_code = int(exit_match.group(1)) if exit_match else None
                 has_error = "error" in lower or "failed" in lower or "traceback" in lower
-                if has_exit and task_type == "serve":
+                if task_type == "download" and download_has_zero_files(full_snapshot):
+                    status = "error"
+                    download_zero_files = True
+                elif has_exit and task_type == "serve":
                     # Serve tasks that exit are always errors — they should run indefinitely
                     status = "error"
                 elif has_exit and task_type == "download":
@@ -4643,11 +4739,7 @@ def setup_cookbook_routes() -> APIRouter:
                 elif has_error and task_type != "serve" and not ("application startup complete" in lower):
                     status = "error"
                 elif task_type == "download" and download_has_ok:
-                    if re.search(r"Fetching\s+0\s+files", full_snapshot, re.IGNORECASE):
-                        status = "error"
-                        download_zero_files = True
-                    else:
-                        status = "completed"
+                    status = "completed"
                 elif task_type == "download" and download_has_failed:
                     status = "error"
                 elif task_type == "download" and download_has_incomplete_evidence:

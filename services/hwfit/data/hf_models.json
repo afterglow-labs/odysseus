@@ -14334,7 +14334,9 @@
   "gguf_sources": [
    {
     "repo": "google/gemma-4-26B-A4B-it-qat-q4_0-gguf",
-    "provider": "Google"
+    "provider": "Google",
+    "file": "gemma-4-26B_q4_0-it.gguf",
+    "include": "gemma-4-26B*.gguf"
    }
   ],
   "capabilities": [

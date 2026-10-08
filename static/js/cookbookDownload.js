@@ -81,6 +81,9 @@ function _ggufDownloadSource(model, backend) {
 }
 
 function _ggufIncludePattern(model, source) {
+  // Some single-quant repos need a companion projector. Keep `file` exact
+  // for serving while allowing the recipe to opt into both downloads.
+  if (source?.include) return source.include;
   if (source?.file) return source.file;
   if (model?.quant) return `*${model.quant}*`;
   return '*.gguf';
@@ -122,6 +125,16 @@ function _missingGgufCommand(model) {
   return `printf '%s\\n' ${_bashQuote(msg)} >&2; exit 1`;
 }
 
+export function _downloadDirForServer(server, host = '') {
+  const isLocal = !host || ['local', 'localhost'].includes(String(host).toLowerCase());
+  // Local dropdown values deliberately resolve to no SSH profile. Its saved
+  // download target still applies, independently of the cache scan roots.
+  const localServer = isLocal ? (_envState.servers || []).find(s =>
+    !s.host || ['local', 'localhost'].includes(String(s.host).toLowerCase())) : null;
+  return server?.downloadDir || localServer?.downloadDir
+    || (isLocal ? (_envState.localDownloadDir || _envState.localHfCacheDir) : '') || '';
+}
+
 export function _buildDownloadCmd(model, backend) {
   let cmd = '';
   if (backend === 'ollama') {
@@ -133,13 +146,17 @@ export function _buildDownloadCmd(model, backend) {
     } else {
       const repo = ggufSource?.repo || model.name;
       const includePattern = backend === 'llamacpp' ? _ggufIncludePattern(model, ggufSource) : null;
-      const includeArg = includePattern ? `, allow_patterns=["${includePattern.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"]` : '';
-      // Reflect the server's download target in the preview (matches the real
-      // download path built server-side). '' = default HF cache.
-      const _dlDir = (_serverByVal?.(_envState.remoteServerKey || _envState.remoteHost || '') || {}).downloadDir || '';
-      const _localDirArg = _dlDir ? `, local_dir=os.path.expanduser('${_dlDir.replace(/\/$/, '')}/${repo.split('/').pop()}')` : '';
+      const includeArg = includePattern ? `, allow_patterns=${JSON.stringify([includePattern])}` : '';
+      // Match download_cache_paths: an explicit hub is used directly; a
+      // parent directory stores the Hub cache in its hub subdirectory.
+      const _dlDir = _downloadDirForServer(
+        _serverByVal?.(_envState.remoteServerKey || _envState.remoteHost || ''),
+        _envState.remoteHost || '');
+      const normalizedDir = String(_dlDir).replace(/\\/g, '/').replace(/\/+$/, '');
+      const cacheDir = /(?:^|\/)hub$/i.test(normalizedDir) ? normalizedDir : `${normalizedDir}/hub`;
+      const cacheArg = _dlDir ? `, cache_dir=os.path.expanduser(${JSON.stringify(cacheDir)})` : '';
       const _py = _isWindows() ? 'python' : 'python3';
-      cmd = `${_py} -u -c "
+      const script = `
 import sys, time, os
 os.environ['HF_HUB_DISABLE_PROGRESS_BARS']='0'
 os.environ['TQDM_DISABLE']='0'
@@ -185,14 +202,17 @@ try:
  if hasattr(huggingface_hub.utils,'_tqdm'): huggingface_hub.utils._tqdm.tqdm=T
 except: pass
 from huggingface_hub import snapshot_download
-repo='${repo}'
+repo=${JSON.stringify(repo)}
 print(f'START {repo}',flush=True)
 try:
- path=snapshot_download(repo${includeArg}${_localDirArg})
+ path=snapshot_download(repo${includeArg}${cacheArg})
  print(f'DONE {path}',flush=True)
 except Exception as e:
  print(f'ERROR {e}',file=sys.stderr,flush=True);sys.exit(1)
-"`;
+`;
+      // Python literals are embedded in a script, then the whole script is
+      // quoted for the target shell so paths cannot expand $, quotes or `.
+      cmd = `${_py} -u -c ${_isWindows() ? _psQuote(script) : _bashQuote(script)}`;
     }
   }
   const prefix = _buildEnvPrefix();
@@ -534,9 +554,10 @@ export async function _runModelDownload(panel, model, backend, hostOverride) {
     if (_sp) payload.ssh_port = _sp;
   }
   if (platform) payload.platform = platform;
-  // If this server has a directory flagged as the download target, send it so
-  // the backend downloads into <dir>/<model> instead of the default HF cache.
-  if (srv.downloadDir) payload.local_dir = srv.downloadDir;
+  // The server resolves this target to an HF hub cache (a path ending in hub
+  // is already the cache, not a parent to which another hub is appended).
+  const downloadDir = _downloadDirForServer(srv, host);
+  if (downloadDir) payload.local_dir = downloadDir;
   if (isWin) {
     if (env === 'venv' && envPath) {
       payload.env_prefix = '& ' + _psQuote(envPath.endsWith('\\Scripts\\Activate.ps1') ? envPath : envPath + '\\Scripts\\Activate.ps1');
@@ -636,6 +657,7 @@ export async function _runModelDownload(panel, model, backend, hostOverride) {
       uiModule.showToast('Download failed: ' + (data.error || ''), 9000);
       return;
     }
+    if (data.cache_dir) payload.cache_dir = data.cache_dir;
     _addTask(data.session_id, taskName, 'download', payload);
     uiModule.showToast(`Downloading ${taskName}...`);
   } catch (e) {

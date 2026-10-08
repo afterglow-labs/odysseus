@@ -13,7 +13,9 @@ import { openCookbookDependencies } from './cookbook-diagnosis.js';
 import { _hwfitCache } from './cookbook-hwfit.js';
 import { topPortalZ } from './toolWindowZOrder.js';
 import { clearGpuMemory } from './cookbookGpu.js';
+import { gpuVisibility, gpuButtonLabel } from './cookbookGpuSelection.js';
 import { isH3VideoComponent, showH3Video } from './h3Video.js';
+import { isBfsVideoModel, showBfsVideo } from './bfsVideo.js';
 
 // Shared state/functions injected by init()
 let _envState;
@@ -49,7 +51,7 @@ const SERVE_FAVORITES_KEY = 'cookbook-serve-favorite-models';
 
 let _cachedAllModels = [];
 let _cachedModelsHost = '';
-const _CACHED_MODELS_SCAN_KEY = 'cookbook_cached_models_scan_v5_artifact_files';
+const _CACHED_MODELS_SCAN_KEY = 'cookbook_cached_models_scan_v6_cache_roots';
 const _CACHED_MODELS_SCAN_TTL = 30 * 1000;
 
 function _normalizeCookbookModelDir(dir) {
@@ -839,8 +841,10 @@ function _cachedAdapterSelectHtml(kind, currentRepo = '') {
   return `<label class="hwfit-cached-adapter-label ${cls}" style="grid-column:1 / -1;">Cached adapter <select class="hwfit-cached-adapter-select" data-adapter-kind="${esc(kind)}" style="height:30px;width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;font:inherit;font-size:11px;"><option value="">Choose cached adapter…</option>${opts}</select></label>`;
 }
 
-function _showAdapterFiles(item, model, list) {
+function _showAdapterFiles(item, model, list, scannedHost = '') {
   const files = model.adapter_files || [];
+  const bfs = isBfsVideoModel(model);
+  let selectedWorkflow = null;
   const groups = new Map();
   for (const file of files) {
     const family = file.family || 'Other adapters';
@@ -854,15 +858,15 @@ function _showAdapterFiles(item, model, list) {
   item.style.flexDirection = 'column'; item.style.alignItems = 'stretch';
   item.insertAdjacentHTML('beforeend', `<div class="hwfit-serve-panel cookbook-adapter-panel" style="min-width:0;line-height:1.5;">
     <strong>LoRA adapters · ${files.length} files</strong>
-    <p>Choose an adapter to see its base model and workflow files. These weights must be loaded with a base model.</p>
+    <p>${bfs ? 'Choose an adapter and workflow, then choose your face/head image and target video. You can review all inputs and settings before generating.' : 'Choose an adapter to see its base model and workflow files. These weights must be loaded with a base model.'}</p>
     <label style="display:block;">Adapter file<select class="cookbook-adapter-file" style="${selectStyle}">${options}</select></label>
     <p class="cookbook-adapter-requirements" role="status"></p>
+    <div class="cookbook-adapter-workflows"></div>
+    ${bfs ? `<button type="button" class="cookbook-btn cookbook-run-bfs"${scannedHost ? ' disabled' : ''}>Choose face/head and target video</button><p>${scannedHost ? `BFS video runs on the local Odysseus server. This cache is on ${esc(scannedHost)}; select Local to run a workflow with local files.` : 'Opens the input form on the local Odysseus server. Rendering starts only when you click Generate video in that form.'}</p>` : `<p>${model.is_video
+      ? 'These video adapters require their matching ComfyUI workflow, base weights, reference image, and guide video. Odysseus’s Diffusers server currently handles still images; it cannot run these video workflows.'
+      : 'Open the matching base model in Launch, then select this file under Cached adapter. Keep the base model as the main model.'}</p>`}
     <label style="display:block;">Path on selected server<input class="cookbook-adapter-path" readonly style="${selectStyle}" /></label>
     <button type="button" class="cookbook-btn cookbook-copy-adapter" style="margin:8px 0;">Copy adapter path</button>
-    <div class="cookbook-adapter-workflows"></div>
-    <p>${model.is_video
-      ? 'These video adapters require their matching ComfyUI workflow, base weights, reference image, and guide video. Odysseus’s Diffusers server currently handles still images; it cannot run these video workflows.'
-      : 'Open the matching base model in Launch, then select this file under Cached adapter. Keep the base model as the main model.'}</p>
   </div>`);
   const panel = item.querySelector('.cookbook-adapter-panel');
   const picker = panel.querySelector('.cookbook-adapter-file');
@@ -878,12 +882,14 @@ function _showAdapterFiles(item, model, list) {
     const selectedVersion = version(file.name);
     if (selectedVersion !== null) workflows.sort((a, b) => Number(version(b.name) === selectedVersion) - Number(version(a.name) === selectedVersion));
     const area = panel.querySelector('.cookbook-adapter-workflows');
+    selectedWorkflow = null;
     area.innerHTML = workflows.length ? `<label style="display:block;">Workflow for ${esc(file.family || 'this adapter')}<select class="cookbook-adapter-workflow" style="${selectStyle}">${workflows.map((workflow, index) =>
       `<option value="${index}">${esc(workflow.repo_path || workflow.rel_path)}</option>`).join('')}</select></label><p class="cookbook-workflow-links"></p>` : '<p>No matching workflow file was found in this cache. Check the repository’s model card.</p>';
     if (workflows.length) {
       const workflowPicker = area.querySelector('select');
       const showWorkflow = () => {
         const workflow = workflows[Number(workflowPicker.value)];
+        selectedWorkflow = workflow;
         const url = _artifactRepoURL(model, workflow);
         const links = area.querySelector('.cookbook-workflow-links');
         links.innerHTML = `${url ? `<a href="${esc(url)}" target="_blank" rel="noopener" style="color:var(--fg);">Open workflow on Hugging Face ↗</a> · ` : ''}<button type="button" class="cookbook-btn cookbook-copy-workflow">Copy workflow path</button>`;
@@ -896,6 +902,11 @@ function _showAdapterFiles(item, model, list) {
   }
   picker.addEventListener('change', update);
   panel.querySelector('.cookbook-copy-adapter').addEventListener('click', () => _copyText(pathField.value));
+  panel.querySelector('.cookbook-run-bfs')?.addEventListener('click', event => {
+    if (scannedHost) return;
+    const file = files.find(row => row.rel_path === picker.value) || files[0];
+    showBfsVideo({ preferred: { family: file?.family, adapter_path: file?.repo_path, workflow_path: selectedWorkflow?.repo_path } }, event.currentTarget);
+  });
   update();
   requestAnimationFrame(() => panel.scrollIntoView({block: 'nearest', behavior: 'smooth'}));
 }
@@ -1354,7 +1365,7 @@ function _rerenderCachedModels() {
         : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>';
       const items = [];
       items.push({ label: _favNow ? 'Unfavorite' : 'Favorite', icon: _favIco, action: 'favorite' });
-      if (m && (m.status === 'ready' || isH3VideoComponent(m))) items.push({ label: m.adapter_only ? 'Choose adapter' : isH3VideoComponent(m) ? 'Generate video' : 'Serve', icon: _serveIco, action: 'serve' });
+      if (m && (m.status === 'ready' || isH3VideoComponent(m) || (isBfsVideoModel(m) && m.adapter_files?.length))) items.push({ label: m.adapter_only ? 'Choose adapter' : isH3VideoComponent(m) ? 'Generate video' : 'Serve', icon: _serveIco, action: 'serve' });
       if (m && (m.status === 'downloading' || m.status === 'stalled' || m.has_incomplete)) {
         items.push({ label: 'Resume download', icon: _retryIco, action: 'retry' });
       }
@@ -1460,7 +1471,7 @@ function _rerenderCachedModels() {
         showH3Video({ preferredModel: m }, item);
         return;
       }
-      if (m.status !== 'ready') {
+      if (m.status !== 'ready' && !(isBfsVideoModel(m) && m.adapter_files?.length)) {
         if (m.status === 'downloading' && _isActivelyDownloading(m.repo_id)) {
           uiModule.showToast?.(`${(m.name || m.repo_id || 'Model').split('/').pop()} is still downloading.`);
         } else if (_isIncompleteCachedModel(m)) {
@@ -1500,7 +1511,7 @@ function _rerenderCachedModels() {
       });
 
       if (m.adapter_only && m.adapter_files?.length) {
-        _showAdapterFiles(item, m, list);
+        _showAdapterFiles(item, m, list, scannedHost);
         return;
       }
 
@@ -1547,11 +1558,9 @@ function _rerenderCachedModels() {
       const sv = (k, def) => (ss[k] !== undefined && savedMatchesBackend) ? ss[k] : def;
       const defaultTp = defaultBackend === 'llamacpp' ? '1' : sv('tp', _isMiniMaxMSeries ? '8' : '1');
       const detectedGpuIds = _allGpuIds(_getGpuToggleTotal?.());
-      const defaultGpus = defaultBackend === 'llamacpp'
-        ? '0'
-        : (savedMatchesBackend && _hasOwn(ss, 'gpus') && String(ss.gpus || '').trim()
-          ? ss.gpus
-          : (_es.gpus || detectedGpuIds));
+      const defaultGpus = savedMatchesBackend && _hasOwn(ss, 'gpus')
+        ? String(ss.gpus || '')
+        : (defaultBackend === 'llamacpp' ? '0' : (_es.gpus || detectedGpuIds));
       const tpOpts = [1,2,4,8].map(n => `<option${defaultTp==String(n)?' selected':''}>${n}</option>`).join('');
       const dtypeOpts = ['auto','float16','bfloat16'].map(d => `<option value="${d}"${sv('dtype','auto')===d?' selected':''}>${d}</option>`).join('');
       // KV cache default — most models are fine on auto, but a few
@@ -1665,20 +1674,12 @@ function _rerenderCachedModels() {
       panelHtml += `<label>${_l('venv / conda','Path to a Python venv, or a Conda env name/path when the selected server uses Conda.')}<input type="text" class="hwfit-sf hwfit-sf-wide" data-field="venv" value="${esc(sv('venv', _es.envPath || _srvVenv || ''))}" placeholder="~/venv or conda-env" /></label>`;
       const defaultPort = defaultBackend === 'ollama' ? '11434' : _nextAvailablePort();
       panelHtml += `<label>${_l('Port','HTTP port for the API server')}<input type="text" class="hwfit-sf" data-field="port" value="${esc(sv('port', defaultPort))}" /></label>`;
-      const _activeGpus = (defaultGpus || '').split(',').map(s => s.trim()).filter(Boolean);
-      const detectedGpuCount = Number(_getGpuToggleTotal?.() || 0);
-      const _gpuMax = Math.max(detectedGpuCount || 8, ...(_activeGpus.map(Number).filter(n => !isNaN(n)).map(n => n + 1)));
-      let _gpuBtnsHtml = '';
-      for (let i = 0; i < _gpuMax; i++) {
-        const on = _activeGpus.includes(String(i));
-        _gpuBtnsHtml += `<button type="button" class="cookbook-gpu-btn${on ? ' active' : ''}" data-gpu="${i}">${i}</button>`;
-      }
       // GPUs button strip moved to Row 2 (next to GPU Mem) below. 4px
       // margin on the left, 8px on the right — extra 4px right-side gap
       // separates the GPU chiclets from the GPU Mem field that follows
       // (asked-for breathing room; 4px on either side felt cramped on
       // the GPU-Mem boundary).
-      const _gpusLabelHtml = `<label class="hwfit-gpus-label cookbook-llama-gpu-only" style="margin:0 8px 0 4px;">${_l('GPUs','Toggle which GPUs to use')}<div class="cookbook-gpu-group">${_gpuBtnsHtml}</div><input type="hidden" class="hwfit-sf" data-field="gpus" value="${esc(defaultGpus)}" /></label>`;
+      const _gpusLabelHtml = `<label class="hwfit-gpus-label cookbook-llama-gpu-only" style="margin:0 8px 0 4px;">${_l('GPUs','Toggle which GPUs to use')}<div class="cookbook-gpu-group" style="flex-wrap:wrap;"></div><span class="cookbook-gpu-status" role="status" style="font-size:11px;white-space:normal;">Detecting GPUs…</span><button type="button" class="cookbook-btn cookbook-gpu-retry" style="display:none;max-width:100%;white-space:normal;margin-top:4px;">Retry GPU detection</button><input type="hidden" class="hwfit-sf" data-field="gpus" value="${esc(defaultGpus)}" /></label>`;
       panelHtml += _gpusLabelHtml;
       panelHtml += `</div>`;
       // (hwfit-serve-runtime-note moved to the top of the panel — see above.)
@@ -1980,6 +1981,7 @@ function _rerenderCachedModels() {
         f.host = buildTarget.host || '';
         f.platform = buildTarget.platform || '';
         f.venv = buildTarget.venv || '';
+        f.gpu_visibility = gpuVisibility(f.gpus, panel._gpuProbe, buildTarget);
         const hostField = panel.querySelector('[data-field="host"]');
         if (hostField) hostField.value = f.host;
         const backend = f.backend || 'vllm';
@@ -2774,9 +2776,11 @@ function _rerenderCachedModels() {
         });
       }
 
-      // Wire GPU toggle buttons
-      panel.querySelectorAll('.cookbook-gpu-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
+      // Delegate to buttons added by the selected server's GPU probe.
+      const _gpuGroup = panel.querySelector('.cookbook-gpu-group');
+      _gpuGroup.addEventListener('click', (event) => {
+          const btn = event.target.closest('.cookbook-gpu-btn');
+          if (!btn) return;
           btn.classList.toggle('active');
           const activeBtns = [...panel.querySelectorAll('.cookbook-gpu-btn.active')];
           const active = activeBtns.map(b => b.dataset.gpu).join(',');
@@ -2799,7 +2803,6 @@ function _rerenderCachedModels() {
           }
           updateCmd();
           try { _updateRecommendedCtx(false); } catch {}
-        });
       });
 
       // Wire "Probe GPUs" / "Clear Server" — annotate GPU buttons with free VRAM and per-GPU PIDs
@@ -2939,6 +2942,9 @@ function _rerenderCachedModels() {
       if (_probeBtn) {
         // Per-panel state so a previously opened popup can be closed/reused
         panel._gpuProbe = panel._gpuProbe || { popup: null, byIdx: null };
+        const _gpuStatus = panel.querySelector('.cookbook-gpu-status');
+        const _gpuRetry = panel.querySelector('.cookbook-gpu-retry');
+        let _probeGeneration = 0;
 
         const _closeProbePopup = () => {
           if (panel._gpuProbe.popup) {
@@ -3050,71 +3056,58 @@ function _rerenderCachedModels() {
 
         const _runProbe = async (silent = false) => {
           _closeProbePopup();
-          const hostEl = panel.querySelector('[data-field="host"]');
-          const remoteHost = (hostEl && hostEl.value || '').trim();
+          const generation = ++_probeGeneration;
+          const probeTarget = _selectedServeTarget(panel);
+          const isCurrent = () => {
+            const target = _selectedServeTarget(panel);
+            return generation === _probeGeneration && target.host === probeTarget.host && target.serverKey === probeTarget.serverKey;
+          };
+          // Retain the saved choice without inventing hardware while loading.
+          _gpuGroup.replaceChildren();
+          panel._gpuProbe.byIdx = null;
+          _gpuStatus.textContent = 'Detecting GPUs…';
+          _gpuStatus.hidden = false;
+          _gpuRetry.style.display = 'none';
+          const remoteHost = probeTarget.host || '';
           const params = new URLSearchParams();
           if (remoteHost) params.set('host', remoteHost);
+          if (probeTarget.port) params.set('ssh_port', probeTarget.port);
           const url = '/api/cookbook/gpus' + (params.toString() ? '?' + params.toString() : '');
-          const res = await fetch(url, { credentials: 'same-origin' });
           let data;
-          try { data = await res.json(); } catch (_) { data = {}; }
-          if (!res.ok) {
-            const err = data.detail || data.error || res.statusText || `HTTP ${res.status}`;
-            const hint = res.status === 404 ? ' — server may need a restart to pick up new endpoint' : '';
-            if (!silent) uiModule.showToast('GPU probe failed: ' + err + hint, 8000);
+          try {
+            const res = await fetch(url, { credentials: 'same-origin' });
+            try { data = await res.json(); } catch (_) { data = {}; }
+            if (!res.ok || !data.ok || !Array.isArray(data.gpus)) {
+              throw new Error(data.detail || data.error || (!res.ok ? res.statusText || `HTTP ${res.status}` : 'Invalid GPU inventory'));
+            }
+          } catch (error) {
+            if (!isCurrent()) return null;
+            _gpuStatus.textContent = 'GPU detection unavailable. Your saved selection is retained.';
+            _gpuStatus.title = String(error.message || error);
+            _gpuRetry.style.display = '';
+            if (!silent) uiModule.showToast('GPU probe failed: ' + error.message, 6000);
             return null;
           }
-          if (!data.ok) {
-            if (!silent) uiModule.showToast('GPU probe failed: ' + (data.error || 'unknown'), 6000);
-            return null;
-          }
+          if (!isCurrent()) return null;
+          data.gpus = data.gpus.filter(g => g && Number.isInteger(g.index) && g.index >= 0);
           panel._gpuProbe.byIdx = new Map(data.gpus.map(g => [g.index, g]));
           panel._gpuProbe.host = remoteHost;
-          // If the probe found more GPUs than the panel originally
-          // rendered (e.g. host switched from a 1-iGPU local box to an
-          // 8-GPU remote), append buttons for the missing indexes so the
-          // user can actually toggle them. Reuse the parent <div> from
-          // the first existing button as the insertion target.
-          try {
-            const _existing = Array.from(panel.querySelectorAll('.cookbook-gpu-btn'));
-            const _grp = _existing[0] && _existing[0].parentElement;
-            if (_grp) {
-              const _have = new Set(_existing.map(b => parseInt(b.dataset.gpu, 10)));
-              const _activeStr = (panel.querySelector('[data-field="gpus"]')?.value || '').split(',').map(s => s.trim());
-              data.gpus.forEach(g => {
-                if (_have.has(g.index)) return;
-                const _b = document.createElement('button');
-                _b.type = 'button';
-                _b.className = 'cookbook-gpu-btn' + (_activeStr.includes(String(g.index)) ? ' active' : '');
-                _b.dataset.gpu = String(g.index);
-                _b.textContent = String(g.index);
-                _grp.appendChild(_b);
-                // Re-wire the click handler the same way the panel did
-                // on first render. Toggles active + rewrites the hidden
-                // gpus input from the live set of active buttons.
-                _b.addEventListener('click', () => {
-                  _b.classList.toggle('active');
-                  const activeBtns = [...panel.querySelectorAll('.cookbook-gpu-btn.active')];
-                  const ids = activeBtns.map(x => x.dataset.gpu).sort((a, b) => +a - +b).join(',');
-                  const hidden = panel.querySelector('[data-field="gpus"]');
-                  if (hidden) { hidden.value = ids; hidden.dispatchEvent(new Event('change', { bubbles: true })); }
-                });
-              });
-            }
-          } catch (_) {}
-          panel.querySelectorAll('.cookbook-gpu-btn').forEach(b => {
-            const idx = parseInt(b.dataset.gpu);
-            const g = panel._gpuProbe.byIdx.get(idx);
-            b.classList.remove('gpu-free', 'gpu-busy', 'gpu-missing');
-            if (!g) {
-              // GPU doesn't exist on this server — hide it rather than show a
-              // dead button. The panel renders up to 8 before the count is known
-              // (e.g. a single-GPU box would otherwise show 0–7).
-              b.style.display = 'none';
-              b.classList.remove('active');
-              return;
-            }
-            b.style.display = '';
+          panel._gpuProbe.serverKey = probeTarget.serverKey || '';
+          panel._gpuProbe.backend = data.backend || '';
+          const selected = (panel.querySelector('[data-field="gpus"]')?.value || '').split(',').map(s => s.trim());
+          panel._gpuProbe.byIdx.forEach((g, idx) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'cookbook-gpu-btn' + (selected.includes(String(idx)) ? ' active' : '');
+            b.dataset.gpu = String(idx);
+            _gpuGroup.appendChild(b);
+            b.textContent = gpuButtonLabel(g);
+            b.style.width = 'auto';
+            b.style.minWidth = '30px';
+            b.style.padding = '0 6px';
+            b.style.whiteSpace = 'nowrap';
+            b.style.flexShrink = '0';
+            b.parentElement.style.flexWrap = 'wrap';
             const freeGb = (g.free_mb / 1024).toFixed(1);
             const totalGb = (g.total_mb / 1024).toFixed(1);
             const procCount = (g.processes && g.processes.length) || 0;
@@ -3122,11 +3115,15 @@ function _rerenderCachedModels() {
               ? `\n${procCount} process(es) — click to view/kill`
               : '';
             const backendLine = g.backend || data.backend ? `\nprobe: ${g.source || data.source || g.backend || data.backend}` : '';
-            b.title = `GPU ${idx} ${g.name}\n${freeGb} / ${totalGb} GB free · util ${g.util_pct}%${procLine}${backendLine}`;
+            b.title = `GPU ${idx} ${g.name} on ${probeTarget.serverName || remoteHost || 'Local'}\n${freeGb} / ${totalGb} GB free · util ${g.util_pct}%${procLine}${backendLine}${g.uuid ? `\n${g.uuid}` : ''}`;
             // Treat any GPU with attached compute processes OR <85% free as busy.
             const isBusy = procCount > 0 || g.busy;
             b.classList.add(isBusy ? 'gpu-busy' : 'gpu-free');
           });
+          _gpuStatus.hidden = data.gpus.length > 0;
+          _gpuStatus.textContent = 'No GPUs detected on this server.';
+          _gpuRetry.style.display = data.gpus.length ? 'none' : '';
+          if (!_cmdManuallyEdited) updateCmd();
           if (!silent) {
             if (data.gpus.length === 0) {
               uiModule.showToast('No GPU memory probe data available', 4000);
@@ -3146,9 +3143,8 @@ function _rerenderCachedModels() {
           catch (e) { uiModule.showToast('GPU probe error: ' + e.message, 6000); }
         });
 
-        // Auto-probe (silent) on open so the GPU buttons reflect the real count
-        // — a single-GPU server should show just GPU 0, not the placeholder 0–7.
-        // Falls back to the full 0–7 set if the server is unreachable.
+        _gpuRetry.addEventListener('click', () => _probeBtn.click());
+        // Only a successful probe can populate the picker.
         _runProbe(true).catch(() => {});
 
         if (_clearBtn) {
@@ -3161,23 +3157,17 @@ function _rerenderCachedModels() {
           });
         }
 
-        // After probe, clicking a GPU button opens kill popup (Shift-click also toggles select)
-        panel.querySelectorAll('.cookbook-gpu-btn').forEach(btn => {
-          btn.addEventListener('contextmenu', (ev) => {
-            if (!panel._gpuProbe.byIdx) return;
+        // Delegated handlers also cover devices discovered after opening.
+        for (const eventName of ['contextmenu', 'dblclick']) {
+          _gpuGroup.addEventListener(eventName, (ev) => {
+            const btn = ev.target.closest('.cookbook-gpu-btn');
+            if (!btn || !panel._gpuProbe.byIdx) return;
             const g = panel._gpuProbe.byIdx.get(parseInt(btn.dataset.gpu));
             if (!g) return;
             ev.preventDefault();
             _openProbePopup(btn, g, panel._gpuProbe.host);
           });
-          btn.addEventListener('dblclick', (ev) => {
-            if (!panel._gpuProbe.byIdx) return;
-            const g = panel._gpuProbe.byIdx.get(parseInt(btn.dataset.gpu));
-            if (!g) return;
-            ev.preventDefault();
-            _openProbePopup(btn, g, panel._gpuProbe.host);
-          });
-        });
+        }
       }
 
       // Update preview on input change
@@ -4239,7 +4229,7 @@ export async function _fetchCachedModels(fresh = false, opts = {}) {
     if (selectedServer && Array.isArray(selectedServer.modelDirs)) {
       for (const d of selectedServer.modelDirs) {
         const normalized = _normalizeCookbookModelDir(d);
-        if (normalized && normalized !== '~/.cache/huggingface/hub') modelDirs.push(normalized);
+        if (normalized) modelDirs.push(normalized);
       }
     }
     // Sync the header dir pills to THIS server (the one whose models we're listing).
@@ -4250,7 +4240,7 @@ export async function _fetchCachedModels(fresh = false, opts = {}) {
     if (_dirsEl && selectedServer) {
       const _allDirs = (Array.isArray(selectedServer.modelDirs) && selectedServer.modelDirs.length
         ? selectedServer.modelDirs
-        : [selectedServer.modelDir || '~/.cache/huggingface/hub'])
+        : [selectedServer.modelDir || (!host && _envState.localHfCacheDir) || '~/.cache/huggingface/hub'])
         .map(d => _normalizeCookbookModelDir(d)).filter(Boolean);
       _dirsEl.innerHTML = _allDirs.map(d => `<span class="cookbook-serve-dir-pill">${esc(d)}</span>`).join('')
         + '<span class="cookbook-serve-dir-edit" title="Edit in Settings">edit</span>';

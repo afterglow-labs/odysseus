@@ -5,6 +5,14 @@
 .h3-video-scroll { padding:18px 22px 24px; overflow-y:auto; overscroll-behavior:contain; min-width:0; }
 .h3-video-description { margin:0 0 12px; line-height:1.5; font-size:13px; }
 .h3-video-target { font-size:13px; font-weight:600; overflow-wrap:anywhere; margin:0 0 8px; }
+.h3-video-gpu-panel { margin:14px 0; }
+.h3-video-gpu-panel .h3-video-toolbar { margin:0 0 8px; }
+.h3-video-gpu-panel .h3-video-toolbar p { flex:initial; }
+.h3-video-gpu-card { padding:10px 12px; min-width:0; border:1px solid var(--border,#544c60); border-radius:8px; }
+.h3-video-gpu-card strong { display:block; font-size:13px; overflow-wrap:anywhere; }
+.h3-video-gpu-roles { display:block; min-height:1.3em; color:var(--accent,var(--red)); font-size:12px; }
+.h3-video-gpu-card progress { width:100%; height:8px; accent-color:var(--accent,var(--red)); }
+.h3-video-gpu-stale .h3-video-gpu-cards { opacity:.65; }
 .h3-video-muted { color:var(--muted,var(--fg,#ddd)); opacity:.78; font-size:12px; line-height:1.5; margin:5px 0; }
 .h3-video-toolbar { display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap; margin:12px 0; }
 .h3-video-toolbar h3 { margin:0; font-size:15px; }
@@ -14,6 +22,12 @@
 .h3-video-field { display:flex; flex-direction:column; gap:6px; min-width:0; font-size:13px; font-weight:500; }
 .h3-video-field .cookbook-field-input { width:100%; min-width:0; height:38px; box-sizing:border-box; font-size:13px; }
 .h3-video-field textarea.cookbook-field-input { height:auto; min-height:100px; resize:vertical; padding:10px; line-height:1.5; }
+.h3-video-prompt-header,.h3-video-prompt-actions,.h3-video-enhancer-info { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.h3-video-prompt-header { justify-content:space-between; }
+.h3-video-prompt-actions { margin-left:auto; }
+.h3-video-enhancer-info p { flex:1; min-width:140px; overflow-wrap:anywhere; }
+.h3-video-enhancer-info button { flex-shrink:0; }
+.h3-video-enhancer-picker { margin-top:6px; }
 .h3-video-component-path { overflow-wrap:anywhere; margin:8px 0 15px; user-select:text; }
 .h3-video-inputs { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
 .h3-video-upload { padding:12px; border:1px solid var(--border,#544c60); border-radius:8px; margin-top:12px; min-width:0; }
@@ -23,6 +37,23 @@
 .h3-video-file-list li { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 0; }
 .h3-video-file-list span { overflow-wrap:anywhere; min-width:0; font-size:12px; }
 .h3-video-file-list button { flex-shrink:0; }
+.video-batch-panel { margin:14px 0; padding:12px; border:1px solid var(--border,#544c60); border-radius:8px; min-width:0; }
+.video-batch-toggle { display:flex; align-items:center; gap:10px; font-size:13px; cursor:pointer; }
+.video-batch-toggle input { width:20px; height:20px; margin:0; accent-color:var(--accent,var(--red)); flex-shrink:0; }
+.video-batch-content { margin-top:10px; min-width:0; }
+.video-batch-drop { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; padding:20px 14px; margin:12px 0; border:1px dashed var(--border,#544c60); border-radius:8px; text-align:center; cursor:pointer; }
+.video-batch-drop strong { font-size:13px; }
+.video-batch-drop:focus-visible,.video-batch-dragover { outline:2px solid var(--accent,var(--red)); outline-offset:2px; background:var(--bg,#18151d); }
+.video-batch-drop[aria-disabled=true] { opacity:.5; cursor:default; }
+.video-batch-list { list-style:none; padding:0; margin:10px 0; max-height:260px; overflow-y:auto; overscroll-behavior:contain; }
+.video-batch-row { display:grid; grid-template-columns:minmax(0,1fr) minmax(100px,1fr) auto; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--border,#544c60); }
+.video-batch-row:last-child { border-bottom:0; }
+.video-batch-name,.video-batch-state,.video-batch-status { min-width:0; overflow-wrap:anywhere; font-size:12px; line-height:1.5; }
+.video-batch-state { opacity:.78; }
+.video-batch-row[data-status=error] .video-batch-state { color:var(--red,#ff8c98); opacity:1; }
+.video-batch-row button { flex-shrink:0; }
+.video-batch-progress { width:100%; height:8px; accent-color:var(--accent,var(--red)); }
+.video-batch-actions { flex-wrap:wrap; gap:8px; margin:14px 0; }
 .h3-video-advanced { margin-top:16px; padding:12px; border:1px solid var(--border,#544c60); border-radius:8px; }
 .h3-video-advanced summary,.h3-video-job summary { cursor:pointer; font-size:13px; }
 .h3-video-actions { display:flex; justify-content:flex-end; margin:18px 0 24px; }
@@ -30,9 +61,28 @@
 .h3-video-error { color:var(--red,#ff8c98); font-size:13px; white-space:pre-wrap; overflow-wrap:anywhere; }
 .h3-video-job { padding:14px; margin:12px 0; border:1px solid var(--border,#544c60); border-radius:10px; min-width:0; }
 .h3-video-job .h3-video-toolbar { margin:0 0 6px; }
+.h3-video-job-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.h3-video-delete-confirmation { padding:12px; margin:10px 0; border:1px solid var(--red,#ff8c98); border-radius:8px; }
+.h3-video-delete-confirmation p { margin:0 0 10px; font-size:13px; line-height:1.5; }
+.h3-video-delete-confirmation .h3-video-error { margin-top:10px; margin-bottom:0; }
+.h3-video-delete-button { color:var(--red,#ff8c98); }
+.video-workflow-export-overlay { padding:16px; }
+.h3-video-export-dialog { width:min(580px,100%); }
+.h3-video-export-choices { border:1px solid var(--border,#544c60); border-radius:8px; margin:0 0 14px; padding:12px; min-width:0; }
+.h3-video-export-choices legend { font-size:13px; padding:0 5px; }
+.h3-video-export-choice { display:flex; align-items:flex-start; gap:10px; margin:10px 0; cursor:pointer; }
+.h3-video-export-choice input { flex-shrink:0; width:18px; height:18px; margin:2px 0; accent-color:var(--accent,var(--red)); }
+.h3-video-export-choice span { min-width:0; }
+.h3-video-export-choice strong { display:block; font-size:13px; line-height:1.5; }
+.h3-video-export-choice small { display:block; }
+.h3-video-export-destination { margin-top:16px; }
+.h3-video-export-progress { width:100%; accent-color:var(--accent,var(--red)); margin:8px 0; }
 .h3-video-job strong { font-size:13px; overflow-wrap:anywhere; }
 .h3-video-job progress { width:100%; accent-color:var(--accent,var(--red)); margin:8px 0; }
 .h3-video-log { font-size:11px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; max-height:230px; overflow:auto; user-select:text; padding:10px; background:var(--bg,#18151d); border-radius:6px; }
+.h3-video-job-prompt { margin:10px 0; }
+.h3-video-prompt-used { font:inherit; font-size:13px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; max-height:260px; overflow:auto; user-select:text; padding:10px; background:var(--bg,#18151d); border-radius:6px; }
+.h3-video-job-prompt-tools { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
 .h3-video-output video { display:block; width:100%; max-height:440px; background:#000; border-radius:6px; margin:12px 0; }
 .h3-video-output a { display:inline-block; text-decoration:none; margin:0 0 12px; }
 .h3-video-dialog [hidden] { display:none !important; }
@@ -47,4 +97,51 @@
   .h3-video-numbers { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .h3-video-field .cookbook-field-input { font-size:16px; }
   .h3-video-actions button { width:100%; }
+  .video-batch-row { grid-template-columns:minmax(0,1fr) auto; gap:4px 8px; }
+  .video-batch-name { grid-column:1; }
+  .video-batch-state { grid-column:1; grid-row:2; }
+  .video-batch-row button { grid-column:2; grid-row:1 / span 2; }
+}
+.h3-video-editing {
+  border: 1px solid var(--red, #ed8796);
+  border-radius: 10px;
+  padding: 14px;
+  margin-bottom: 16px;
+  overflow-wrap: anywhere;
+}
+.h3-video-editing[hidden] { display: none; }
+.h3-video-editing p { margin: 8px 0 12px; }
+.video-queue-panel { padding:14px; margin:12px 0; border:1px solid var(--border,#544c60); border-radius:10px; min-width:0; }
+.video-queue-panel > .h3-video-toolbar { margin-top:0; }
+.video-queue-panel select { min-width:0; max-width:100%; }
+.video-queue-panel .h3-video-job-actions { margin:12px 0; }
+.video-queue-edit-actions { padding-top:10px; border-top:1px solid var(--border,#544c60); }
+.video-queue-editor { margin-top:16px; padding-top:14px; border-top:1px solid var(--border,#544c60); }
+.video-queue-editor h3 { font-size:15px; margin:0 0 8px; }
+.video-queue-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; margin:14px 0; }
+.video-queue-field-wide { grid-column:1 / -1; }
+.h3-lora-editor { min-width:0; margin:12px 0; }
+.h3-lora-list { display:grid; gap:12px; margin-bottom:10px; }
+.h3-lora-row { display:grid; grid-template-columns:minmax(0,1fr) 110px auto; gap:10px; align-items:end; }
+.h3-lora-row > button { margin-bottom:2px; }
+.h3-lora-row .h3-video-field { min-width:0; }
+@media (max-width:600px) {
+  .h3-lora-row { grid-template-columns:minmax(0,1fr) auto; }
+  .h3-lora-row > label:first-child { grid-column:1 / -1; }
+}
+.video-queue-field { display:flex; flex-direction:column; gap:8px; min-width:0; }
+.video-queue-field-toggle,.video-queue-approval { display:flex; align-items:flex-start; gap:8px; font-size:13px; line-height:1.5; }
+.video-queue-field-toggle input,.video-queue-approval input { flex-shrink:0; margin:2px 0 0; width:18px; height:18px; accent-color:var(--accent,var(--red)); }
+.video-queue-field .cookbook-field-input { width:100%; min-width:0; box-sizing:border-box; }
+.video-queue-field textarea { min-height:100px; resize:vertical; }
+.video-queue-field input[type=checkbox].cookbook-field-input { width:20px; height:20px; }
+.video-queue-field .cookbook-field-input:disabled { opacity:.5; }
+.video-queue-targets { margin:10px 0; font-size:12px; }
+.video-queue-targets summary { cursor:pointer; }
+.video-queue-targets ul { max-height:170px; overflow:auto; overflow-wrap:anywhere; padding-left:20px; }
+.video-queue-message { white-space:pre-wrap; overflow-wrap:anywhere; }
+@media (max-width:600px) {
+  .video-queue-fields { grid-template-columns:minmax(0,1fr); }
+  .video-queue-panel button { min-height:40px; white-space:normal; }
+  .video-queue-field .cookbook-field-input { font-size:16px; }
 }

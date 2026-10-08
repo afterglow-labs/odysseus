@@ -1,4 +1,5 @@
 import pytest
+from packaging.requirements import Requirement
 
 from src.dependency_catalog import dependency_catalog, requirement_specs, unsupported_windows_requirements
 
@@ -20,6 +21,17 @@ def test_app_package_installer_can_be_updated_from_dependencies():
 
 def test_realesrgan_declares_distutils_provider_for_runtime_repairs():
     assert "setuptools" in requirement_specs(row("realesrgan"))
+
+
+def test_sglang_requires_current_wheel_based_release_without_obsolete_all_extra():
+    requirements = requirement_specs(row("sglang", local="linux"))
+    assert len(requirements) == 1
+    requirement = Requirement(requirements[0])
+    assert requirement.name == "sglang"
+    assert not requirement.extras
+    assert "0.5.21" in requirement.specifier
+    assert "0.5.5.post2" not in requirement.specifier
+    assert "0.5.4.post2" not in requirement.specifier
 
 
 def test_linux_serving_recipes_are_not_offered_as_native_mac_installs():

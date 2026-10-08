@@ -1797,6 +1797,48 @@ def _parse_anthropic_response(data: dict) -> str:
     )
 
 
+def _strict_final_response(data: dict, provider: str) -> str:
+    """Extract a completed answer without treating reasoning as answer text."""
+    try:
+        if provider == "anthropic":
+            if data.get("stop_reason") not in {"end_turn", "stop_sequence"}:
+                raise ValueError()
+            content = data["content"]
+            if not isinstance(content, list) or any(
+                isinstance(block, dict) and block.get("type") == "tool_use"
+                for block in content
+            ):
+                raise ValueError()
+            text = _parse_anthropic_response(data)
+        else:
+            if provider == "ollama":
+                if data.get("done") is not True or data.get("done_reason") != "stop":
+                    raise ValueError()
+                message = data["message"]
+            else:
+                choice = data["choices"][0]
+                if choice.get("finish_reason") != "stop":
+                    raise ValueError()
+                message = choice["message"]
+            if message.get("tool_calls") or message.get("function_call"):
+                raise ValueError()
+            content = message.get("content")
+            if isinstance(content, list):
+                if any(isinstance(block, dict) and block.get("type") in
+                       {"tool_use", "tool_call", "function_call"} for block in content):
+                    raise ValueError()
+                text, _ = _normalize_mistral_content(content)
+            else:
+                text = content
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError()
+        return text
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
+        raise _FallbackIneligibleHTTPException(
+            502, "The selected model did not return a complete final answer.",
+        ) from exc
+
+
 def _as_content_blocks(content) -> List[Dict]:
     """Coerce a message `content` into a list of content blocks.
 
@@ -2469,8 +2511,9 @@ async def llm_call_async(
     daybreak_enabled: bool = False,
     reasoning_effort: Optional[str] = None,
     generation_options: Optional[Dict] = None,
+    strict_final_only: bool = False,
 ) -> str | tuple[str, str]:
-    """Asynchronous LLM call using httpx with connection pooling, timeout, retry logic, and performance logging."""
+    """Call a provider; strict_final_only rejects incomplete or reasoning-only answers."""
     provider = _detect_provider(url)
     if daybreak_enabled and provider != "chatgpt-subscription":
         raise _AccessProgramHTTPException(400, "Daybreak is available only for the ChatGPT Subscription provider.")
@@ -2496,6 +2539,8 @@ async def llm_call_async(
         reasoning_effort=reasoning_effort,
         generation_options=generation_options,
     )
+    if strict_final_only:
+        cache_key = "strict-final:" + cache_key
     cached_response = _get_cached_response(cache_key)
     if cached_response:
         logger.debug(f"Returning cached response for key: {cache_key}")
@@ -2520,6 +2565,7 @@ async def llm_call_async(
             workload=workload,
             daybreak_enabled=daybreak_enabled,
             reasoning_effort=reasoning_effort,
+            **({"_strict_response_completion": True} if strict_final_only else {}),
         ):
             event_is_error = False
             for line in str(chunk).splitlines():
@@ -2533,6 +2579,8 @@ async def llm_call_async(
                     continue
                 if raw == "[DONE]":
                     response = "".join(parts)
+                    if strict_final_only and not response.strip():
+                        raise _FallbackIneligibleHTTPException(502, "The selected model did not return a complete final answer.")
                     _set_cached_response(
                         cache_key,
                         response,
@@ -2563,8 +2611,10 @@ async def llm_call_async(
                     if isinstance(reported_model, str) and reported_model.strip():
                         actual_model = reported_model.strip()
                 delta = data.get("delta")
-                if isinstance(delta, str):
+                if isinstance(delta, str) and (not strict_final_only or not data.get("thinking")):
                     parts.append(delta)
+        if strict_final_only:
+            raise _FallbackIneligibleHTTPException(502, "The selected model ended without a complete final answer.")
         response = "".join(parts)
         _set_cached_response(cache_key, response, actual_model=actual_model)
         return (response, actual_model) if return_model_metadata else response
@@ -2649,7 +2699,9 @@ async def llm_call_async(
                     if isinstance(reported_model, str) and reported_model.strip()
                     else model
                 )
-                if provider == "anthropic":
+                if strict_final_only:
+                    response = _strict_final_response(data, provider)
+                elif provider == "anthropic":
                     response = _parse_anthropic_response(data)
                 elif provider == "ollama":
                     response = _parse_ollama_response(data)
@@ -2769,7 +2821,8 @@ async def stream_llm(url: str, model: str, messages: List[Dict], temperature: fl
                      tools: Optional[List[Dict]] = None, session_id: Optional[str] = None,
                      tool_choice_none: bool = False, workload: str = "foreground",
                      daybreak_enabled: bool = False, reasoning_effort: Optional[str] = None,
-                     generation_options: Optional[Dict] = None):
+                     generation_options: Optional[Dict] = None,
+                     _strict_response_completion: bool = False):
     target_url = _stream_target_url(url)
     async with _local_model_slot(target_url, model, workload):
         async for chunk in _stream_llm_inner(
@@ -2787,6 +2840,7 @@ async def stream_llm(url: str, model: str, messages: List[Dict], temperature: fl
             daybreak_enabled=daybreak_enabled,
             reasoning_effort=reasoning_effort,
             generation_options=generation_options,
+            **({"_strict_response_completion": True} if _strict_response_completion else {}),
         ):
             yield chunk
 
@@ -2797,7 +2851,8 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
                             tools: Optional[List[Dict]] = None, session_id: Optional[str] = None,
                             tool_choice_none: bool = False, daybreak_enabled: bool = False,
                             reasoning_effort: Optional[str] = None,
-                            generation_options: Optional[Dict] = None):
+                            generation_options: Optional[Dict] = None,
+                            _strict_response_completion: bool = False):
     """Stream LLM responses with improved error handling.
 
     Yields SSE chunks:
@@ -2951,6 +3006,27 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
                         continue
                     evt = data.get("type") or event_name
                     response_data = data.get("response") or {}
+                    if _strict_response_completion:
+                        output_item = data.get("item") or {}
+                        output = response_data.get("output", []) if isinstance(response_data, dict) else []
+                        tool_output = any(
+                            isinstance(item, dict) and str(item.get("type", "")).endswith("_call")
+                            for item in [output_item, *(output if isinstance(output, list) else [])]
+                        )
+                        incomplete = evt == "response.incomplete" or (
+                            evt == "response.completed" and (
+                                not isinstance(response_data, dict)
+                                or response_data.get("status") != "completed"
+                                or response_data.get("incomplete_details")
+                                or response_data.get("error")
+                            )
+                        )
+                        if tool_output or incomplete:
+                            yield 'event: error\ndata: ' + json.dumps({
+                                "status": 502, "text": "The selected model did not return a complete final answer.",
+                                "fallback_eligible": False,
+                            }) + '\n\n'
+                            return
                     reported_model = (
                         response_data.get("model")
                         if isinstance(response_data, dict)
@@ -3030,7 +3106,13 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
                             )
                         yield f'event: error\ndata: {json.dumps(error_data)}\n\n'
                         return
-                yield "data: [DONE]\n\n"
+                if _strict_response_completion:
+                    yield 'event: error\ndata: ' + json.dumps({
+                        "status": 502, "text": "The selected model ended without a complete final answer.",
+                        "fallback_eligible": False,
+                    }) + '\n\n'
+                else:
+                    yield "data: [DONE]\n\n"
         except (httpx.ConnectError, httpx.ConnectTimeout) as e:
             _cooled = _mark_host_dead(target_url)
             _tail = f" — host cooled for {DEAD_HOST_COOLDOWN:.0f}s" if _cooled else " — transient, will retry"

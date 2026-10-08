@@ -907,6 +907,8 @@ function _stripStateSecrets(state) {
   if (safe.env && typeof safe.env === 'object') {
     const { hfToken, ...env } = safe.env;
     delete env.hostPlatform;
+    delete env.localHfCacheDir;
+    delete env.localLegacyHfCacheDir;
     safe.env = env;
   }
   if (Array.isArray(safe.tasks)) safe.tasks = safe.tasks.map(_redactTaskForStorage);
@@ -1468,7 +1470,13 @@ function _normalizeState(state) {
       dirs = dirs
         .map(d => (d || '').replaceAll('\u2715', '').replaceAll('\u2716', '').trim())
         .filter(Boolean);
-      if (!dirs.includes('~/.cache/huggingface/hub')) dirs.unshift('~/.cache/huggingface/hub');
+      const isLocal = !s.host || s.host.toLowerCase() === 'local';
+      const defaultDir = (isLocal && state.env.localHfCacheDir) || '~/.cache/huggingface/hub';
+      // The tilde path was inserted automatically by older clients. Resolve
+      // that default to the server's actual HF cache instead of re-adding it.
+      dirs = dirs.map(d => d === '~/.cache/huggingface/hub' ? defaultDir : d);
+      if (!dirs.includes(defaultDir)) dirs.unshift(defaultDir);
+      if (s.downloadDir === '~/.cache/huggingface/hub') s.downloadDir = defaultDir;
       s.modelDirs = [...new Set(dirs)];
       delete s.modelDir; // Drop the legacy singular form
       // A download target that's no longer in the dir list falls back to the
@@ -2100,7 +2108,8 @@ export async function _launchServeTask(shortName, repo, cmd, fields, hostOverrid
   // working config fails: no venv activation, no GPU pinning).
   const _usedEnv = _envState.env;
   const _usedEnvPath = _envState.envPath;
-  const _usedGpus = _envState.gpus || '';
+  const _usedGpus = fields && Object.prototype.hasOwnProperty.call(fields, 'gpus')
+    ? String(fields.gpus || '') : (_envState.gpus || '');
   let envPrefix = '';
   if (_isWindows()) {
     if (_envState.env === 'venv' && _envState.envPath) {
@@ -2546,7 +2555,7 @@ export function _renderRunningTab() {
         <span class="cookbook-task-status ${_bdg.cls}"${_bdgTitle}>${esc(_bdg.text)}</span>
         <button type="button" class="cookbook-task-menu-btn" title="Actions">&#8942;</button>
       </div>
-      <div class="cookbook-task-sub"><span class="cookbook-task-session">${esc(task.sessionId)}</span><span class="cookbook-task-uptime" style="display:${((task.type === 'serve' || task.type === 'download') && task.status === 'running') ? '' : 'none'}"></span>${(task.type === 'download') ? `<span class="cookbook-task-dldir" title="Download destination" style="font-size:9px;color:var(--fg-muted);font-family:'Fira Code',monospace;opacity:0.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40ch;">Dir: ${esc(task.payload?.local_dir || '~/.cache/huggingface/hub')}</span>` : ''}</div>
+      <div class="cookbook-task-sub"><span class="cookbook-task-session">${esc(task.sessionId)}</span><span class="cookbook-task-uptime" style="display:${((task.type === 'serve' || task.type === 'download') && task.status === 'running') ? '' : 'none'}"></span>${(task.type === 'download') ? `<span class="cookbook-task-dldir" title="Download destination" style="font-size:9px;color:var(--fg-muted);font-family:'Fira Code',monospace;opacity:0.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40ch;">Dir: ${esc(task.payload?.cache_dir || task.payload?.local_dir || (task.remoteHost ? '~/.cache/huggingface/hub' : _envState.localHfCacheDir || '~/.cache/huggingface/hub'))}</span>` : ''}</div>
       <div class="cookbook-output-wrap cookbook-task-collapsible${(_mobileCollapseDefault && !_shouldAutoExpandTaskOutput(task)) ? ' cookbook-task-collapsed' : ''}"><pre class="cookbook-output-pre">${esc(task.output || '')}</pre><button type="button" class="copy-code cookbook-output-copy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div>
     `;
 

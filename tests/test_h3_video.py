@@ -105,6 +105,20 @@ def test_component_roles_mode_nvfp4_and_reference_rules(inventory):
         h3.validate_config(base, inventory["components"], inventory["gpus"], {"first_frame": [1]})
 
 
+def test_vae_gpu_selection_does_not_change_main_gpu_precision_requirement(inventory):
+    base = config(inventory)
+    selected = h3.validate_config({**base, "vae_gpu": "GPU-ada"}, inventory["components"], inventory["gpus"], {})
+    assert selected["gpu"] == "GPU-blackwell" and selected["vae_gpu"] == "GPU-ada"
+    same = h3.validate_config(base, inventory["components"], inventory["gpus"], {})
+    assert same["vae_gpu"] == ""
+    for bad in (None, [], {}, 0, "GPU-unavailable"):
+        with pytest.raises(ValueError, match="VAEs"):
+            h3.validate_config({**base, "vae_gpu": bad}, inventory["components"], inventory["gpus"], {})
+    with pytest.raises(ValueError, match="Blackwell"):
+        h3.validate_config({**base, "gpu": "GPU-ada", "vae_gpu": "GPU-blackwell"},
+                          inventory["components"], inventory["gpus"], {})
+
+
 @pytest.fixture
 def api(tmp_path, monkeypatch, inventory):
     monkeypatch.setenv("AUTH_ENABLED", "true")
@@ -190,22 +204,30 @@ Path(job['output_path']).write_bytes(b'fixture-MP4')
 Path(job['status_path']).write_text(json.dumps({'phase':'completed','step':20,'total_steps':20}))
 ''')
     manager.worker = worker
-    response = client.post("/api/video/h3/jobs", data={"config": json.dumps(config(inv))})
+    original_prompt = '  A paper boat on a pond.\nA sign reads "こんにちは".  '
+    draft = {**config(inv), "prompt": original_prompt}
+    response = client.post("/api/video/h3/jobs", data={"config": json.dumps(draft)})
     assert response.status_code == 201, response.text
     job_id = response.json()["id"]
+    assert response.json()["prompt"] == original_prompt
+    draft["prompt"] = "A later edit must not change the launched job"
     # A fresh manager instance sees the same detached job after a web restart.
     restarted = h3.H3JobManager(manager.root, gallery_directory=manager.gallery_directory)
     finished = poll(lambda: restarted.view(job_id, "corey"), lambda job: job["status"] not in h3.ACTIVE)
     assert finished["status"] == "completed", finished
+    assert finished["prompt"] == original_prompt
+    assert client.get("/api/video/h3/jobs").json()["jobs"][0]["prompt"] == original_prompt
     with sqlite3.connect(database) as db:
         rows = db.execute("SELECT owner,filename,prompt,caption FROM gallery_images").fetchall()
-    assert len(rows) == 1 and rows[0][0] == "corey"
+    assert len(rows) == 1 and rows[0][0] == "corey" and rows[0][2] == original_prompt
     assert json.loads(rows[0][3])["seed"] == 42
     assert (manager.gallery_directory / rows[0][1]).read_bytes() == b"fixture-MP4"
     assert client.get(f"/api/video/h3/jobs/{job_id}/video").content == b"fixture-MP4"
     assert client.get(f"/api/video/h3/jobs/{job_id}/video", headers={"x-user": "other"}).status_code == 404
     assert client.delete(f"/api/video/h3/jobs/{job_id}", headers={"x-user": "other"}).status_code == 404
-    assert client.get("/api/video/h3/jobs", headers={"x-user": "other"}).json() == {"jobs": []}
+    other_jobs = client.get("/api/video/h3/jobs", headers={"x-user": "other"}).json()
+    assert other_jobs["jobs"] == []
+    assert other_jobs["queue"]["total_queued"] == other_jobs["queue"]["total_running"] == 0
 
 
 def test_restart_cancel_kills_owned_detached_children_preserves_neighbor(api, tmp_path):
@@ -224,7 +246,7 @@ while True:time.sleep(.1)
 ''')
     manager.worker = worker
     neighbor = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(60)"], start_new_session=True)
-    job_id, pids = None, []
+    job_id, queued_id, pids = None, None, []
     try:
         response = client.post("/api/video/h3/jobs", data={"config": json.dumps(config(inv))})
         assert response.status_code == 201, response.text
@@ -233,7 +255,11 @@ while True:time.sleep(.1)
         poll(lambda: list(directory.glob("*.pid")), lambda paths: len(paths) == 3)
         pids = [int(path.read_text()) for path in directory.glob("*.pid")]
         second = client.post("/api/video/h3/jobs", data={"config": json.dumps(config(inv))})
-        assert second.status_code == 409
+        assert second.status_code == 201
+        queued_id = second.json()["id"]
+        assert second.json()["status"] == "queued" and second.json()["queue_position"] == 1
+        assert manager.cancel(queued_id, "corey")["status"] == "stopped"
+        assert not list(manager.directory(queued_id).glob("*.pid"))
         restarted = h3.H3JobManager(manager.root)
         assert restarted.view(job_id, "corey")["status"] == "running"
         stopped = restarted.cancel(job_id, "corey")
@@ -244,6 +270,8 @@ while True:time.sleep(.1)
     finally:
         if job_id:
             manager.cancel(job_id, "corey")
+        if queued_id:
+            manager.cancel(queued_id, "corey")
         for pid in pids:
             try:
                 os.kill(pid, signal.SIGKILL)
@@ -294,3 +322,51 @@ def test_gpu_ids_are_uuids_not_driver_indices(monkeypatch):
     gpus = h3.gpu_inventory()
     assert gpus == [{"id": "GPU-5090", "name": "NVIDIA GeForce RTX 5090", "nvfp4": True},
                     {"id": "GPU-4090", "name": "NVIDIA GeForce RTX 4090", "nvfp4": False}]
+
+
+@pytest.mark.parametrize("status", ["queued", "running", "completed", "failed", "stopped"])
+def test_prompt_snapshot_survives_restart_for_every_job_status(tmp_path, monkeypatch, status):
+    manager = h3.H3JobManager(tmp_path / "jobs")
+    directory = manager.stage()
+    prompt = 'head_swap: <Picture 1>\nThe subject says "Hello." 🌊'
+    h3._write(directory / "state.json", {"id": directory.name, "owner": "corey", "status": status,
+                                         "created_at": time.time(), "supervisor": {"pid": 54321, "start": "active"}})
+    h3._write(directory / "manifest.json", {"config": {"prompt": prompt, "model": "/private/weights.safetensors"},
+                                            "reference_images": ["/private/upload.png"], "worker_path": "/private/worker.py"})
+    monkeypatch.setattr(h3, "_snapshot", lambda: {54321: (1, "active")})
+    restarted = h3.H3JobManager(manager.root)
+    viewed = restarted.view(directory.name, "corey")
+    assert viewed["status"] == status and viewed["prompt"] == prompt
+    assert restarted.jobs("corey")[0]["prompt"] == prompt
+    assert "/private/" not in json.dumps(viewed)
+    assert not {"config", "reference_images", "worker_path", "manifest"} & viewed.keys()
+
+
+@pytest.mark.parametrize("manifest", [None, "not JSON", "[]", "{}", '{"config":null}',
+                                     '{"config":[]}', '{"config":{"prompt":7}}', '{"config":{"prompt":null}}'])
+def test_legacy_or_malformed_manifest_leaves_job_visible_without_prompt(tmp_path, manifest):
+    manager = h3.H3JobManager(tmp_path / "jobs")
+    directory = manager.stage()
+    h3._write(directory / "state.json", {"id": directory.name, "owner": "corey", "status": "failed", "created_at": time.time()})
+    if manifest is not None:
+        (directory / "manifest.json").write_text(manifest)
+    viewed = manager.view(directory.name, "corey")
+    assert viewed["status"] == "failed" and viewed["prompt"] is None
+    assert manager.jobs("corey")[0]["prompt"] is None
+
+
+def test_prompt_manifest_not_read_until_owner_is_verified(tmp_path, monkeypatch):
+    manager = h3.H3JobManager(tmp_path / "jobs")
+    directory = manager.stage()
+    h3._write(directory / "state.json", {"id": directory.name, "owner": "corey", "status": "completed", "created_at": time.time()})
+    h3._write(directory / "manifest.json", {"config": {"prompt": "Private prompt"}})
+    original_read = h3._read
+
+    def read(path, default=None):
+        assert Path(path).name != "manifest.json", "Another owner's prompt must not even be read"
+        return original_read(path, default)
+
+    monkeypatch.setattr(h3, "_read", read)
+    with pytest.raises(FileNotFoundError):
+        manager.view(directory.name, "other")
+    assert manager.jobs("other") == []

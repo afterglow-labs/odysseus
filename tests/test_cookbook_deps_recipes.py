@@ -72,3 +72,28 @@ for (const backend of ['diffusers', 'krea_diffusers']) {
         capture_output=True, cwd=RECIPES_JS.parents[2], timeout=15,
     )
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node binary not on PATH")
+def test_sglang_recipe_preserves_interpreter_and_prevents_legacy_fallback():
+    script = r"""
+import assert from 'node:assert/strict';
+import { pickRecipe, recipeCommands } from './static/js/cookbook-deps-recipes.js';
+const recipe = pickRecipe('sglang', 'example/model');
+for (const target of [{}, { platform: 'linux', host: 'linux-server' }]) {
+  const commands = recipeCommands(recipe, 'pip', target);
+  assert.equal(commands.length, 1);
+  const command = commands[0];
+  assert.match(command, /^python -m pip install /);
+  assert.match(command, /(?:^|\s)--pre(?:\s|$)/);
+  assert.match(command, /(?:^|\s)--only-binary=sglang(?:\s|$)/);
+  assert.match(command, /"sglang>=0\.5\.21"/);
+  assert.doesNotMatch(command, /\[all\]|\buv\b|--torch-backend|--no-deps/);
+}
+assert.deepEqual(recipeCommands(recipe, 'docker'), ['docker pull lmsysorg/sglang:latest']);
+"""
+    result = subprocess.run(
+        ["node", "--input-type=module"], input=script, text=True,
+        capture_output=True, cwd=RECIPES_JS.parents[2], timeout=15,
+    )
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"

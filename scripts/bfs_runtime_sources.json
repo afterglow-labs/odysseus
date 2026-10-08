@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/alisson-anjos/ComfyUI-BFSNodes",
+  "revision": "3fb1155e11f178dadd2743e74349c3359b7c57dc",
+  "version": "1.21.2",
+  "files": {
+    "ltx_multiple_controls.py": "974bf035a9c382b8ed792c19876ad58b6ef253184a423d25baeab87620a3809a",
+    "ltx_identity_overlap.py": "d72cc5b78001691e012be6230fcc78613c87655bace37d134dd92579896c086d",
+    "nodes.py": "1fa0d4430919b21d63cfad1ea7bada47c19ec3846a4ccfd5fbbb31084933da1c",
+    "util.py": "b5c8d431f5fb061254ed510ecf307b3c76798ca14b206831f1962d2cad5414cb",
+    "LICENSE": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+    "pyproject.toml": "cab740a002e7ba42c50afb3f0a273945a6634800d7a43b3b72a1fc2a6ba57b07"
+  }
+}

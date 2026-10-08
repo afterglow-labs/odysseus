@@ -41,10 +41,13 @@ const _RECIPES = [
   // ── sglang ────────────────────────────────────────────────────────────
   {
     backend: 'sglang',
-    label: 'Any SGLang model',
+    label: 'SGLang · Python 3.12 recommended',
     match: () => true,
     variants: {
-      pip:    { commands: ['uv pip install -U "sglang[all]" --torch-backend auto'] },
+      // Keep the selected interpreter, allow upstream's prerelease dependencies,
+      // and fail if current wheels are unavailable instead of backtracking to
+      // legacy pure-Python releases with obsolete FlashInfer build requirements.
+      pip:    { commands: ['python -m pip install -U --pre --only-binary=sglang "sglang>=0.5.21"'] },
       docker: { commands: ['docker pull lmsysorg/sglang:latest'] },
     },
   },

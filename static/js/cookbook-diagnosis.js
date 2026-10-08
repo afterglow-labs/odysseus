@@ -177,6 +177,19 @@ function _sglangKernelRepairCommand(panel) {
   return `${_pythonForDiagnosisPanel(panel)} -m pip install -U --force-reinstall --no-cache-dir sglang-kernel`;
 }
 
+function _sglangInstallCommand(panel) {
+  const task = _taskForDiagnosisPanel(panel);
+  const host = task ? (task.remoteHost || task.payload?.remote_host || '') : (_envState.remoteHost || '');
+  const configuredEnvironment = task
+    ? (task.payload?.env_path || task.payload?.env_prefix || '')
+    : (_envState.env !== 'none' && _envState.envPath);
+  const pythonFromCommand = _pythonFromServeCmd(task?.payload?._cmd || '');
+  if (!host && !configuredEnvironment && !pythonFromCommand.startsWith('/')) {
+    return '# Run from the Odysseus folder\npython3 scripts/setup_sglang_runtime.py';
+  }
+  return `${_pythonForDiagnosisPanel(panel)} -m pip install -U --pre --only-binary=sglang "sglang>=0.5.21"`;
+}
+
 function _mlxLmInstallCommand(panel) {
   return `${_pythonForDiagnosisPanel(panel)} -m pip install -U mlx-lm`;
 }
@@ -539,11 +552,25 @@ export const ERROR_PATTERNS = [
     ],
   },
   {
-    pattern: /sglang.*command not found|No module named sglang|SGLang is not installed/i,
-    message: 'SGLang is not installed or not in PATH.',
+    match: (text) => {
+      const tail = text.slice(-6000);
+      if (/Application startup complete|Uvicorn running on|server is listening on https?:\/\//i.test(tail)) return false;
+      return /SGLang[^\n]*(?:requires|unsupported)[^\n]*Python/i.test(tail)
+        || (/sglang/i.test(tail) && /apache-tvm-ffi==0\.1\.0b15|No matching distribution found for sglang|Could not find a version that satisfies the requirement sglang/i.test(tail));
+    },
+    message: 'SGLang could not install in this Python environment.',
+    suggestion: 'Use Dependencies to install SGLang in its separate local Python 3.12 runtime, or select a Python 3.12 environment on the remote server. Older SGLang releases can fall back to unavailable FlashInfer build dependencies.',
     fixes: [
       { label: 'Open Dependencies', action: () => _openCookbookDependencies('sglang') },
-      { label: 'Copy install command', action: () => _copyText('python3 -m pip install "sglang[all]"') },
+    ],
+  },
+  {
+    pattern: /sglang.*command not found|No module named sglang|SGLang is not installed/i,
+    message: 'SGLang is not installed or not in PATH.',
+    suggestion: 'Install SGLang from Dependencies. Local installs use a separate Python 3.12 runtime; remote installs use the selected Python environment. Run a copied local setup command from the Odysseus folder.',
+    fixes: [
+      { label: 'Open Dependencies', action: () => _openCookbookDependencies('sglang') },
+      { label: 'Copy install command', action: (panel) => _copyText(_sglangInstallCommand(panel)) },
     ],
   },
   {

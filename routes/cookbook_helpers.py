@@ -15,6 +15,10 @@ from pydantic import BaseModel
 
 from routes._validators import validate_remote_host, validate_ssh_port
 from core.platform_compat import _ssh_exec_argv
+from src.sglang_runtime import (
+    is_sglang_install_cmd, normalize_sglang_install_cmd,
+    sglang_python_preflight_code,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +114,36 @@ def load_stored_hf_token(*, state_path: Path | str | None = None) -> str:
     return token
 
 
+def load_stored_local_download_dir(*, state_path: Path | str | None = None) -> str | None:
+    """Read the Local profile's download default, independently of scan roots.
+
+    API clients may omit ``local_dir`` (including older clients and retries).
+    Resolve their default on the server instead of silently using HF's process
+    environment. Remote profiles are deliberately excluded: their paths belong
+    to another host. The caller validates the returned path before execution.
+    """
+    from src.hf_cache import normalize_local_cache_settings
+
+    path = Path(state_path) if state_path else Path(os.environ.get("DATA_DIR", "data")) / "cookbook_state.json"
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    environment = state.get("env") if isinstance(state, dict) else None
+    if not isinstance(environment, dict):
+        return None
+    normalize_local_cache_settings(environment)
+    servers = environment.get("servers")
+    if not isinstance(servers, list):
+        return None
+    for server in servers:
+        if not isinstance(server, dict) or str(server.get("host") or "").strip():
+            continue
+        directory = server.get("downloadDir")
+        return directory.strip() if isinstance(directory, str) and directory.strip() else None
+    return None
+
+
 def _validate_local_dir(v: str | None) -> str | None:
     if v is None or v == "":
         return None
@@ -132,8 +166,9 @@ def _validate_local_dir(v: str | None) -> str | None:
 def _validate_gpus(v: str | None) -> str | None:
     if v is None or v == "":
         return None
-    if not _GPU_LIST_RE.fullmatch(str(v)):
-        raise HTTPException(400, "Invalid gpus — expected comma-separated GPU indexes")
+    from src.cookbook_gpu import GPU_UUID_PATTERN
+    if not re.fullmatch(rf"(?:\d+|{GPU_UUID_PATTERN})(?:,(?:\d+|{GPU_UUID_PATTERN}))*", str(v)):
+        raise HTTPException(400, "Invalid gpus — expected comma-separated GPU indexes or NVIDIA GPU UUIDs")
     return str(v)
 
 
@@ -354,7 +389,9 @@ def _append_pip_install_runner_lines(
     the NVIDIA CUDA base image) aborts with "no such option". Branch at runner
     time so stale browser JS and remote targets are handled by the server too.
     """
+    cmd = normalize_sglang_install_cmd(cmd)
     python_match = re.match(r"(.+?)\s+-m\s+pip\s+install(?:\s|$)", cmd or "")
+    check_sglang_python = python_match is not None and is_sglang_install_cmd(cmd)
     bootstrap = bootstrap_pip and python_match is not None
     try:
         install_args = shlex.split(cmd[python_match.end():]) if python_match else []
@@ -364,8 +401,14 @@ def _append_pip_install_runner_lines(
         re.match(r"^(?:realesrgan|basicsr|gfpgan|facexlib)(?:$|[<>=!~\[])", arg, re.IGNORECASE)
         for arg in install_args
     ))
-    if bootstrap or prepare_realesrgan:
+    if bootstrap or prepare_realesrgan or check_sglang_python:
         runner_lines.append("(")
+    if check_sglang_python:
+        # Execute this before pip bootstrap/resolution in exactly the Python
+        # selected by the command. SSH targets need no local source imports.
+        runner_lines.append(
+            f"{python_match.group(1)} -c {shlex.quote(sglang_python_preflight_code())} || exit $?"
+        )
     if bootstrap:
         # Preserve shell quoting and variable expansion in the original prefix
         # (for example, a quoted venv path or ${HOME}/venv/bin/python3).
@@ -411,7 +454,7 @@ def _append_pip_install_runner_lines(
         runner_lines.append('  echo "[odysseus] pip does not support --break-system-packages; installing without it."')
         runner_lines.append(f"  {without_break}")
         runner_lines.append("fi")
-    if bootstrap or prepare_realesrgan:
+    if bootstrap or prepare_realesrgan or check_sglang_python:
         runner_lines.append(")")
 
 
@@ -436,10 +479,12 @@ def _cached_model_scan_script(model_dirs: list[str] | None = None, add_hf_cache:
     """Build the standalone Python scanner used by /api/model/cached.
     Allows for an additional HuggingFace cache path to be scanned (i.e. Windows HF cache for local WSL envs.)
     """
-    from src import model_artifacts
+    from src import hf_cache, model_artifacts
     artifact_source = Path(model_artifacts.__file__).read_text(encoding="utf-8")
+    cache_source = Path(hf_cache.__file__).read_text(encoding="utf-8")
     lines = [
         artifact_source,
+        cache_source,
         "import json, os, re, shutil, subprocess, urllib.request",
         "models = []",
         "seen = set()",
@@ -488,10 +533,12 @@ def _cached_model_scan_script(model_dirs: list[str] | None = None, add_hf_cache:
         "    files.extend(split_groups.values())",
         "    files.sort(key=lambda f: (f.get('role') != 'model', f.get('rel_path', '')))",
         "    return files",
-        "def scan_hf(cache):",
+        "def scan_hf(cache, depth=0):",
         "    cache = os.path.realpath(os.path.expanduser(cache))",
-        "    if not os.path.isdir(cache) or not safe_path(cache): return",
+        "    if depth > 6 or not os.path.isdir(cache) or not safe_path(cache): return",
         "    for d in sorted(os.listdir(cache)):",
+        "        if d.lower() == 'hub' and not os.path.islink(os.path.join(cache, d)):",
+        "            scan_hf(os.path.join(cache, d), depth + 1); continue",
         "        if not d.startswith('models--'): continue",
         "        rid = d.replace('models--','').replace('--','/')",
         "        key = ('hf', os.path.normcase(cache), rid)",
@@ -528,6 +575,9 @@ def _cached_model_scan_script(model_dirs: list[str] | None = None, add_hf_cache:
         "        if sz == 0 and os.path.isdir(snap):",
         "            sz2, nf2, ic2 = snapshot_size()",
         "            sz, nf, ic = sz2, nf2, ic or ic2",
+        "        # A tree/ref listing alone is not a downloaded model. Keep",
+        "        # active partial downloads visible, including zero-byte partials.",
+        "        if nf == 0 and sz == 0 and not ic: continue",
         "        is_video = bool(re.search(r'(?i)(^|/)Lightricks/LTX-|(^|/)LTX[-_/]|video|text-to-video|image-to-video', rid))",
         "        is_diffusion = is_video; is_adapter = bool(re.search(r'(?i)(lora|adapter|peft|qlora|control[-_]?lora|diffusion[-_]?lora)', rid)); gguf_files = []",
         "        artifact_rows = []",
@@ -559,14 +609,10 @@ def _cached_model_scan_script(model_dirs: list[str] | None = None, add_hf_cache:
         "        if not p: return",
         "        p = os.path.expanduser(p)",
         "        if p not in candidates: candidates.append(p)",
-        "    add(os.environ.get('HF_HUB_CACHE'))",
-        "    add(os.environ.get('HUGGINGFACE_HUB_CACHE'))",
-        "    hf_home = os.environ.get('HF_HOME')",
-        "    if hf_home: add(os.path.join(hf_home, 'hub'))",
-        "    add('~/.cache/huggingface/hub')",
+        "    add(effective_hf_cache())",
         "    # Docker images mount ./data/huggingface at /app/.cache/huggingface.",
         "    # When HOME is /root, expanduser() misses that persisted cache.",
-        "    add('/app/.cache/huggingface/hub')",
+        "    if not any(os.environ.get(key) for key in ('HF_HUB_CACHE', 'HUGGINGFACE_HUB_CACHE', 'HF_HOME', 'XDG_CACHE_HOME')): add('/app/.cache/huggingface/hub')",
         f"    add({add_hf_cache!r})" if add_hf_cache else "",
         "    return candidates",
         "def normalize_model_dir(p):",
@@ -579,14 +625,19 @@ def _cached_model_scan_script(model_dirs: list[str] | None = None, add_hf_cache:
         "        prefixed = '/' + p",
         "        if os.path.isdir(prefixed): return prefixed",
         "    return p",
-        "def scan_dir(p):",
+        "def scan_dir(p, depth=0):",
         "    p = normalize_model_dir(p)",
-        "    if not os.path.isdir(p) or not safe_path(p): return",
+        "    if depth > 6 or not os.path.isdir(p) or not safe_path(p): return",
         "    for d in sorted(os.listdir(p)):",
         "        if d.startswith('.'): continue",
         "        if d.startswith('models--'): continue",
+        "        if d.lower() in ('blobs', 'refs', 'snapshots', 'xet'): continue",
         "        fp = os.path.join(p, d)",
         "        if not os.path.isdir(fp) or os.path.islink(fp) or not safe_path(fp): continue",
+        "        # A cache container is not one giant model. Older downloads",
+        "        # could create hub/hub; list its real repositories separately.",
+        "        if d.lower() == 'hub' or any(child.startswith('models--') for child in os.listdir(fp)):",
+        "            scan_hf(fp); scan_dir(fp, depth + 1); continue",
         "        if d in seen: continue",
         "        is_model = False; is_adapter = bool(re.search(r'(?i)(lora|adapter|peft|qlora|control[-_]?lora|diffusion[-_]?lora)', d)); gguf_files = []",
         "        for root, dirs, fns in safe_walk(fp):",
@@ -1236,7 +1287,7 @@ class ModelDownloadRequest(BaseModel):
     remote_host: str | None = None  # e.g. "gpu-box" — run download on this host via SSH
     ssh_port: str | None = None    # e.g. "8022" for Termux
     platform: str | None = None    # "linux", "termux", or "windows"
-    local_dir: str | None = None   # base dir to download into (a per-model subfolder is created under it); None = default HF cache
+    local_dir: str | None = None   # HF home or hub directory; None = selected host's default HF cache
     disable_hf_transfer: bool = False  # skip the Rust hf_transfer downloader — slower but far more reliable on large files (used by retries)
 
 
@@ -1525,7 +1576,7 @@ def _diagnose_serve_output(text: str) -> dict | None:
         (
             r"sglang.*command not found|No module named sglang|SGLang is not installed",
             "SGLang is not installed or not in PATH on this server.",
-            [{"label": "install SGLang in Cookbook Dependencies", "op": "dependency", "package": "sglang[all]"}],
+            [{"label": "install SGLang in Cookbook Dependencies", "op": "dependency", "package": "sglang>=0.5.21"}],
         ),
         (
             r"No module named ['\"]?mlx_lm|mlx_lm.*command not found|MLX is not installed|MLX LM is not installed",

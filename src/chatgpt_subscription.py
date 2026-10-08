@@ -371,6 +371,30 @@ def to_http_exception(exc: Exception) -> HTTPException:
     return HTTPException(502, str(exc))
 
 
+def _responses_image_block(part: dict, role: str) -> dict:
+    if role != "user":
+        raise HTTPException(400, "Image input is supported only in user messages.")
+    image = part.get("image_url")
+    if isinstance(image, str):
+        image = {"url": image, "detail": part.get("detail", "auto")}
+    if not isinstance(image, dict) or not isinstance(image.get("url"), str):
+        raise HTTPException(400, "Invalid image input for the selected provider.")
+    url = image["url"]
+    if url.startswith("data:"):
+        header, separator, payload = url.partition(",")
+        if (not separator or not payload or header.lower() not in {
+            "data:image/png;base64", "data:image/jpeg;base64",
+            "data:image/webp;base64", "data:image/gif;base64",
+        }):
+            raise HTTPException(400, "Image input requires PNG, JPEG, WebP, or GIF data.")
+    elif not url.startswith(("https://", "http://")):
+        raise HTTPException(400, "Image input requires image data or an HTTP image URL.")
+    detail = image.get("detail", "auto")
+    if detail not in {"auto", "low", "high"}:
+        raise HTTPException(400, "Invalid image detail setting.")
+    return {"type": "input_image", "image_url": url, "detail": detail}
+
+
 def build_responses_input(messages: list[dict]) -> list[dict]:
     input_items: list[dict] = []
     for msg in messages or []:
@@ -378,6 +402,26 @@ def build_responses_input(messages: list[dict]) -> list[dict]:
         if role == "tool":
             role = "user"
         content = msg.get("content")
+        if isinstance(content, list) and any(
+            isinstance(part, dict) and part.get("type") in {"image_url", "input_image"}
+            for part in content
+        ):
+            blocks = []
+            text_parts = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") in {"image_url", "input_image"}:
+                    if text_parts:
+                        blocks.append({"type": "input_text", "text": "\n".join(text_parts)})
+                        text_parts = []
+                    blocks.append(_responses_image_block(part, msg.get("role") or "user"))
+                else:
+                    text_parts.append(str(part.get("text") or part.get("content") or ""))
+            if text_parts:
+                blocks.append({"type": "input_text", "text": "\n".join(text_parts)})
+            input_items.append({"role": role, "content": blocks})
+            continue
         if isinstance(content, list):
             text = "\n".join(str(part.get("text") or part.get("content") or "") for part in content if isinstance(part, dict))
         else:

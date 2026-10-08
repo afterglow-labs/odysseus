@@ -1180,6 +1180,36 @@ def test_cached_model_scan_runs_additional_hf_cache(tmp_path):
     assert rec["is_diffusion"] is False
 
 
+def test_cached_model_scan_skips_metadata_only_repos_but_keeps_active_partials(tmp_path, monkeypatch, capsys):
+    import shutil
+    import urllib.request
+
+    cache = tmp_path / "hub"
+    metadata = cache / "models--google--gemma-4-26B-A4B-it-qat-q4_0-gguf"
+    (metadata / "trees").mkdir(parents=True)
+    (metadata / "trees" / "rev.json").write_text(json.dumps({"format_version": 1, "files": {
+        "gemma-4-26B-it-mmproj.gguf": {"size": 1194828160, "blob_id": "projector"},
+    }}))
+    (metadata / "refs").mkdir()
+    (metadata / "refs" / "main").write_text("rev")
+    partial = cache / "models--example--downloading" / "blobs"
+    partial.mkdir(parents=True)
+    (partial / "weights.incomplete").touch()
+    cached = cache / "models--example--ready" / "snapshots" / "rev"
+    cached.mkdir(parents=True)
+    (cached / "model.gguf").write_bytes(b"GGUF")
+    monkeypatch.setenv("HF_HUB_CACHE", str(cache))
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    def offline(*args, **kwargs):
+        raise OSError("Offline scanner test")
+    monkeypatch.setattr(urllib.request, "urlopen", offline)
+    exec(compile(_cached_model_scan_script(), "<cache-scanner>", "exec"), {})
+    rows = {row["repo_id"]: row for row in json.loads(capsys.readouterr().out)}
+    assert "google/gemma-4-26B-A4B-it-qat-q4_0-gguf" not in rows
+    assert rows["example/downloading"]["has_incomplete"] is True
+    assert rows["example/ready"]["is_gguf"] is True
+
+
 def test_cached_model_scan_custom_hubs_keep_distinct_copies(tmp_path, monkeypatch, capsys):
     """A Windows hub added in Settings must coexist with a Linux copy of its repo."""
     import shutil

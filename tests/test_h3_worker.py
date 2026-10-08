@@ -140,6 +140,85 @@ def test_core_reference_pairing_sampler_cfg_and_seed(job):
     assert result["samples"] == "result"
 
 
+def lora_runtime(*, quant_format=None, patches=None, injections=None):
+    """Exercise the loader boundary without importing Comfy or opening CUDA."""
+    base = SimpleNamespace(model=SimpleNamespace(modules=lambda: iter([
+        SimpleNamespace(quant_format=quant_format)])), patches={})
+    updated = SimpleNamespace(patches=patches or {}, injections=injections or {})
+    calls = []
+    def loader(kind):
+        def load(model, clip, state, strength, clip_strength):
+            assert model is base and clip is None and clip_strength == 0
+            assert state == {"adapter": "safe tensors"}
+            calls.append((kind, strength))
+            return updated, None
+        return load
+    def read(path, *, safe_load):
+        assert path == "/models/turbo.safetensors" and safe_load is True
+        calls.append("read")
+        return {"adapter": "safe tensors"}
+    runtime = worker.H3Runtime.__new__(worker.H3Runtime)
+    runtime.sd = SimpleNamespace(load_lora_for_models=loader("normal"),
+                                 load_bypass_lora_for_models=loader("bypass"))
+    runtime.utils = SimpleNamespace(load_torch_file=read)
+    config = {"model": "/models/h3.safetensors", "lora": "/models/turbo.safetensors", "lora_scale": 1.0}
+    return runtime, base, updated, config, calls
+
+
+@pytest.mark.parametrize("metadata,named_nvfp4", [("nvfp4", False), (None, True)])
+def test_nvfp4_lora_uses_forward_bypass_and_accepts_injections(metadata, named_nvfp4, caplog):
+    rt, base, updated, config, calls = lora_runtime(quant_format=metadata, injections={"bypass_lora": [object()]})
+    if named_nvfp4:
+        config["model"] = "/models/H3_NVFP4.safetensors"
+    progress = []
+    import logging
+    with caplog.at_level(logging.INFO):
+        assert rt.load_lora(base, config, progress.append) is updated
+    assert calls == ["read", ("bypass", 1.0)]
+    assert progress == ["loading_adapter"]
+    assert "NVFP4 bypass (base weights unchanged)" in caplog.text
+    assert not updated.patches
+
+
+@pytest.mark.parametrize("metadata", [None, "int8_tensorwise", "float8_e4m3fn"])
+def test_non_nvfp4_lora_keeps_normal_weight_patching(metadata):
+    rt, base, updated, config, calls = lora_runtime(quant_format=metadata, patches={"layer.weight": [object()]})
+    # An NVFP4 text encoder is independent of the transformer's LoRA path.
+    config["encoder"] = "/models/qwen_nvfp4.safetensors"
+    assert rt.load_lora(base, config, lambda _: None) is updated
+    assert calls == ["read", ("normal", 1.0)]
+
+
+@pytest.mark.parametrize("metadata", [None, "nvfp4"])
+def test_empty_lora_rejected_even_with_unrelated_injection(metadata):
+    rt, base, _, config, _ = lora_runtime(quant_format=metadata, injections={"unrelated": [object()]})
+    with pytest.raises(ValueError, match="no weights compatible"):
+        rt.load_lora(base, config, lambda _: None)
+
+
+def test_bypass_can_load_regular_non_adapter_patches_too():
+    rt, base, updated, config, calls = lora_runtime(quant_format="nvfp4", patches={"layer.bias": [object()]})
+    assert rt.load_lora(base, config, lambda _: None) is updated
+    assert calls == ["read", ("bypass", 1.0)]
+
+
+@pytest.mark.parametrize("metadata", [None, "nvfp4"])
+def test_zero_lora_strength_returns_base_without_loading_or_injecting(metadata):
+    rt, base, _, config, calls = lora_runtime(quant_format=metadata)
+    config["lora_scale"] = 0
+    del rt.sd.load_bypass_lora_for_models
+    assert rt.load_lora(base, config, lambda _: pytest.fail("No adapter should load")) is base
+    assert calls == []
+
+
+def test_missing_bypass_runtime_fails_before_adapter_read_instead_of_merging_fp4():
+    rt, base, _, config, calls = lora_runtime(quant_format="nvfp4")
+    del rt.sd.load_bypass_lora_for_models
+    with pytest.raises(RuntimeError, match="needs bypass LoRA support"):
+        rt.load_lora(base, config, lambda _: pytest.fail("No adapter should load"))
+    assert calls == []
+
+
 def test_failure_updates_atomic_status_and_exits_nonzero(job, monkeypatch, tmp_path):
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps(job))

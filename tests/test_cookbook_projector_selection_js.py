@@ -29,6 +29,9 @@ const dependencies = {
   './cookbook-hwfit.js': { _hwfitCache: null },
   './toolWindowZOrder.js': { topPortalZ() {} },
   './cookbookGpu.js': { clearGpuMemory() {} },
+  './cookbookGpuSelection.js': { gpuVisibility() {}, gpuButtonLabel() {} },
+  './h3Video.js': { isH3VideoComponent() {}, showH3Video() {} },
+  './bfsVideo.js': { isBfsVideoModel() {}, showBfsVideo() {} },
 };
 const mod = new vm.SourceTextModule(fs.readFileSync('static/js/cookbookServe.js', 'utf8') + `
 _shellQuote = value => "'" + value.replace(/'/g, "'\\\"'\\\"'") + "'";
@@ -53,6 +56,12 @@ for (const role of [undefined, 'model', 'projector']) {
 }
 assert.equal(mainFiles({ gguf_files: [{ rel_path: 'weights-F32.gguf' }] }).length, 1, 'F32 alone does not imply a projector');
 assert.equal(mainFiles({ gguf_files: [{ rel_path: 'encoder.gguf', role: 'projector' }] }).length, 0);
+const gemma = { gguf_files: [
+  { rel_path: 'rev/gemma-4-26B-it-mmproj.gguf', role: 'model' },
+  { rel_path: 'rev/gemma-4-26B_q4_0-it.gguf', role: 'model' },
+] };
+assert.deepEqual(Array.from(projectors(gemma), f => f.rel_path), ['rev/gemma-4-26B-it-mmproj.gguf']);
+assert.deepEqual(Array.from(mainFiles(gemma), f => f.rel_path), ['rev/gemma-4-26B_q4_0-it.gguf']);
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'odysseus-projector-'));
 const repo = 'Vision Model';

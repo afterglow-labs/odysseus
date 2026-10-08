@@ -3,7 +3,6 @@
 import asyncio
 import json
 from pathlib import Path
-import shutil
 import uuid
 
 from fastapi import APIRouter, HTTPException, Request
@@ -12,7 +11,12 @@ from starlette.datastructures import UploadFile
 
 from core.middleware import require_admin
 from src.auth_helpers import storage_owner_for_request
-from src.h3_video import H3JobManager, UPLOAD_EXTENSIONS, validate_config
+from src.h3_video import H3JobManager, UPLOAD_EXTENSIONS, validate_config, gpu_telemetry
+from src.h3_prompt_enhancement import (
+    EnhancementError, IMAGE_FIELDS, enhance_prompt, enhancer_status,
+    prepare_prompt_images, validate_request as validate_prompt_request,
+)
+from src.video_submission import submission, submission_key, launch_job, store_upload_chunk, ensure_upload_space, UploadSpaceError
 from src.upload_limits import get_chat_upload_max_bytes, format_byte_limit
 
 
@@ -24,13 +28,13 @@ def _owner(request):
     return owner
 
 
-def _limited_request(request, limit):
+def _limited_request(request, limit, limit_message=None, *, space_directory=None):
     """Cap multipart bytes before Starlette spools any unbounded upload."""
     raw_length = request.headers.get("content-length")
     if raw_length:
         try:
             if int(raw_length) > limit:
-                raise HTTPException(413, f"Video inputs exceed {format_byte_limit(limit - 65536)} per job")
+                raise HTTPException(413, limit_message or f"Video inputs exceed {format_byte_limit(limit - 65536)} per job")
         except ValueError:
             raise HTTPException(400, "Invalid Content-Length")
     total = 0
@@ -41,7 +45,10 @@ def _limited_request(request, limit):
         if message["type"] == "http.request":
             total += len(message.get("body", b""))
             if total > limit:
-                raise HTTPException(413, f"Video inputs exceed {format_byte_limit(limit - 65536)} per job")
+                raise HTTPException(413, limit_message or f"Video inputs exceed {format_byte_limit(limit - 65536)} per job")
+            if space_directory is not None:
+                # Multipart spools may reach disk before _store_uploads runs.
+                await asyncio.to_thread(ensure_upload_space, space_directory, len(message.get("body", b"")))
         return message
 
     return Request(request.scope, receive=receive)
@@ -63,7 +70,7 @@ async def _store_uploads(directory, uploads, limit):
                     total += len(chunk)
                     if total > limit:
                         raise HTTPException(413, f"Video inputs exceed {format_byte_limit(limit)} per job")
-                    stream.write(chunk)
+                    await store_upload_chunk(stream, directory, chunk)
             if path.stat().st_size == 0:
                 raise HTTPException(400, "An attachment is empty")
             if field in {"first_frame", "last_frame", "reference_images"}:
@@ -80,9 +87,76 @@ async def _store_uploads(directory, uploads, limit):
     return saved
 
 
+async def _enhance_until_disconnected(request, owner, config, images=None):
+    """Closing/cancelling the editor closes its in-flight upstream request."""
+    async def wait_for_disconnect():
+        # The request body is consumed before this task starts. Await the ASGI
+        # disconnect directly: polling is_disconnected() creates a cancelled
+        # AnyIO scope that can swallow task cancellation on early validation.
+        while (await request.receive())["type"] != "http.disconnect":
+            pass
+
+    rewrite = asyncio.create_task(enhance_prompt(owner, config, images=images))
+    disconnected = asyncio.create_task(wait_for_disconnect())
+    try:
+        await asyncio.wait({rewrite, disconnected}, return_when=asyncio.FIRST_COMPLETED)
+        if rewrite.done():
+            return await rewrite
+        raise HTTPException(499, "Prompt enhancement cancelled")
+    finally:
+        for task in (rewrite, disconnected):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(rewrite, disconnected, return_exceptions=True)
+
+
 def setup_h3_video_routes(manager=None):
     router = APIRouter(prefix="/api/video/h3", tags=["video"])
     manager = manager or H3JobManager()
+
+    @router.get("/gpus")
+    async def gpus(request: Request):
+        _owner(request)
+        return await asyncio.to_thread(gpu_telemetry)
+
+    @router.get("/prompt-enhancer")
+    async def prompt_enhancer(request: Request):
+        return await enhancer_status(_owner(request))
+
+    @router.post("/enhance-prompt")
+    async def rewrite_prompt(request: Request):
+        owner = _owner(request)
+        try:
+            if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() == "multipart/form-data":
+                limit = get_chat_upload_max_bytes()
+                limited = _limited_request(request, limit + 96 * 1024,
+                                           f"Prompt images exceed {format_byte_limit(limit)} per request")
+                async with limited.form(max_files=9, max_fields=1, max_part_size=96 * 1024) as form:
+                    if any(key not in {"config", *IMAGE_FIELDS} for key in form):
+                        raise HTTPException(400, "Only first frame, last frame and reference images can be inspected by the prompt enhancer")
+                    raw = form.get("config")
+                    if not isinstance(raw, str) or len(raw) > 96 * 1024:
+                        raise HTTPException(400, "Missing prompt enhancement config JSON")
+                    config = validate_prompt_request(json.loads(raw))
+                    uploads = {key: form.getlist(key) for key in IMAGE_FIELDS}
+                    if any(not isinstance(value, UploadFile) for files in uploads.values() for value in files):
+                        raise HTTPException(400, "Images must be uploaded files")
+                    images = await prepare_prompt_images(config, uploads, limit)
+                # Exiting form closes all temporary multipart spools. Only
+                # validated image data remains in memory for this request.
+                return await _enhance_until_disconnected(request, owner, config, images)
+            body = bytearray()
+            async for chunk in request.stream():
+                body.extend(chunk)
+                if len(body) > 96 * 1024:
+                    raise HTTPException(413, "Prompt enhancement request is too large")
+            config = json.loads(body)
+            return await _enhance_until_disconnected(request, owner, config)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc) if not isinstance(exc, json.JSONDecodeError)
+                                else "Invalid prompt enhancement JSON") from exc
+        except EnhancementError as exc:
+            raise HTTPException(exc.status, str(exc)) from exc
 
     @router.get("/inventory")
     async def inventory(request: Request):
@@ -92,57 +166,63 @@ def setup_h3_video_routes(manager=None):
     @router.get("/jobs")
     async def jobs(request: Request):
         owner = _owner(request)
-        return {"jobs": await asyncio.to_thread(manager.jobs, owner)}
+        from src.video_queue_control import queue_status
+        return {"jobs": await asyncio.to_thread(manager.jobs, owner),
+                "queue": await asyncio.to_thread(queue_status, manager, owner)}
 
     @router.post("/jobs", status_code=201)
     async def create_job(request: Request):
         owner = _owner(request)
         limit = get_chat_upload_max_bytes()
-        directory = None
         try:
-            limited = _limited_request(request, limit + 65536)
-            async with limited.form(max_files=17, max_fields=1, max_part_size=65536) as form:
-                if any(key not in {"config", *UPLOAD_EXTENSIONS} for key in form):
-                    raise HTTPException(400, "Unknown video upload field")
-                raw_config = form.get("config")
-                if not isinstance(raw_config, str) or len(raw_config) > 65536:
-                    raise HTTPException(400, "Missing video config JSON")
-                try:
-                    raw_config = json.loads(raw_config)
-                except ValueError as exc:
-                    raise HTTPException(400, "Invalid video config JSON") from exc
-                uploads = {key: form.getlist(key) for key in UPLOAD_EXTENSIONS}
-                if any(not isinstance(value, UploadFile) for values in uploads.values() for value in values):
-                    raise HTTPException(400, "Attachments must be uploaded files")
-                current = await asyncio.to_thread(manager.inventory)
-                config = validate_config(raw_config, current["components"], current["gpus"], uploads)
-                if not current["runtime_ready"]:
-                    raise HTTPException(503, current["runtime_error"])
-                directory = manager.stage()
-                saved = await _store_uploads(directory, uploads, limit)
-                launch = asyncio.create_task(asyncio.to_thread(manager.launch, directory, owner, config, saved))
-                try:
-                    return await asyncio.shield(launch)
-                except asyncio.CancelledError:
-                    # Let the short spawn operation publish its receipt before
-                    # this request's cleanup can remove the staging directory.
-                    await launch
-                    raise
+            async with submission(manager, owner, "h3", submission_key(request)) as pending:
+                existing = await asyncio.to_thread(pending.existing)
+                if existing is not None:
+                    return existing
+                limited = _limited_request(request, limit + 65536, space_directory=manager.root)
+                async with limited.form(max_files=17, max_fields=1, max_part_size=65536) as form:
+                    if any(key not in {"config", *UPLOAD_EXTENSIONS} for key in form):
+                        raise HTTPException(400, "Unknown video upload field")
+                    raw_config = form.get("config")
+                    if not isinstance(raw_config, str) or len(raw_config) > 65536:
+                        raise HTTPException(400, "Missing video config JSON")
+                    try:
+                        raw_config = json.loads(raw_config)
+                    except ValueError as exc:
+                        raise HTTPException(400, "Invalid video config JSON") from exc
+                    uploads = {key: form.getlist(key) for key in UPLOAD_EXTENSIONS}
+                    if any(not isinstance(value, UploadFile) for values in uploads.values() for value in values):
+                        raise HTTPException(400, "Attachments must be uploaded files")
+                    current = await asyncio.to_thread(manager.submission_inventory)
+                    config = validate_config(raw_config, current["components"], current["gpus"], uploads)
+                    if not current["runtime_ready"]:
+                        raise HTTPException(503, current["runtime_error"])
+                    directory = pending.stage()
+                    pending.save_metadata(uploads, "h3")
+                    saved = await _store_uploads(directory, uploads, limit)
+                    return await launch_job(manager, directory, owner, config, saved)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+        except UploadSpaceError as exc:
+            raise HTTPException(507, str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(409, str(exc)) from exc
-        finally:
-            # A running/scheduled job owns its directory even if the HTTP client
-            # disconnected just after launch. Delete only unlaunched staging.
-            if directory is not None and not (directory / "state.json").exists():
-                shutil.rmtree(directory, ignore_errors=True)
 
     @router.delete("/jobs/{job_id}")
     async def cancel_job(job_id: str, request: Request):
         owner = _owner(request)
         try:
             return await asyncio.to_thread(manager.cancel, job_id, owner)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, "Video job not found") from exc
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @router.delete("/jobs/{job_id}/record")
+    async def delete_job(job_id: str, request: Request):
+        owner = _owner(request)
+        try:
+            return await asyncio.to_thread(manager.delete, job_id, owner)
         except FileNotFoundError as exc:
             raise HTTPException(404, "Video job not found") from exc
         except RuntimeError as exc:
@@ -158,4 +238,10 @@ def setup_h3_video_routes(manager=None):
         return FileResponse(path, media_type="video/mp4", filename=filename, content_disposition_type="inline",
                             headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
 
+    from routes.video_workflow_routes import add_workflow_routes
+    add_workflow_routes(router, manager, family='h3')
+    from routes.video_job_edit_routes import add_job_edit_routes
+    add_job_edit_routes(router, manager, 'h3', UPLOAD_EXTENSIONS, _store_uploads)
+    from routes.video_queue_routes import add_queue_routes
+    add_queue_routes(router, manager, 'h3')
     return router

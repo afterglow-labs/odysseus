@@ -20070,6 +20070,9 @@ body.gallery-selecting .gallery-dl-btn,
   gap: 3px;
   margin-top: -4px;
 }
+.cookbook-gpu-status:not([hidden]) {
+  display: block;
+}
 .cookbook-gpu-btn {
   width: 30px; height: 30px;
   font-size: 12px;

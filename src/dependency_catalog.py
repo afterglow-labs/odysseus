@@ -68,8 +68,9 @@ DEPENDENCIES = [
     },
     {
         "name": "sglang",
-        "pip": "sglang[all]",
+        "pip": "sglang>=0.5.21",
         "desc": "Serve HF safetensors models via SGLang",
+        "install_hint": "Use a Python 3.12 environment. Local installs use Odysseus's separate SGLang runtime by default.",
         "category": "LLM",
         "target": "remote",
     },

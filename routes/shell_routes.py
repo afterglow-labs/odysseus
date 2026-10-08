@@ -29,6 +29,9 @@ from src.dependency_catalog import (
 from src.dependency_health import check_dependency_health
 from src.dependency_index import check_latest_release
 from src.environment_packages import inspect_environment
+from src.sglang_runtime import (
+    SGLANG_REQUIREMENT, managed_sglang_venv, sglang_python_preflight_code,
+)
 
 # POSIX-only: `pty`/`fcntl` transitively import `termios`, which does NOT exist
 # on Windows, so importing them unconditionally crashed app startup there
@@ -108,6 +111,55 @@ def _venv_activate_prefix(venv: str | None) -> str:
         raise ValueError("invalid venv path")
     act = venv if venv.endswith("/bin/activate") else venv.rstrip("/") + "/bin/activate"
     return f". {act} && "
+
+
+def _local_venv_python(venv: str | Path) -> Path:
+    """Select this environment's interpreter without activation or PATH fallback."""
+    value = str(venv).strip()
+    if not value or any(char in value for char in "\r\n\x00"):
+        raise ValueError("Invalid local Python environment path")
+    root = Path(value).expanduser()
+    if root.name.lower() in {"activate", "activate.ps1", "activate.bat"}:
+        root = root.parent.parent
+    root = root.absolute()
+    candidates = [root / "Scripts" / "python.exe"] if IS_WINDOWS else [root / "bin" / "python", root / "bin" / "python3"]
+    for candidate in candidates:
+        if candidate.is_file():
+            # Do not resolve Python's symlink: that would bypass the venv.
+            return candidate
+    raise ValueError(f"Selected Python environment has no interpreter: {root}")
+
+
+def _local_python_environment(python: Path) -> dict[str, str]:
+    environment = os.environ.copy()
+    environment.pop("PYTHONHOME", None)
+    environment.pop("PYTHONPATH", None)
+    environment["VIRTUAL_ENV"] = str(python.parent.parent)
+    environment["PATH"] = str(python.parent) + os.pathsep + environment.get("PATH", "")
+    return environment
+
+
+async def _probe_local_package_environment(venv, names, *, include_environment=False):
+    python = _local_venv_python(venv)
+    process = await asyncio.create_subprocess_exec(
+        str(python), "-I", "-c", _package_probe_script(names, include_environment=include_environment),
+        env=_local_python_environment(python), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        out, err = await asyncio.wait_for(process.communicate(), timeout=12)
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.communicate()
+        raise RuntimeError(f"Python environment probe timed out: {python}") from None
+    if process.returncode:
+        raise RuntimeError((err or out).decode("utf-8", errors="replace")[-300:] or f"Python probe exited with code {process.returncode}")
+    details = json.loads(out.decode("utf-8"))
+    if not isinstance(details, dict) or not all(isinstance(details.get(name), dict) for name in names):
+        raise RuntimeError("No valid package metadata was returned by the selected Python environment")
+    metadata = details.pop("_environment", {})
+    metadata = metadata if isinstance(metadata, dict) else {}
+    metadata["executable"] = str(python)
+    return details, metadata
 
 
 logger = logging.getLogger(__name__)
@@ -197,7 +249,7 @@ def _apply_dependency_health(pkg: dict, health: dict) -> None:
             pkg["status_note"] = f"{error} {summary}" if error else summary
 
 
-async def _attach_package_index_checks(packages: list[dict], *, host=None, remote_environment=None) -> None:
+async def _attach_package_index_checks(packages: list[dict], *, host=None, remote_environment=None, package_environments=None) -> None:
     """Explicit, bounded metadata audit; automatic package refresh never calls it."""
     from packaging.requirements import Requirement
 
@@ -207,13 +259,13 @@ async def _attach_package_index_checks(packages: list[dict], *, host=None, remot
     def unknown(note):
         return {"latest_version": None, "install_supported": None, "compatibility_note": note}
 
-    async def check(name, on_remote):
-        if on_remote:
-            environment = remote_environment if isinstance(remote_environment, dict) else {}
+    async def check(name, environment):
+        if environment is not None:
+            environment = environment if isinstance(environment, dict) else {}
             version = environment.get("python_version")
             tags = environment.get("supported_tags")
             if not isinstance(version, str) or not isinstance(tags, list) or not tags:
-                return unknown("Compatibility is unknown: the selected server's Python version and platform tags could not be inspected.")
+                return unknown("Compatibility is unknown: the selected Python environment's version and platform tags could not be inspected.")
             kwargs = {"python_version": version, "supported_tags": tags}
         else:
             kwargs = {}
@@ -240,11 +292,16 @@ async def _attach_package_index_checks(packages: list[dict], *, host=None, remot
             pkg["compatibility_note"] = "Compatibility could not be checked: the install recipe contains an invalid requirement."
             return
         on_remote = bool(host and pkg.get("target") == "remote")
+        if package_environments is not None and pkg["name"] in package_environments:
+            environment = package_environments[pkg["name"]] or {}
+        else:
+            environment = (remote_environment or {}) if on_remote else None
+        environment_key = json.dumps(environment, sort_keys=True)
         for name in names:
-            key = (on_remote, name)
+            key = (environment_key, name)
             if key not in pending:
-                pending[key] = asyncio.create_task(check(name, on_remote))
-        checks = [{"name": name, **await pending[(on_remote, name)]} for name in names]
+                pending[key] = asyncio.create_task(check(name, environment))
+        checks = [{"name": name, **await pending[(environment_key, name)]} for name in names]
         pkg["index_checks"] = checks
         if checks:
             pkg["latest_version"] = checks[0].get("latest_version")
@@ -557,6 +614,10 @@ def add_user_install_bins_to_path():
         os.environ['PATH'] = os.pathsep.join(parts)
 
 add_user_install_bins_to_path()
+# An activated environment takes precedence over user-wide executable installs.
+if sys.prefix != sys.base_prefix:
+    active_bin = os.path.dirname(sys.executable)
+    os.environ['PATH'] = active_bin + os.pathsep + os.environ.get('PATH', '')
 
 def mod_status(n):
     n = {{'krea_diffusers': 'diffusers'}}.get(n, n)
@@ -1365,10 +1426,8 @@ def setup_shell_routes() -> APIRouter:
     ):
         """Check which optional packages are installed.
 
-        Local-target packages are checked in-process. Remote-target packages
-        (vllm, sglang, llama_cpp, diffusers, hf_transfer) are checked on the SELECTED
-        server over SSH, inside its venv — otherwise installing on a remote box
-        never reflected because the check only ever looked at the local host.
+        App tools are checked in-process. Serving dependencies use the selected
+        server and its configured Python environment, including local venvs.
         """
         _require_admin(request)
         _reject_cross_site(request)
@@ -1439,6 +1498,9 @@ def setup_shell_routes() -> APIRouter:
         remote_details: dict = {}
         remote_probe_error = ""
         remote_environment = None
+        local_details: dict = {}
+        local_probe_errors: dict = {}
+        local_environments: dict = {}
         remote_names = [
             p["name"]
             for p in packages
@@ -1449,6 +1511,29 @@ def setup_shell_routes() -> APIRouter:
             for p in packages
             if p.get("target") == "remote" and p.get("kind") == "system"
         ]
+        if not host:
+            selected_environments = {}
+            if venv and remote_names:
+                selected_environments[str(venv)] = remote_names
+            elif "sglang" in remote_names and not IS_WINDOWS:
+                managed = managed_sglang_venv()
+                if (managed / "bin" / "python").is_file():
+                    selected_environments[str(managed)] = ["sglang"]
+            for selected_venv, names in selected_environments.items():
+                for name in names:
+                    # An empty result deliberately prevents falling back to the
+                    # app interpreter for metadata or PyPI compatibility.
+                    local_environments[name] = {}
+                try:
+                    details, environment = await _probe_local_package_environment(
+                        selected_venv, names, include_environment=check_index,
+                    )
+                    local_details.update(details)
+                    for name in names:
+                        local_environments[name] = environment
+                except (OSError, ValueError, RuntimeError) as exc:
+                    for name in names:
+                        local_probe_errors[name] = f"Selected Python environment probe failed: {str(exc)[:240]}"
         if host and remote_names:
             try:
                 py = _package_probe_script(remote_names, include_environment=check_index)
@@ -1592,8 +1677,27 @@ def setup_shell_routes() -> APIRouter:
                     pkg["status_note"] = "Only relevant for Apple Silicon / MLX image serving."
                     continue
             on_remote = bool(host and pkg.get("target") == "remote")
+            in_selected_local_env = pkg["name"] in local_environments
             probe = None
-            if on_remote:
+            if in_selected_local_env:
+                probe = local_details.get(pkg["name"])
+                environment = local_environments[pkg["name"]]
+                pkg["python_executable"] = environment.get("executable")
+                pkg["python_version"] = environment.get("python_version")
+                pkg["managed_environment"] = bool(not venv and pkg["name"] == "sglang")
+                if pkg["name"] in local_probe_errors:
+                    pkg["installed"] = None
+                    pkg["probe_error"] = local_probe_errors[pkg["name"]]
+                    pkg["status_note"] = pkg["probe_error"]
+                else:
+                    pkg["installed"] = _package_installed_from_probe(pkg["name"], probe)
+                    pkg["details"] = probe
+                    pkg["status_note"] = _package_status_note(pkg["name"], probe)
+                    if probe.get("error"):
+                        pkg["installed"] = False
+                        pkg["probe_error"] = probe["error"]
+                        pkg["status_note"] = probe["error"]
+            elif on_remote:
                 if remote_probe_error and pkg["name"] not in remote_status:
                     pkg["installed"] = None
                     pkg["probe_error"] = remote_probe_error
@@ -1688,7 +1792,7 @@ def setup_shell_routes() -> APIRouter:
                      or (pkg["name"] == "vllm" and pkg.get("installed") and not probe.get("dists")))
             )
             if pkg.get("pip") and not native_ready:
-                if on_remote:
+                if on_remote or in_selected_local_env:
                     health = probe.get("health") if isinstance(probe, dict) else None
                 else:
                     try:
@@ -1752,6 +1856,24 @@ def setup_shell_routes() -> APIRouter:
                             _has_nvidia_target = True
                     except Exception:
                         pass
+                elif in_selected_local_env:
+                    try:
+                        python = local_environments[pkg["name"]]["executable"]
+                        process = await asyncio.create_subprocess_exec(
+                            python, "-I", "-c", "import llama_cpp; import sys; sys.exit(0 if llama_cpp.llama_supports_gpu_offload() else 1)",
+                            env=_local_python_environment(Path(python)),
+                            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                        )
+                        try:
+                            await asyncio.wait_for(process.communicate(), timeout=8)
+                        except asyncio.TimeoutError:
+                            process.kill()
+                            await process.communicate()
+                            raise
+                        _gpu_capable = process.returncode == 0
+                    except Exception:
+                        pass
+                    _has_nvidia_target = shutil.which("nvidia-smi") is not None
                 else:
                     try:
                         import llama_cpp as _lcp  # type: ignore
@@ -1819,7 +1941,8 @@ def setup_shell_routes() -> APIRouter:
                 pkg["applicable"] = status.applicable
                 pkg["install_hint"] = status.install_hint
         if check_index:
-            await _attach_package_index_checks(packages, host=host, remote_environment=remote_environment)
+            await _attach_package_index_checks(packages, host=host, remote_environment=remote_environment,
+                                              package_environments=local_environments)
         return {"packages": packages}
 
     @router.post("/api/cookbook/packages/install")
@@ -1841,7 +1964,9 @@ def setup_shell_routes() -> APIRouter:
             "rembg[gpu]",
             "hf_transfer",
             "llama-cpp-python[server]",
+            "sglang",
             "sglang[all]",
+            SGLANG_REQUIREMENT,
             "diffusers",
             "diffusers[torch]",
             "git+https://github.com/huggingface/diffusers.git",
@@ -1869,10 +1994,26 @@ def setup_shell_routes() -> APIRouter:
         if IS_WINDOWS and unsupported_windows_requirements([pip_name]):
             raise HTTPException(400, f"This Cookbook dependency is not supported on native Windows: {pip_name}. Select a supported remote server.")
 
+        sglang_install = pip_name in {"sglang", "sglang[all]", SGLANG_REQUIREMENT}
+        python = _sys.executable
+        selected_venv = body.get("venv")
+        if selected_venv is not None and not isinstance(selected_venv, str):
+            raise HTTPException(400, "Invalid local Python environment path")
+        if sglang_install or selected_venv:
+            try:
+                python = str(_local_venv_python(selected_venv or managed_sglang_venv()))
+            except ValueError as exc:
+                hint = " Run scripts/setup_sglang_runtime.py to create Odysseus's isolated SGLang environment." if sglang_install else ""
+                raise HTTPException(400, str(exc) + hint) from exc
+        if sglang_install:
+            pip_name = SGLANG_REQUIREMENT
+
         async def run_python(*args):
+            kwargs = {"env": _local_python_environment(Path(python))} if sglang_install or selected_venv else {}
             proc = await asyncio.create_subprocess_exec(
-                _sys.executable, *args,
+                python, *args,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                **kwargs,
             )
             stdout, stderr = await proc.communicate()
             return proc.returncode, stdout, stderr
@@ -1880,6 +2021,11 @@ def setup_shell_routes() -> APIRouter:
         def install_error(stage, code, stdout, stderr):
             detail = (stderr or stdout).decode("utf-8", errors="replace")[-300:]
             return {"ok": False, "error": f"{stage}: {detail or f'exit code {code}'}"}
+
+        if sglang_install:
+            code, stdout, stderr = await run_python("-c", sglang_python_preflight_code())
+            if code:
+                return install_error("SGLang Python compatibility check failed", code, stdout, stderr)
 
         # Match the task-runner path: uv environments may lack pip, and native
         # installs need the same patched wheels as the Docker build.
@@ -1896,7 +2042,10 @@ def setup_shell_routes() -> APIRouter:
             code, stdout, stderr = await run_python(str(builder), "--install")
             if code:
                 return install_error("Real-ESRGAN compatibility preparation failed", code, stdout, stderr)
-        code, stdout, stderr = await run_python("-m", "pip", "install", pip_name)
+        install_args = ["-m", "pip", "install"]
+        if sglang_install:
+            install_args += ["--pre", "--only-binary=sglang"]
+        code, stdout, stderr = await run_python(*install_args, pip_name)
         if code == 0:
             return {"ok": True, "output": stdout.decode("utf-8", errors="replace")[-200:]}
         return {"ok": False, "error": stderr.decode("utf-8", errors="replace")[-300:]}
