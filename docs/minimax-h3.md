@@ -434,6 +434,19 @@ the default destination go to the H3 library; an explicit different destination
 is respected. API callers can set `usage: "h3"` for a repository whose name does
 not identify its purpose. Remote servers use their own selected paths.
 
+WSL exposes its Linux filesystem as a virtual disk, so the inference core may
+not automatically recognize the backing NVMe drive. Set
+`ODYSSEUS_H3_FAST_DISK_ROOTS` to a JSON list of trusted fast model directories,
+for example `["/home/corey/projects/odysseus/models"]`, to enable its fast-disk
+loading policy for those files. Symlinks are resolved before matching, and
+nested filesystems do not inherit the override. Other paths retain native
+storage detection. This setting takes effect in newly started workers.
+
+The headless worker runs the inference core's normal prefetch, cast-buffer,
+and allocation-watermark cleanup between conditioning and sampling, and again
+before decoding. After conditioning it unloads the Qwen encoder and clears
+unused allocator caches while retaining the VAEs on their selected GPU.
+
 Existing caches can be planned and migrated with
 `venv/bin/python scripts/migrate_model_library.py --help`. Planning is read-only.
 Execution verifies files, preserves repository/revision metadata, and records

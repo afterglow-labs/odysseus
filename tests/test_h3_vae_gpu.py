@@ -87,7 +87,7 @@ def runtime(monkeypatch):
 
     def clip(paths, **kwargs):
         calls.append(('encoder', kwargs))
-        return 'clip'
+        return SimpleNamespace(patcher=SimpleNamespace(load_device=torch.device('cuda:0')))
 
     class VAE:
         def __init__(self, **kwargs):

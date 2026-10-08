@@ -25,6 +25,55 @@ RUNTIME_REVISION = "5c460d8172fe30761ff67c0df3d5643bb74e0d70"
 GPU_UUID = re.compile(r"GPU-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
 
+def configure_fast_storage(storage, roots=None):
+    """Use explicitly trusted storage roots when WSL hides the backing NVMe.
+
+    Keep the runtime's detector for other paths. Resolve symlinks and check the
+    device as well as the directory, so a NAS link or nested mount cannot inherit
+    the local disk override. Native --disable-fast-disk still takes precedence.
+    """
+    original = getattr(storage, "_odysseus_original_fast_storage", storage.fast_storage)
+    storage._odysseus_original_fast_storage = original
+    storage.fast_storage = original
+    if roots is None:
+        try:
+            roots = json.loads(os.environ.get("ODYSSEUS_H3_FAST_DISK_ROOTS", "[]"))
+        except (ValueError, TypeError):
+            logging.warning("Ignoring invalid ODYSSEUS_H3_FAST_DISK_ROOTS; expected a JSON list of directories")
+            return
+    if not isinstance(roots, (list, tuple)):
+        logging.warning("Ignoring invalid fast storage roots; expected a list of directories")
+        return
+    trusted = []
+    for value in roots:
+        try:
+            if not isinstance(value, (str, os.PathLike)) or not str(value).strip():
+                raise ValueError("Expected a directory path")
+            root = Path(value).expanduser().resolve(strict=True)
+            if not root.is_dir():
+                raise ValueError("Expected a directory")
+            trusted.append((root, root.stat().st_dev))
+        except (OSError, ValueError, RuntimeError):
+            logging.warning("Ignoring unavailable or invalid fast storage directory")
+    if not trusted:
+        return
+
+    def fast_storage(path):
+        try:
+            resolved = Path(path).resolve(strict=True)
+            if resolved.is_file():
+                device = resolved.stat().st_dev
+                if any(device == root_device and resolved.is_relative_to(root)
+                       for root, root_device in trusted):
+                    return True
+        except (OSError, ValueError, TypeError, RuntimeError):
+            pass
+        return original(path)
+
+    storage.fast_storage = fast_storage
+    logging.info("Fast disk policy enabled for configured model directories: %s", [str(root) for root, _ in trusted])
+
+
 def atomic_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -524,6 +573,8 @@ class H3Runtime:
         import comfy.options
         comfy.options.enable_args_parsing(False)
         from comfy.cli_args import args
+        import comfy.storage
+        configure_fast_storage(comfy.storage)
         import comfy_aimdo.control
         # This is the pinned core's headless equivalent of main.py's allocator
         # initialization, before importing torch/model_management. No server or
@@ -550,10 +601,15 @@ class H3Runtime:
         import comfy.sd
         import comfy.sample
         import comfy.utils
+        import comfy.model_prefetch
+        import comfy_aimdo.model_vbar
         import nodes
         from comfy_extras import nodes_audio, nodes_minimax_h3
         self.sd, self.sample, self.utils = comfy.sd, comfy.sample, comfy.utils
         self.nodes, self.audio, self.h3 = nodes, nodes_audio, nodes_minimax_h3
+        self.model_management = comfy.model_management
+        self.model_prefetch = comfy.model_prefetch
+        self.model_vbar = comfy_aimdo.model_vbar
 
     def load(self, config, progress):
         import torch
@@ -578,6 +634,7 @@ class H3Runtime:
         progress("loading_encoder")
         clip = self.sd.load_clip([config["encoder"]], clip_type=self.sd.CLIPType.MINIMAX,
                                  model_options={"load_device": primary_device})
+        self._conditioning_patcher = clip.patcher
         progress("loading_video_vae")
         video_sd, video_metadata = self.utils.load_torch_file(config["video_vae"], safe_load=True, return_metadata=True)
         vae = self.sd.VAE(sd=video_sd, metadata=video_metadata, device=vae_device)
@@ -654,6 +711,29 @@ class H3Runtime:
                          torch.cuda.memory_reserved(device) / 1024**2,
                          free / 1024**2, total / 1024**2)
 
+    def cleanup_model_state(self):
+        if getattr(self, "model_management", None) is None:
+            return
+        # Match the pinned execution.py node boundary: release temporary
+        # prefetch/allocator state before the next model begins. The headless
+        # adapter does not run that execution engine's finally block.
+        self.model_prefetch.cleanup_prefetch_queues()
+        self.model_management.reset_cast_buffers()
+        self.model_vbar.vbars_reset_watermark_limits()
+
+    def release_conditioning(self):
+        H3Runtime.cleanup_model_state(self)
+        patcher = getattr(self, "_conditioning_patcher", None)
+        if patcher is None:
+            return
+        # Dynamic-to-dynamic loading deliberately keeps the previous model.
+        # Conditioning is complete, so unload its encoder explicitly while
+        # retaining the video/audio VAEs for decode (including on cuda:1).
+        self.model_management.unload_model_and_clones(patcher, unload_additional_models=False)
+        self.model_management.soft_empty_cache()
+        self._conditioning_patcher = None
+        logging.info("Released Qwen encoder and conditioning allocation caches before sampling")
+
     def condition(self, config, prepared, clip, vae, audio_vae):
         common = dict(clip=clip, vae=vae, prompt=config["prompt"], width=config["width"],
                       height=config["height"], length=config["frames"])
@@ -684,6 +764,8 @@ class H3Runtime:
         # Also covers BFS H3, whose dedicated guide conditioning bypasses
         # H3Runtime.condition but enters this same sampler boundary.
         H3Runtime.log_gpu_memory(self, "after conditioning")
+        H3Runtime.release_conditioning(self)
+        H3Runtime.log_gpu_memory(self, "after conditioning cleanup")
         model = self.h3.MiniMaxH3SigmaShift.execute(model, config["shift_video"], config["shift_audio"])[0]
         latent_image = latent["samples"]
         noise = self.sample.prepare_noise(latent_image, config["seed"])
@@ -692,6 +774,7 @@ class H3Runtime:
         samples = self.sample.sample(model, noise, config["steps"], 1.0, config["sampler"],
                                      config["scheduler"], positive, [], latent_image,
                                      callback=callback, disable_pbar=False, seed=config["seed"])
+        H3Runtime.cleanup_model_state(self)
         return {**latent, "samples": samples}
 
     def decode(self, samples, vae, audio_vae, progress, *, source_audio=None):
@@ -754,7 +837,7 @@ def main(argv=None):
     except Exception as exc:
         # No manifest dumps: parent paths/state may contain private user data.
         error = f"{type(exc).__name__}: {exc}"
-        print(error, file=sys.stderr, flush=True)
+        logging.exception("H3 render failed")
         if isinstance(manifest, dict) and manifest.get("status_path"):
             atomic_json(manifest["status_path"], {"phase": "failed", "step": 0,
                                                 "total_steps": manifest.get("config", {}).get("steps", 0),
