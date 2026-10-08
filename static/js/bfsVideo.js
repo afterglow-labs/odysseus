@@ -5,6 +5,7 @@ import * as videoWorkflow from './videoWorkflow.js';
 import { createVideoBatchQueue } from './videoBatch.js';
 import { createVideoJobEditor, videoJobEditFormData } from './videoJobEdit.js';
 import { createVideoQueueControls, videoQueueField } from './videoQueue.js';
+import { createVideoJobReruns } from './videoJobRerun.js';
 
 const API = '/api/video/bfs';
 const STORAGE = 'odysseus-bfs-video-settings-v1';
@@ -144,6 +145,10 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
   const queueContainer = el('div'); scroll.appendChild(queueContainer);
   const jobList = el('div', 'h3-video-jobs'); scroll.appendChild(jobList);
   overlay.appendChild(dialog); document.body.appendChild(overlay);
+  const reruns = createVideoJobReruns({ family: 'bfs', request, isClosed: () => closed,
+    isBlocked: () => !!queueControls?.busy || !!queueControls?.editing, onChange: () => renderJobs(),
+    onQueued: async result => { queueControls?.update(result.queue); await loadJobs(); },
+  });
 
   function setError(message) { error.textContent = message || ''; error.hidden = !message; if (message) error.scrollIntoView({ block: 'nearest' }); }
   function config() {
@@ -204,6 +209,11 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
   }
   function updateReady() {
     jobEditor?.observe(jobs);
+    for (const job of jobs) {
+      const nodes = jobNodes.get(job.id); if (!nodes) continue;
+      const state = reruns.state(job); nodes.rerun.disabled = state.disabled;
+      nodes.editRerun.disabled = state.disabled || state.pending || !inventory || !!jobEditor?.active || !!jobEditor?.loading;
+    }
     const batching = batchActive(), batchBusy = !!batchQueue?.busy;
     const editing = !!jobEditor?.active, editLoading = !!jobEditor?.loading;
     const queueBusy = !!queueControls?.busy;
@@ -362,8 +372,8 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
       let nodes = jobNodes.get(job.id);
       if (!nodes) {
         const card = el('article', 'h3-video-job'); card.dataset.jobId = job.id;
-        const row = el('div', 'h3-video-toolbar'), heading = el('strong'), stop = button('Stop'), remove = button('Delete job'), exportJob = button('Export workflow'), edit = button('Edit');
-        const jobActions = el('div', 'h3-video-job-actions'); jobActions.append(edit, exportJob, stop, remove); row.append(heading, jobActions);
+        const row = el('div', 'h3-video-toolbar'), heading = el('strong'), stop = button('Stop'), remove = button('Delete job'), exportJob = button('Export workflow'), edit = button('Edit'), rerun = button('Retry'), editRerun = button('Edit & rerun');
+        const jobActions = el('div', 'h3-video-job-actions'); jobActions.append(edit, rerun, editRerun, exportJob, stop, remove); row.append(heading, jobActions);
         const status = el('p', 'h3-video-muted'); status.setAttribute('role', 'status');
         const progress = el('progress'); progress.setAttribute('aria-label', 'BFS video progress');
         const failure = el('p', 'h3-video-error'); failure.setAttribute('role', 'alert');
@@ -377,14 +387,22 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
         };
         const details = el('details'); details.appendChild(el('summary', '', 'Runtime log'));
         const log = el('pre', 'h3-video-log'); details.appendChild(log);
+        const rerunStatus = el('p', 'h3-video-muted'); rerunStatus.hidden = true; rerunStatus.setAttribute('role', 'status');
+        const rerunError = el('p', 'h3-video-error'); rerunError.hidden = true; rerunError.setAttribute('role', 'alert');
         const deletion = el('div', 'h3-video-delete-confirmation'); deletion.hidden = true;
         deletion.appendChild(el('p', '', 'Permanently delete this job, its output, uploads, logs and saved prompt, including its linked Gallery output? This cannot be undone.'));
         const deleteActions = el('div', 'h3-video-job-actions'), keep = button('Keep job'), confirmDelete = button('Delete permanently');
         confirmDelete.classList.add('h3-video-delete-button'); deleteActions.append(keep, confirmDelete); deletion.appendChild(deleteActions);
         const deleteError = el('p', 'h3-video-error'); deleteError.hidden = true; deleteError.setAttribute('role', 'alert'); deletion.appendChild(deleteError);
-        card.append(row, status, deletion, progress, failure, output, promptDetails, details); jobList.appendChild(card);
-        nodes = { card, heading, edit, stop, remove, deletion, keep, confirmDelete, deleteError, status, progress, failure, output, usedPrompt, copy, log }; jobNodes.set(job.id, nodes);
+        card.append(row, status, rerunStatus, rerunError, deletion, progress, failure, output, promptDetails, details); jobList.appendChild(card);
+        nodes = { card, heading, edit, rerun, editRerun, rerunStatus, rerunError, stop, remove, deletion, keep, confirmDelete, deleteError, status, progress, failure, output, usedPrompt, copy, log }; jobNodes.set(job.id, nodes);
         edit.onclick = () => jobEditor.open(job.id);
+        rerun.title = 'Queue a new copy using this job’s saved prompt, settings and inputs; keep the original.';
+        rerun.onclick = () => reruns.run(jobs.find(item => item.id === job.id) || job);
+        editRerun.onclick = () => queueControls.openRerun(job.id, async (source, patch) => {
+          const result = await reruns.run(source, patch, true);
+          return { result, ...reruns.state(source) };
+        });
         stop.onclick = () => stopJob(job.id);
         remove.onclick = () => { deletion.hidden = false; deleteError.hidden = true; keep.focus(); };
         keep.onclick = () => { deletion.hidden = true; remove.focus(); };
@@ -394,6 +412,11 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
       if (jobList.children[index] !== nodes.card) jobList.insertBefore(nodes.card, jobList.children[index] || null);
       const queued = job.status === 'queued';
       nodes.edit.hidden = !queued;
+      const rerunState = reruns.state(job);
+      nodes.rerun.hidden = nodes.editRerun.hidden = rerunState.hidden; nodes.rerun.disabled = rerunState.disabled; nodes.rerun.textContent = rerunState.label;
+      nodes.editRerun.disabled = rerunState.disabled || rerunState.pending || !inventory || !!jobEditor?.active || !!jobEditor?.loading;
+      nodes.rerunStatus.textContent = rerunState.message; nodes.rerunStatus.hidden = !rerunState.message;
+      nodes.rerunError.textContent = rerunState.error; nodes.rerunError.hidden = !rerunState.error;
       const position = queued && Number.isInteger(job.queue_position) && job.queue_position > 0 ? ` · Position ${job.queue_position}` : '';
       nodes.heading.textContent = `${job.source_name ? `${job.source_name} · ` : ''}${job.workflow_label || 'BFS video'} · ${job.status}${position}`;
       const started = queued ? job.created_at : job.started_at || job.created_at;
@@ -406,8 +429,8 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
       nodes.failure.textContent = job.error || ''; nodes.failure.hidden = !job.error;
       nodes.stop.hidden = !ACTIVE.has(job.status); nodes.stop.disabled = !!queueControls?.busy || stopping.has(job.id);
       nodes.stop.textContent = stopping.has(job.id) ? (queued ? 'Canceling…' : 'Stopping and verifying…') : queued ? 'Cancel queued job' : 'Stop';
-      nodes.remove.hidden = !TERMINAL.has(job.status); nodes.remove.disabled = !!queueControls?.busy || deleting.has(job.id);
-      nodes.keep.disabled = !!queueControls?.busy || deleting.has(job.id); nodes.confirmDelete.disabled = !!queueControls?.busy || deleting.has(job.id);
+      nodes.remove.hidden = !TERMINAL.has(job.status); nodes.remove.disabled = !!queueControls?.busy || reruns.busy(job.id) || deleting.has(job.id);
+      nodes.keep.disabled = !!queueControls?.busy || reruns.busy(job.id) || deleting.has(job.id); nodes.confirmDelete.disabled = !!queueControls?.busy || reruns.busy(job.id) || deleting.has(job.id);
       nodes.confirmDelete.textContent = deleting.has(job.id) ? 'Deleting…' : 'Delete permanently';
       if (!TERMINAL.has(job.status)) nodes.deletion.hidden = true;
       const used = typeof job.prompt === 'string' && job.prompt.length ? job.prompt : 'Prompt unavailable for this older job.';
@@ -576,12 +599,13 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
   });
   queueControls = createVideoQueueControls({
     container: queueContainer, family: 'bfs', request, reload: loadJobs, onChange: updateReady, isClosed: () => closed,
-    getFields: () => {
+    getFields: savedConfig => {
       const descriptors = [videoQueueField('prompt', 'Prompt', prompt), videoQueueField('gpu', 'GPU', gpu)];
       const definitions = new Map(), componentDefinitions = new Map();
       // Include every installed BFS family; a draft selection must not hide
       // parameters used by jobs from another workflow in the same queue.
       for (const candidate of inventory?.workflows || []) {
+        if (savedConfig?.workflow_id && candidate.id !== savedConfig.workflow_id) continue;
         for (const spec of candidate.controls || []) if (!RESERVED.has(spec.key) && !definitions.has(spec.key)) definitions.set(spec.key, { ...spec, default: spec.default ?? candidate.defaults?.[spec.key] });
         for (const slot of candidate.slots || []) {
           const previous = componentDefinitions.get(slot.key);
@@ -590,7 +614,7 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
         }
       }
       for (const [key, spec] of definitions) {
-        const current = controls.get(key), type = spec.type || 'number', numeric = ['number', 'integer', 'int', 'float'].includes(type);
+        const current = savedConfig?.workflow_id && savedConfig.workflow_id !== workflow?.id ? null : controls.get(key), type = spec.type || 'number', numeric = ['number', 'integer', 'int', 'float'].includes(type);
         let control = current?.control;
         if (!control) {
           control = el(Array.isArray(spec.options) && spec.options.length ? 'select' : 'input');

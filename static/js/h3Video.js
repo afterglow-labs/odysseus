@@ -4,6 +4,7 @@ import * as videoWorkflow from './videoWorkflow.js';
 import { createVideoBatchQueue } from './videoBatch.js';
 import { createVideoJobEditor, videoJobEditFormData } from './videoJobEdit.js';
 import { createVideoQueueControls, videoQueueField } from './videoQueue.js';
+import { createVideoJobReruns } from './videoJobRerun.js';
 import { h3LoraStack, h3LoraIssue, createH3LoraEditor } from './h3Loras.js';
 
 const API = '/api/video/h3';
@@ -374,6 +375,10 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   const queueContainer = el('div'); scroll.appendChild(queueContainer);
   const jobList = el('div', 'h3-video-jobs'); scroll.appendChild(jobList);
   overlay.appendChild(dialog); document.body.appendChild(overlay);
+  const reruns = createVideoJobReruns({ family: 'h3', request, isClosed: () => closed,
+    isBlocked: () => !!queueControls?.busy || !!queueControls?.editing, onChange: () => renderJobs(),
+    onQueued: async result => { queueControls?.update(result.queue); await loadJobs(); },
+  });
 
   const setError = message => {
     error.textContent = message || ''; error.hidden = !message;
@@ -476,6 +481,11 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   }
   function updateReady() {
     jobEditor?.observe(jobs);
+    for (const job of jobs) {
+      const nodes = jobNodes.get(job.id); if (!nodes) continue;
+      const state = reruns.state(job); nodes.rerun.disabled = state.disabled;
+      nodes.editRerun.disabled = state.disabled || state.pending || !inventory || !!jobEditor?.active || !!jobEditor?.loading;
+    }
     const batching = batchActive(), batchBusy = !!batchQueue?.busy;
     const editing = !!jobEditor?.active, editLoading = !!jobEditor?.loading;
     const queueBusy = !!queueControls?.busy;
@@ -799,8 +809,8 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
       if (!nodes) {
         const card = el('article', 'h3-video-job'); card.dataset.jobId = job.id;
         const row = el('div', 'h3-video-toolbar');
-        const heading = el('strong'); const stop = button('Stop'); const remove = button('Delete job'), exportJob = button('Export workflow'), edit = button('Edit');
-        const jobActions = el('div', 'h3-video-job-actions'); jobActions.append(edit, exportJob, stop, remove); row.append(heading, jobActions);
+        const heading = el('strong'); const stop = button('Stop'); const remove = button('Delete job'), exportJob = button('Export workflow'), edit = button('Edit'), rerun = button('Retry'), editRerun = button('Edit & rerun');
+        const jobActions = el('div', 'h3-video-job-actions'); jobActions.append(edit, rerun, editRerun, exportJob, stop, remove); row.append(heading, jobActions);
         const description = el('p', 'h3-video-muted'); description.setAttribute('role', 'status');
         const progress = el('progress'); progress.max = 1; progress.value = 0; progress.setAttribute('aria-label', 'Video generation progress');
         const jobError = el('p', 'h3-video-error'); jobError.setAttribute('role', 'alert');
@@ -825,14 +835,22 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
           } finally { if (!closed) copyPrompt.disabled = false; }
         });
         const output = el('div', 'h3-video-output');
+        const rerunStatus = el('p', 'h3-video-muted'); rerunStatus.hidden = true; rerunStatus.setAttribute('role', 'status');
+        const rerunError = el('p', 'h3-video-error'); rerunError.hidden = true; rerunError.setAttribute('role', 'alert');
         const deletion = el('div', 'h3-video-delete-confirmation'); deletion.hidden = true;
         deletion.appendChild(el('p', '', 'Permanently delete this job, its output, uploads, logs and saved prompt, including its linked Gallery output? This cannot be undone.'));
         const deleteActions = el('div', 'h3-video-job-actions'); const keep = button('Keep job'), confirmDelete = button('Delete permanently');
         confirmDelete.classList.add('h3-video-delete-button'); deleteActions.append(keep, confirmDelete); deletion.appendChild(deleteActions);
         const deleteError = el('p', 'h3-video-error'); deleteError.hidden = true; deleteError.setAttribute('role', 'alert'); deletion.appendChild(deleteError);
-        card.append(row, description, deletion, progress, jobError, output, promptDetails, details); jobList.appendChild(card);
-        nodes = { card, heading, edit, stop, remove, deletion, keep, confirmDelete, deleteError, description, progress, jobError, log, output, promptText, copyPrompt, copyStatus }; jobNodes.set(job.id, nodes);
+        card.append(row, description, rerunStatus, rerunError, deletion, progress, jobError, output, promptDetails, details); jobList.appendChild(card);
+        nodes = { card, heading, edit, rerun, editRerun, rerunStatus, rerunError, stop, remove, deletion, keep, confirmDelete, deleteError, description, progress, jobError, log, output, promptText, copyPrompt, copyStatus }; jobNodes.set(job.id, nodes);
         edit.onclick = () => jobEditor.open(job.id);
+        rerun.title = 'Queue a new copy using this job’s saved prompt, settings and inputs; keep the original.';
+        rerun.onclick = () => reruns.run(jobs.find(item => item.id === job.id) || job);
+        editRerun.onclick = () => queueControls.openRerun(job.id, async (source, patch) => {
+          const result = await reruns.run(source, patch, true);
+          return { result, ...reruns.state(source) };
+        });
         stop.onclick = () => stopJob(job.id);
         remove.onclick = () => { deletion.hidden = false; deleteError.hidden = true; keep.focus(); };
         keep.onclick = () => { deletion.hidden = true; remove.focus(); };
@@ -842,6 +860,11 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
       if (jobList.children[index] !== nodes.card) jobList.insertBefore(nodes.card, jobList.children[index] || null);
       const queued = job.status === 'queued';
       nodes.edit.hidden = !queued;
+      const rerunState = reruns.state(job);
+      nodes.rerun.hidden = nodes.editRerun.hidden = rerunState.hidden; nodes.rerun.disabled = rerunState.disabled; nodes.rerun.textContent = rerunState.label;
+      nodes.editRerun.disabled = rerunState.disabled || rerunState.pending || !inventory || !!jobEditor?.active || !!jobEditor?.loading;
+      nodes.rerunStatus.textContent = rerunState.message; nodes.rerunStatus.hidden = !rerunState.message;
+      nodes.rerunError.textContent = rerunState.error; nodes.rerunError.hidden = !rerunState.error;
       const position = Number.isInteger(job.queue_position) && job.queue_position > 0 ? ` · Position ${job.queue_position}` : '';
       nodes.heading.textContent = `${job.source_name ? `${job.source_name} · ` : ''}${queued ? `Queued${position}` : job.status.charAt(0).toUpperCase() + job.status.slice(1)} · ${job.id}`;
       nodes.description.textContent = queued
@@ -863,8 +886,8 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
       nodes.copyPrompt.hidden = !hasPrompt;
       nodes.stop.hidden = !ACTIVE.has(job.status); nodes.stop.disabled = !!queueControls?.busy || pendingStops.has(job.id);
       nodes.stop.textContent = pendingStops.has(job.id) ? (queued ? 'Canceling…' : 'Stopping and verifying…') : queued ? 'Cancel queued job' : 'Stop';
-      nodes.remove.hidden = !TERMINAL.has(job.status); nodes.remove.disabled = !!queueControls?.busy || pendingDeletes.has(job.id);
-      nodes.keep.disabled = !!queueControls?.busy || pendingDeletes.has(job.id); nodes.confirmDelete.disabled = !!queueControls?.busy || pendingDeletes.has(job.id);
+      nodes.remove.hidden = !TERMINAL.has(job.status); nodes.remove.disabled = !!queueControls?.busy || reruns.busy(job.id) || pendingDeletes.has(job.id);
+      nodes.keep.disabled = !!queueControls?.busy || reruns.busy(job.id) || pendingDeletes.has(job.id); nodes.confirmDelete.disabled = !!queueControls?.busy || reruns.busy(job.id) || pendingDeletes.has(job.id);
       nodes.confirmDelete.textContent = pendingDeletes.has(job.id) ? 'Deleting…' : 'Delete permanently';
       if (!TERMINAL.has(job.status)) nodes.deletion.hidden = true;
       if (job.status === 'completed' && !nodes.output.childElementCount) {
@@ -1049,10 +1072,16 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   });
   queueControls = createVideoQueueControls({
     container: queueContainer, family: 'h3', request, reload: loadJobs, onChange: updateReady, isClosed: () => closed,
-    getFields: () => [...SETTINGS, 'prompt'].filter(key => key !== 'mode').map(key => {
-      const control = fields[key], label = control.closest('label')?.querySelector('span')?.textContent || (key === 'prompt' ? 'Prompt' : key.replaceAll('_', ' '));
+    getFields: savedConfig => [...SETTINGS, 'prompt'].filter(key => key !== 'mode').map(key => {
+      let control = fields[key];
+      const label = control.closest('label')?.querySelector('span')?.textContent || (key === 'prompt' ? 'Prompt' : key.replaceAll('_', ' '));
+      if (savedConfig && key === 'frames') {
+        control = control.cloneNode(true);
+        const vfx = h3LoraStack(savedConfig).some(row => Number(row.strength) !== 0 && inventory?.components?.some(item => item.id === row.id && item.recipe === 'vfx_edit'));
+        for (const option of control.options) option.disabled = option.hidden = !vfx && Number(option.value) < 124;
+      }
       return videoQueueField(key, label, control, NUMBER_FIELDS.has(key));
-    }).concat([{ key: 'loras', label: 'LoRA stack (replace all)', create: onChange => createH3LoraEditor({
+    }).concat([{ key: 'loras', label: 'LoRA stack (replace all)', getSavedValue: h3LoraStack, create: onChange => createH3LoraEditor({
       components: inventory?.components || [], value: loraEditor.getValue(), max: inventory?.max_loras || 8, idPrefix: 'h3-queue', onChange,
     }) }]),
   });

@@ -30,6 +30,13 @@ selected workflow. Rerunning creates new copies of finished, queued or all BFS
 jobs with the checked changes, preserving original records and results. Review
 the job count before confirming; paused queues remain paused after adding copies.
 
+To change just one finished job, choose **Edit & rerun** on its card. Its own
+saved parameters populate the editor; submitting creates one new copy with the
+same saved media and your changes. The original result and new-job draft stay
+intact. **Retry** for failed or stopped jobs and **Reprocess** for completed jobs
+reuse the saved parameters immediately. **Retry request** recovers an interrupted
+submission using its original request ID and parameters, avoiding duplicate copies.
+
 ## Editing queued jobs
 
 Use **Edit** on a queued job to change its prompt, workflow, components, render
@@ -37,7 +44,8 @@ settings, or saved face/head and target inputs. **Save changes** updates the sam
 job without moving it to the back of the queue or reuploading retained media.
 **Cancel edit** restores your new-job draft. If the job starts or another client
 updates it first, saving is rejected and the unsaved edit stays visible. Running
-and finished jobs cannot be edited.
+and finished jobs cannot be edited in place. Finished jobs support **Edit &
+rerun** to create a new copy with changed parameters.
 
 ## Recipes and required inputs
 

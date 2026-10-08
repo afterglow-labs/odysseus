@@ -36,6 +36,15 @@ check any parameters to change and confirm. The new copies join the end of the
 shared queue, preserving original records and outputs. Reruns reuse server-side
 input files without uploading them again. A paused queue stays paused.
 
+For one finished job, choose **Edit & rerun** on its card. The editor starts
+from that job's saved parameters, including its prompt, models and LoRA stack.
+Change the settings you want and queue one new copy with the saved attachments.
+The original job and the separate new-job draft are preserved. **Retry** on a
+failed or stopped job and **Reprocess** on a completed job use its saved settings
+without opening the editor. If a submission response is interrupted, **Retry
+request** checks the same submission instead of adding a duplicate; its pending
+parameters stay fixed until the server confirms the result.
+
 ## Editing queued jobs
 
 Queued jobs have an **Edit** button. Change the prompt, models, GPU placement,
@@ -45,7 +54,8 @@ ID and queue position. **Cancel edit** restores the previous new-job draft.
 Multiple reference videos still belong to one job; editing never expands them
 into a batch. The queue keeps running while the editor is open. A job that starts
 or changes in another client rejects the stale save and leaves the edits visible.
-Running and finished jobs cannot be edited.
+Running and finished jobs cannot be edited in place. Use **Edit & rerun** on a
+finished job to make a new copy with changed parameters.
 
 ## Environment and model files
 
@@ -292,6 +302,11 @@ server for enhancement.
   5.17 seconds; 362 frames is about 15.08 seconds. The low-level worker accepts
   shorter smoke-test clips, but H3's documented trained range starts at 124.
   VFX Edit instead matches the source duration and supports at least 73 frames.
+- Reference video conditioning retains the decoded frames within the requested
+  output length, then repeats the last frame to reach H3's next valid frame
+  count. Its reference audio receives a matching silent tail if needed. This
+  preserves the reference ending instead of trimming it down to the previous
+  valid frame count; it does not change the requested output duration.
 - Steps: 1–100; default 20. Very low steps are useful for a smoke test, not for
   judging normal output quality.
 - Seed: unsigned 64-bit integer, passed to noise generation and sampling.

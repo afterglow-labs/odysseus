@@ -14,7 +14,7 @@ def run_js(script):
     node = shutil.which("node")
     if not node:
         pytest.skip("Node.js is required for H3 UI checks")
-    source = (ROOT / "static/js/h3Loras.js").read_text() + '\n' + (ROOT / "static/js/h3Video.js").read_text()
+    source = (ROOT / "static/js/videoJobRerun.js").read_text() + '\n' + (ROOT / "static/js/h3Loras.js").read_text() + '\n' + (ROOT / "static/js/h3Video.js").read_text()
     source = re.sub(r"^import .*;\n", "", source, flags=re.MULTILINE)
     result = subprocess.run(
         [node, "--input-type=module", "-e", "import assert from 'node:assert/strict';\n" + source + DOM + script],
@@ -30,6 +30,8 @@ class Element {
  set value(value){this._value=String(value);}
  get value(){return this._value;}
  get options(){return this.children;}
+ closest(){return null;}
+ cloneNode(){const copy=new Element(this.tagName);copy.children=this.children.map(item=>({...item}));copy.value=this.value;copy.type=this.type;copy.disabled=this.disabled;return copy;}
  setAttribute(key,value){this.attributes[key]=value;}
  removeAttribute(key){delete this.attributes[key];}
  append(...items){for(const item of items){item.parentElement=this;this.children.push(item);}}
@@ -55,8 +57,9 @@ const videoWorkflow={};
 let batch,editor,editorOptions;
 const createVideoBatchQueue=options=>(batch={...options,active:false,busy:false,setAvailable(){},setEnabled(enabled,issue){this.enabled=enabled;this.issue=issue;},destroy(){}});
 const createVideoJobEditor=options=>{editorOptions=options;return editor={active:null,loading:false,observe(){},finish(){}};};
-const createVideoQueueControls=()=>({busy:false,editing:false,setBlocked(){},update(){},destroy(){}});
-const videoQueueField=()=>{};
+let queueOptions;
+const createVideoQueueControls=options=>(queueOptions=options,{busy:false,editing:false,setBlocked(){},update(){},destroy(){}});
+const videoQueueField=(key,label,control,numeric)=>({key,label,control,numeric});
 const videoJobEditFormData=()=>new FormData();
 const components=[
  {id:'ref',role:'model',variant:'ref2va',name:'Ref2VA'},
@@ -213,4 +216,17 @@ await form().fire('submit');
 const body=calls.find(call=>call.method==='POST'&&call.url.endsWith('/jobs')).body;
 assert.deepEqual(body.getAll('source_video'),[clip]);assert.deepEqual(body.getAll('reference_videos'),[ref]);
 assert.equal(JSON.parse(body.get('config')).prompt,'Use <Picture 1> as clothing guidance');
+""")
+
+
+def test_saved_job_parameters_restore_legacy_lora_and_frame_options_without_touching_current_draft():
+    run_js(r"""
+showH3Video();await flush();
+const original=byId('frames').options.find(option=>option.value==='73');assert.equal(original.hidden,true);
+const saved={...defaults,lora:'vfx',lora_scale:0.6,frames:73};
+const descriptors=queueOptions.getFields(saved);
+assert.deepEqual(descriptors.find(row=>row.key==='loras').getSavedValue(saved),[{id:'vfx',strength:0.6}]);
+const copied=descriptors.find(row=>row.key==='frames').control.options.find(option=>option.value==='73');
+assert.equal(copied.hidden,false);assert.equal(copied.disabled,false);assert.equal(original.hidden,true);
+assert.equal(byId('frames').value,'124');assert.equal(byId('prompt').value,'');
 """)

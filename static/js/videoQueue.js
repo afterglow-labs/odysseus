@@ -35,6 +35,7 @@ export function createVideoQueueControls({ container, family, request, getFields
   const familyName = family === 'h3' ? 'H3' : 'BFS';
   let queue = null, busy = false, blocked = false, dead = false, mode = null, targets = [], rows = [];
   let requestKey = '', requestId = '', selectionVersion = 0, retryRerun = false;
+  let singleJob = null, singleSubmit = null;
   const panel = el('section', 'video-queue-panel'); panel.setAttribute('aria-label', `${familyName} queue controls`);
   const heading = el('div', 'h3-video-toolbar'), title = el('h3', '', 'Queue controls');
   const pause = button('Pause queue', 'pause'); heading.append(title, pause); panel.appendChild(heading);
@@ -64,7 +65,7 @@ export function createVideoQueueControls({ container, family, request, getFields
   const refreshSelection = button('Refresh selected jobs', 'refresh-selection'); editor.appendChild(refreshSelection);
   const targetNames = el('details', 'video-queue-targets'); targetNames.appendChild(el('summary', '', 'Review jobs'));
   const targetList = el('ul'); targetNames.appendChild(targetList); editor.appendChild(targetNames);
-  editor.appendChild(el('p', 'h3-video-muted', 'Check only the parameters to change. Values start from your current draft or workflow defaults. Each job keeps its other settings, workflow, and saved images, videos and audio.'));
+  const fieldHelp = el('p', 'h3-video-muted', 'Check only the parameters to change. Values start from your current draft or workflow defaults. Each job keeps its other settings, workflow, and saved images, videos and audio.'); editor.appendChild(fieldHelp);
   const fieldGrid = el('div', 'video-queue-fields'); editor.appendChild(fieldGrid);
   const approveLabel = el('label', 'video-queue-approval'), approve = el('input'); approve.type = 'checkbox';
   const approveText = el('span'); approveLabel.append(approve, approveText); editor.appendChild(approveLabel);
@@ -88,13 +89,14 @@ export function createVideoQueueControls({ container, family, request, getFields
     targetScope.disabled = refreshSelection.disabled = locked || retryRerun; abandon.disabled = busy;
     approve.disabled = locked || !targets.length;
     for (const row of rows) {
-      row.check.disabled = locked || retryRerun;
-      const disabled = locked || retryRerun || !row.check.checked;
+      row.check.disabled = locked || retryRerun || !!singleJob;
+      const disabled = locked || retryRerun || (!singleJob && !row.check.checked);
       if (row.custom) row.custom.setDisabled(disabled);
       else row.control.disabled = disabled;
     }
-    apply.textContent = retryRerun ? 'Retry remaining copies safely' : mode === 'rerun' ? `Queue ${targets.length} new ${targets.length === 1 ? 'job' : 'jobs'}` : `Apply to ${targets.length} queued ${targets.length === 1 ? 'job' : 'jobs'}`;
-    apply.disabled = locked || !targets.length || !approve.checked || (mode === 'edit' && !rows.some(row => row.check.checked));
+    apply.textContent = retryRerun ? singleJob ? 'Retry request' : 'Retry remaining copies safely' : singleJob ? 'Queue edited copy' : mode === 'rerun' ? `Queue ${targets.length} new ${targets.length === 1 ? 'job' : 'jobs'}` : `Apply to ${targets.length} queued ${targets.length === 1 ? 'job' : 'jobs'}`;
+    apply.disabled = locked || !targets.length || (!singleJob && !approve.checked)
+      || ((mode === 'edit' || (singleJob && !retryRerun)) && !rows.some(row => row.check.checked));
   }
   function updateQueue(value) { if (value && typeof value.paused === 'boolean') queue = value; render(); }
   async function run(operation) {
@@ -133,17 +135,22 @@ export function createVideoQueueControls({ container, family, request, getFields
     const action = confirmation.dataset.action, result = await post(`/queue/${action}`, { scope: scope.value }); if (!alive()) return;
     confirmation.hidden = true; receipt(result, action === 'delete' ? 'deleted' : 'canceled'); await reload();
   });
-  function buildFields() {
+  function buildFields(savedConfig = null) {
     rows = []; fieldGrid.replaceChildren();
     const seen = new Set();
-    for (const descriptor of getFields()) {
+    for (const descriptor of getFields(savedConfig)) {
       const { key, label, control: original, numeric } = descriptor;
       if ((!original && !descriptor.create) || seen.has(key) || ['mode', 'workflow_id', 'inputs'].includes(key)) continue;
+      const savedValue = savedConfig ? descriptor.getSavedValue ? descriptor.getSavedValue(savedConfig)
+        : key.startsWith('components.') ? savedConfig.components?.[key.slice(11)] : savedConfig[key] : undefined;
+      if (savedConfig && savedValue === undefined) continue;
       seen.add(key);
       const row = el('div', 'video-queue-field'), toggle = el('label', 'video-queue-field-toggle'), check = el('input'); check.type = 'checkbox'; check.dataset.queueField = key;
+      check.hidden = !!singleJob;
       check.setAttribute('aria-label', `Change ${label}`); toggle.append(check, el('span', '', label));
       if (descriptor.create) {
-        const custom = descriptor.create(() => { approve.checked = false; render(); });
+        const custom = descriptor.create(() => { if (singleJob) check.checked = true; approve.checked = false; render(); });
+        if (savedConfig) custom.setValue(savedValue);
         row.classList.add('video-queue-field-wide'); row.append(toggle, custom.node);
         check.onchange = () => { approve.checked = false; render(); };
         fieldGrid.appendChild(row); rows.push({ key, check, custom });
@@ -151,10 +158,17 @@ export function createVideoQueueControls({ container, family, request, getFields
       }
       const control = original.cloneNode(true); control.removeAttribute('id'); control.removeAttribute('name'); control.classList.add('cookbook-field-input');
       control.value = original.value; if (original.type === 'checkbox') control.checked = original.checked;
+      if (savedConfig) {
+        if (control.type === 'checkbox') control.checked = !!savedValue;
+        else {
+          if (control.tagName === 'SELECT' && ![...control.options].some(option => option.value === String(savedValue))) control.add(new Option('Saved value (currently unavailable)', String(savedValue)));
+          control.value = String(savedValue ?? '');
+        }
+      }
       control.setAttribute('aria-label', `New ${label}`); control.dataset.queueValue = key; control.disabled = true;
       check.onchange = () => { approve.checked = false; render(); };
-      control.addEventListener('input', () => { approve.checked = false; render(); });
-      control.addEventListener('change', () => { approve.checked = false; render(); });
+      control.addEventListener('input', () => { if (singleJob) check.checked = true; approve.checked = false; render(); });
+      control.addEventListener('change', () => { if (singleJob) check.checked = true; approve.checked = false; render(); });
       row.append(toggle, control); fieldGrid.appendChild(row); rows.push({ key, control, check, numeric });
     }
   }
@@ -170,21 +184,48 @@ export function createVideoQueueControls({ container, family, request, getFields
     for (const job of targets) targetList.appendChild(el('li', '', `${job.source_name || job.id} · ${job.status}`));
     render();
   }
-  function closeEditor() { selectionVersion++; retryRerun = false; requestKey = ''; requestId = ''; mode = null; targets = []; editor.hidden = true; approve.checked = false; render(); onChange(); }
+  function closeEditor() { selectionVersion++; retryRerun = false; requestKey = ''; requestId = ''; singleJob = null; singleSubmit = null; mode = null; targets = []; editor.hidden = true; approve.checked = false; render(); onChange(); }
   function openEditor(action) {
     run(async () => {
       mode = action; editor.hidden = false; confirmation.hidden = true; notice(); targetScope.value = 'finished'; buildFields();
+      approveLabel.hidden = false; refreshSelection.hidden = false; targetNames.hidden = false;
+      fieldHelp.textContent = 'Check only the parameters to change. Values start from your current draft or workflow defaults. Each job keeps its other settings, workflow, and saved images, videos and audio.';
       editorTitle.textContent = action === 'edit' ? `Edit all queued ${familyName} jobs` : `Run ${familyName} jobs again`;
       editorHelp.textContent = action === 'edit' ? 'Update waiting jobs in place while keeping their queue order. Running and finished jobs are unchanged.' : 'Reuse saved inputs without uploading again. Choose the original jobs below and adjust any parameters before adding fresh copies to the queue.';
       targetLabel.hidden = action !== 'rerun'; await loadTargets(); editor.scrollIntoView({ block: 'start', behavior: 'smooth' });
     });
   }
   edit.onclick = () => openEditor('edit'); rerun.onclick = () => openEditor('rerun');
+  function openRerun(id, submit) {
+    if (mode || typeof submit !== 'function') return;
+    return run(async () => {
+      const result = await request('/queue/jobs?status=finished');
+      if (!alive()) return;
+      const job = result.jobs?.find(item => item.id === id);
+      if (!job || !Number.isInteger(job.revision) || !job.config || !['completed', 'failed', 'stopped'].includes(job.status)) throw new Error('This finished job is unavailable. Refresh jobs and retry.');
+      singleJob = job; singleSubmit = submit; mode = 'rerun'; targets = [job]; retryRerun = false;
+      editor.hidden = false; confirmation.hidden = true; notice(); updateQueue(result.queue);
+      targetLabel.hidden = approveLabel.hidden = refreshSelection.hidden = targetNames.hidden = true;
+      editorTitle.textContent = `Edit & rerun · ${job.source_name || job.id}`;
+      editorHelp.textContent = 'These are this job’s saved parameters. Edit them to queue a new copy; its existing result and your current draft stay unchanged.';
+      fieldHelp.textContent = 'Change a parameter, then choose Queue edited copy. Saved images, videos and audio are reused automatically; opening this editor does not start a job.';
+      targetStatus.textContent = `One ${familyName} job selected · ${job.id}`;
+      buildFields(job.config); render(); editor.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      editor.querySelector('textarea')?.focus({ preventScroll: true });
+    });
+  }
   targetScope.onchange = () => run(loadTargets); refreshSelection.onclick = () => run(loadTargets); approve.onchange = render; abandon.onclick = () => { if (!busy) closeEditor(); };
   editor.onsubmit = event => {
     event.preventDefault(); if (apply.disabled || !editor.reportValidity()) return;
     run(async () => {
       const patch = videoQueuePatch(rows), selection = targets.map(({ id, revision }) => ({ id, revision }));
+      if (singleJob) {
+        const outcome = await singleSubmit(singleJob, patch);
+        if (!alive()) return;
+        if (outcome?.result) { closeEditor(); receipt(outcome.result, 'added as a new copy'); }
+        else { retryRerun = !!outcome?.pending; error(outcome?.error || 'Could not queue this job again.'); }
+        return;
+      }
       if (mode === 'edit' && !Object.keys(patch).length) throw new Error('Check at least one parameter to change.');
       const operation = mode, body = { patch, jobs: selection };
       if (operation === 'rerun') {
@@ -216,5 +257,6 @@ export function createVideoQueueControls({ container, family, request, getFields
     update(value) { if (!busy) updateQueue(value); },
     setBlocked(value) { blocked = !!value; render(); },
     destroy() { dead = true; selectionVersion++; },
+    openRerun,
   };
 }

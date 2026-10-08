@@ -23,6 +23,8 @@ DOM = r'''
 const elements=[];
 class Element {
  constructor(tag){this.tagName=tag.toUpperCase();this.children=[];this.dataset={};this.attributes={};this.listeners={};this.classList={add(){},toggle(){}};this.hidden=false;this.disabled=false;this.checked=false;this.value='';this.type='';elements.push(this);}
+ get options(){return this.children;}
+ querySelector(){return null;}
  setAttribute(key,value){this.attributes[key]=value;}
  removeAttribute(key){delete this.attributes[key];}
  append(...items){this.children.push(...items);}
@@ -134,4 +136,30 @@ controls.setBlocked(true);assert.equal(find('pause').disabled,true);await find('
 controls.setBlocked(false);let release;handler=()=>new Promise(resolve=>{release=resolve});
 const active=find('pause').onclick();assert.equal(controls.busy,true);await find('pause').onclick();assert.equal(calls.length,1);
 release({queue:{...queue,paused:true}});await active;assert.equal(controls.busy,false);
+''')
+
+
+def test_single_job_parameter_editor_prefills_saved_values_and_sends_only_changed_fields():
+    run_js(DOM + r'''
+handler=async()=>({jobs:[{id:'original',revision:4,status:'completed',source_name:'source.mp4',config:{steps:25,prompt:'Saved job prompt',vae_gpu:'other'}}],queue});
+let received=null;
+await controls.openRerun('original',async(job,patch)=>{received={job,patch};return{result:{succeeded:1,failed:0},pending:false}});
+assert.equal(controls.editing,true);assert.equal(value('steps').value,'25');assert.equal(value('prompt').value,'Saved job prompt');
+assert.equal(value('steps').disabled,false);assert.equal(field('steps').hidden,true);assert.equal(value('components.vae'),undefined);
+assert.equal(find('apply').disabled,true);assert.equal(find('apply').textContent,'Queue edited copy');
+await submit();assert.equal(received,null); // Opening the editor cannot silently queue an unchanged copy.
+value('steps').value='6';value('steps').listeners.input();value('prompt').value='Edited prompt';value('prompt').listeners.input();
+await submit();assert.deepEqual(received.patch,{steps:6,prompt:'Edited prompt'});assert.equal(received.job.id,'original');assert.equal(received.job.revision,4);
+assert.equal(steps.value,'10');assert.equal(prompt.value,'Current draft');assert.equal(controls.editing,false);
+''')
+
+
+def test_single_editor_freezes_on_uncertain_response_but_validation_errors_stay_editable():
+    run_js(DOM + r'''
+handler=async()=>({jobs:[{id:'original',revision:4,status:'failed',config:{steps:25,prompt:'Saved prompt'}}],queue});
+let count=0;
+await controls.openRerun('original',async()=>++count===1?{pending:false,error:'Invalid sampling settings'}:count===2?{pending:true,error:'Lost response'}:{result:{succeeded:1,failed:0}});
+value('steps').value='600';value('steps').listeners.input();await submit();assert.equal(value('steps').disabled,false);
+value('steps').value='6';value('steps').listeners.input();await submit();assert.equal(value('steps').disabled,true);assert.equal(find('apply').textContent,'Retry request');
+await submit();assert.equal(controls.editing,false);
 ''')
