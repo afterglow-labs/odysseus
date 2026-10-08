@@ -1,4 +1,4 @@
-import { bindMenuDismiss, dismissOrRemove, dismissTopMenu } from './escMenuStack.js';
+import { bindMenuDismiss, dismissOrRemove } from './escMenuStack.js';
 import { topPortalZ } from './toolWindowZOrder.js';
 import * as videoWorkflow from './videoWorkflow.js';
 import { createVideoBatchQueue } from './videoBatch.js';
@@ -125,9 +125,11 @@ export function showVideoWorkflowExportOptions(onExport, anchor = document.activ
   const close = bindMenuDismiss(overlay, () => {
     closed = true; controller?.abort(); window.removeEventListener('keydown', onKey, true);
     overlay.remove(); if (anchor?.isConnected) anchor.focus();
-  }, event => event.target === overlay);
+  }, () => false);
   const onKey = event => {
-    if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); close(); }
+    // Export choices and in-progress transfers require an explicit Cancel/Done.
+    // Swallow Escape here so the global arbiter cannot close the parent draft.
+    if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); }
     else if (event.key === 'Tab') {
       const controls = [...dialog.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled)')];
       if (event.shiftKey && document.activeElement === controls[0]) { event.preventDefault(); controls.at(-1)?.focus(); }
@@ -990,7 +992,8 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
       event.preventDefault(); event.stopImmediatePropagation();
       const confirming = [...jobNodes.values()].find(nodes => !nodes.deletion.hidden);
       if (confirming) { if (!confirming.keep.disabled) { confirming.deletion.hidden = true; confirming.remove.focus(); } }
-      else dismissTopMenu();
+      // Keep the draft (including selected files and batch state) open until
+      // Close is clicked. Do not pass Escape to the parent Cookbook window.
     }
     else if (event.key === 'Tab') {
       const controls = [...dialog.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, a[href]')].filter(node => node.getClientRects().length);
@@ -999,13 +1002,15 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
     }
   };
+  // A selection drag can synthesize a click on the backdrop. Only the Close
+  // button (or explicit programmatic teardown) may discard this live draft.
   const close = bindMenuDismiss(overlay, () => {
     closed = true; clearInterval(timer); window.removeEventListener('keydown', onKey, true);
     batchQueue?.destroy(); queueControls?.destroy();
     enhancementController?.abort();
     gpuController?.abort();
     overlay.remove(); if (anchor?.isConnected) anchor.focus();
-  }, event => event.target === overlay);
+  }, () => false);
   closeButton.onclick = close; window.addEventListener('keydown', onKey, true); closeButton.focus();
   function applyEditorDraft(values, attached, retained = {}) {
     loraEditor.setValue(h3LoraStack(values));

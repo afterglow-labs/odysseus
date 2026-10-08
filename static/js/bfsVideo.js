@@ -1,4 +1,4 @@
-import { bindMenuDismiss, dismissOrRemove, dismissTopMenu } from './escMenuStack.js';
+import { bindMenuDismiss, dismissOrRemove } from './escMenuStack.js';
 import { topPortalZ } from './toolWindowZOrder.js';
 import { showVideoWorkflowExportOptions } from './h3Video.js';
 import * as videoWorkflow from './videoWorkflow.js';
@@ -520,7 +520,8 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
       event.preventDefault(); event.stopImmediatePropagation();
       const confirming = [...jobNodes.values()].find(nodes => !nodes.deletion.hidden);
       if (confirming) { if (!confirming.keep.disabled) { confirming.deletion.hidden = true; confirming.remove.focus(); } }
-      else dismissTopMenu();
+      // Keep the draft (including selected files and batch state) open until
+      // Close is clicked. Do not pass Escape to the parent Cookbook window.
     }
     else if (event.key === 'Tab') {
       const focusable = [...dialog.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),summary,a[href]')].filter(node => node.getClientRects().length);
@@ -528,12 +529,14 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
       else if (!event.shiftKey && document.activeElement === focusable.at(-1)) { event.preventDefault(); focusable[0]?.focus(); }
     }
   };
+  // A selection drag can synthesize a click on the backdrop. Only the Close
+  // button (or explicit programmatic teardown) may discard this live draft.
   const close = bindMenuDismiss(overlay, () => {
     closed = true; clearInterval(pollTimer); window.removeEventListener('keydown', onKey, true);
     batchQueue?.destroy(); queueControls?.destroy();
     for (const state of files.values()) if (state.url) URL.revokeObjectURL(state.url);
     overlay.remove(); if (anchor?.isConnected) anchor.focus();
-  }, event => event.target === overlay);
+  }, () => false);
   closeButton.onclick = close; window.addEventListener('keydown', onKey, true); closeButton.focus();
   for (const state of files.values()) state.wrap.hidden = true;
   function applyEditorDraft(values, attached, retained = {}) {
