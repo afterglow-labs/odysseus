@@ -173,9 +173,13 @@ def test_source_and_native_reference_channels_stay_distinct(job, tmp_path, monke
     assert torch.equal(prepared["guide_video"][:200], source)
     assert len(prepared["guide_video"]) == 209
     assert prepared["ref_images"]["ref_image_1"] is image
-    assert torch.equal(prepared["ref_videos"]["ref_video_1"], video[:56])
-    assert prepared["ref_video_audios"]["ref_video_audio_1"] is paired
-    assert paired["waveform"].shape[-1] == round(56 / 24 * worker.AUDIO_RATE)
+    assert torch.equal(prepared["ref_videos"]["ref_video_1"][:72], video)
+    assert torch.equal(prepared["ref_videos"]["ref_video_1"][72:], video[-1:])
+    paired_waveform = prepared["ref_video_audios"]["ref_video_audio_1"]["waveform"]
+    assert torch.equal(paired_waveform[..., :3 * worker.AUDIO_RATE], paired["waveform"])
+    assert paired_waveform.shape[-1] == round(73 / 24 * worker.AUDIO_RATE)
+    assert paired_waveform[..., 3 * worker.AUDIO_RATE:].count_nonzero() == 0
+    assert paired["waveform"].shape[-1] == 3 * worker.AUDIO_RATE
     assert prepared["ref_audios"]["ref_audio_1"] is audio
     assert prepared["guide_audio"]["waveform"].count_nonzero() == 0
     assert torch.equal(prepared["source_audio"]["waveform"], soundtrack["waveform"])
@@ -192,7 +196,7 @@ def test_source_and_reference_duration_budgets_are_independent(job, tmp_path, mo
     job["uploads"]["reference_audio"] = []
     config, media = worker.validate_job(job)
     prepared = worker.prepare_media(media, config)
-    assert prepared["output_frames"] == 360 and len(prepared["ref_videos"]["ref_video_1"]) == 345
+    assert prepared["output_frames"] == 360 and len(prepared["ref_videos"]["ref_video_1"]) == 362
     media["reference_videos"].append(native_path)
     with pytest.raises(ValueError, match="Reference clips must total at most 15 seconds"):
         worker.prepare_media(media, config)

@@ -344,14 +344,27 @@ def prepare_media(media, config):
         audio_duration += sound_duration
         if video_duration > 15.05 or audio_duration > 15.05:
             raise ValueError("Reference clips must total at most 15 seconds per modality")
-        # The core uses at most the target length, rounded down to 17k+5.
-        # Apply that trim to BOTH streams so sound remains paired to the clip.
+        # The core rounds reference clips DOWN to 17k+5. Pad up first so it
+        # receives the ending instead of silently dropping up to 16 frames and
+        # their soundtrack. The configured output length remains the hard cap;
+        # it is already on the same grid, so padding cannot exceed that limit.
         usable = min(len(frames), config["frames"])
-        usable -= (usable - 5) % 17
-        prepared["ref_videos"][f"ref_video_{i}"] = frames[:usable]
+        aligned = usable + (5 - usable) % 17
+        frames = frames[:usable]
+        if aligned > usable:
+            import torch
+
+            frames = torch.cat((frames, frames[-1:].expand(aligned - usable, *frames.shape[1:])), dim=0)
+        prepared["ref_videos"][f"ref_video_{i}"] = frames
         if soundtrack is not None:
-            soundtrack["waveform"] = soundtrack["waveform"][..., :round(usable / FPS * AUDIO_RATE)]
-            prepared["ref_video_audios"][f"ref_video_audio_{i}"] = soundtrack
+            samples = round(aligned / FPS * soundtrack["sample_rate"])
+            waveform = soundtrack["waveform"][..., :samples]
+            if waveform.shape[-1] < samples:
+                import torch
+
+                silence = waveform.new_zeros((*waveform.shape[:-1], samples - waveform.shape[-1]))
+                waveform = torch.cat((waveform, silence), dim=-1)
+            prepared["ref_video_audios"][f"ref_video_audio_{i}"] = {**soundtrack, "waveform": waveform}
     prepared["ref_audios"] = {}
     for i, path in enumerate(media["reference_audio"], 1):
         audio, duration = read_audio(path)
