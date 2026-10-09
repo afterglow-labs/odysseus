@@ -190,6 +190,22 @@ supported by the runtime, but different speed and editing adapters can need
 different steps, samplers and strengths; combining them does not guarantee the
 same result as using either one alone.
 
+Full-width H3 LoRAs, including Larry's
+`minimax_h3_turbo_v4_step600_ema.safetensors`, can also be used with the pruned
+H3 transformers. These transformers compress their time-conditioning input
+from 2,688 values to eight. The worker applies incompatible full-width AdaLN
+updates separately using the author's original time-embedding grid; the rest
+of the adapter uses the normal loader. This preserves the time-conditioning
+updates and keeps the NVFP4 base weights unchanged. Already-converted
+eight-input adapters and unpruned transformers retain their normal path.
+The small grid, pinned source revision, checksum, and Apache-2.0 license ship
+under `scripts/assets/minimax_h3_turbo/`.
+
+For Larry's v4 step-600 EMA adapter, the author recommends strength **1.0**,
+**6–8 steps**, and the **simple** scheduler. The editor permits larger strengths
+for experimentation, but raising strength does not resolve incompatible tensor
+shapes. See the [author's model card](https://huggingface.co/larryvrh/MiniMax-H3-Turbo-Lora).
+
 Drafts, batch jobs, queued edits and reruns keep the entire ordered stack.
 Refreshing components preserves missing selections and blocks generation until
 their files return or the rows are removed. The queue parameter editor offers

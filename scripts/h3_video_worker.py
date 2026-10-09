@@ -734,16 +734,22 @@ class H3Runtime:
             loader = self.sd.load_lora_for_models
         progress("loading_adapter")
         lora = self.utils.load_torch_file(config["lora"], safe_load=True)
+        try:
+            from scripts.h3_lora_compat import split_curve_lora, apply_curve_lora
+        except ModuleNotFoundError:
+            from h3_lora_compat import split_curve_lora, apply_curve_lora
+        lora, curve_adapters = split_curve_lora(model, lora)
         previous_patches = {key: len(value) for key, value in getattr(model, "patches", {}).items()}
         previous_injections = list(getattr(model, "injections", {}).get("bypass_lora", [])) if nvfp4 else []
         updated, _ = loader(model, None, lora, strength, 0)
+        applied_curve = apply_curve_lora(updated, curve_adapters, strength)
         # Bypass adapters register forward-pass injections rather than weight
         # patches. The pinned core only adds this entry when it finds a hook.
         injections = getattr(updated, "injections", {}).get("bypass_lora", []) if nvfp4 else []
         added_injections = [item for item in injections if not any(item is old for old in previous_injections)]
         added_patches = any(len(value) > previous_patches.get(key, 0)
                             for key, value in getattr(updated, "patches", {}).items())
-        if not added_patches and not added_injections:
+        if not added_patches and not added_injections and not applied_curve:
             raise ValueError(f"The selected LoRA {Path(config['lora']).name} has no weights compatible with this MiniMax H3 model")
         if previous_injections and added_injections:
             combined = [_LoRAInjectionStack([*previous_injections, *added_injections])]

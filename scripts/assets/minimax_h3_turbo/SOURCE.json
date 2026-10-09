@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/Larryvrh/ComfyUI-MiniMax-H3-Turbo",
+  "revision": "4274783a23afcfdbea3b4876cb79effd6c510785",
+  "file": "h3_silu_temb_grid.safetensors",
+  "sha256": "30eb3c2cc7fb6b470d9717ff840d359313ac27cd64b705e32da1baa10f72d6a8",
+  "size": 5510600,
+  "license": "Apache-2.0",
+  "purpose": "Original MiniMax H3 SiLU time-embedding table for applying full-width AdaLN LoRAs to pruned curve-form transformers."
+}
