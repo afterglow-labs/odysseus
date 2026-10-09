@@ -471,6 +471,11 @@ creating extra full-sequence tensors. The base model still sees its complete
 input, preserving NVFP4 activation scaling and attention context. Adapter
 strengths and stacking order are retained; training and custom adapters use
 their original implementation.
+NVFP4 inference computes each activation's global quantization scale with
+scalar minimum/maximum reductions. This avoids the full activation-sized
+absolute-value temporary while preserving the native scale, dtype rounding,
+padding, and quantizer. Explicit scales and gradient-enabled calls retain the
+native path.
 
 Existing caches can be planned and migrated with
 `venv/bin/python scripts/migrate_model_library.py --help`. Planning is read-only.

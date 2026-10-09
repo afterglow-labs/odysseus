@@ -575,6 +575,31 @@ class _LoRAInjectionStack:
             injection.eject(patcher)
 
 
+def configure_bounded_nvfp4_scaling(quant_ops):
+    """Compute the native global activation scale without a full abs tensor."""
+    import torch
+    layout = quant_ops.TensorCoreNVFP4Layout
+    original = getattr(layout, "_odysseus_original_quantize", layout.quantize.__func__)
+    layout._odysseus_original_quantize = original
+    denominator = quant_ops.ck.float_utils.F8_E4M3_MAX * quant_ops.ck.float_utils.F4_E2M1_MAX
+
+    @classmethod
+    def quantize(cls, tensor, scale=None, stochastic_rounding=0, inplace_ops=False):
+        calculate = scale is None or (isinstance(scale, str) and scale == "recalculate")
+        if (calculate and not torch.is_grad_enabled() and tensor.dim() == 2
+                and tensor.dtype in (torch.float16, torch.bfloat16, torch.float32, torch.float64)):
+            minimum, maximum = torch.aminmax(tensor)
+            # Match native input-dtype rounding: divide before the original
+            # quantizer converts the scale to float32. Only scalar abs values
+            # are materialized, while the entire activation still shares one scale.
+            scale = torch.maximum(minimum.abs(), maximum.abs()) / denominator
+        return original(cls, tensor, scale=scale, stochastic_rounding=stochastic_rounding,
+                        inplace_ops=inplace_ops)
+
+    layout.quantize = quantize
+    logging.info("NVFP4 global activation scaling uses scalar min/max reduction without a full-size absolute-value copy")
+
+
 def configure_bounded_lora(bypass_hook_type, lora_type, *, max_residual_bytes=128 * 1024**2):
     """Bound plain inference LoRA residuals without splitting the base forward.
 
@@ -653,7 +678,9 @@ class H3Runtime:
         import comfy.sample
         import comfy.utils
         import comfy.model_prefetch
+        import comfy.quant_ops
         import comfy_aimdo.model_vbar
+        configure_bounded_nvfp4_scaling(comfy.quant_ops)
         from comfy.weight_adapter.bypass import BypassForwardHook
         from comfy.weight_adapter.lora import LoRAAdapter
         configure_bounded_lora(BypassForwardHook, LoRAAdapter)
