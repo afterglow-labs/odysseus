@@ -69,7 +69,7 @@ const components=[
  {id:'turbo',role:'lora',variant:'ref2va',name:'Turbo'},
 ];
 const defaults={mode:'ref2va',model:'ref',encoder:'encoder',video_vae:'video_vae',audio_vae:'audio_vae',lora:'',gpu:'gpu',vae_gpu:'',width:960,height:544,frames:124,steps:20,seed:42,lora_scale:1,sampler:'euler',scheduler:'simple',shift_video:12,shift_audio:3,reference_size:'match'};
-const inventory={components,gpus:[{id:'gpu',name:'GPU',nvfp4:true}],runtime_ready:true,batch_jobs:true,lora_stack:true,max_loras:8,vfx_references:true,defaults};
+const inventory={components,gpus:[{id:'gpu',name:'GPU',nvfp4:true}],runtime_ready:true,batch_jobs:true,batch_auto_video_length:true,lora_stack:true,max_loras:8,vfx_references:true,defaults};
 const calls=[];
 globalThis.fetch=async(url,options={})=>{calls.push({url,...options});let data={};
  if(url.endsWith('/inventory'))data=inventory;
@@ -229,4 +229,32 @@ assert.deepEqual(descriptors.find(row=>row.key==='loras').getSavedValue(saved),[
 const copied=descriptors.find(row=>row.key==='frames').control.options.find(option=>option.value==='73');
 assert.equal(copied.hidden,false);assert.equal(copied.disabled,false);assert.equal(original.hidden,true);
 assert.equal(byId('frames').value,'124');assert.equal(byId('prompt').value,'');
+""")
+
+
+def test_batch_auto_length_disables_manual_picker_without_changing_ordinary_draft():
+    run_js(r"""
+showH3Video();await flush();await change('prompt','Keep this prompt');await change('frames','243');
+batch.active=true;batch.autoVideoLength=true;batch.onChange();
+assert.equal(byId('frames').disabled,true);assert.equal(byId('frames').value,'243');
+const snapshot=batch.getSnapshot();assert.equal(snapshot.autoVideoLength,true);assert.equal(snapshot.config.frames,243);
+batch.autoVideoLength=false;batch.onChange();assert.equal(byId('frames').disabled,false);
+assert.equal(batch.getSnapshot().autoVideoLength,false);
+batch.active=false;batch.autoVideoLength=true;batch.onChange();
+assert.equal(byId('frames').disabled,false);assert.equal(byId('frames').value,'243');
+const first=new File(['a'],'first.mp4'),second=new File(['b'],'second.mp4');
+await attach('reference_videos',first,second);await form().fire('submit');
+const body=calls.find(call=>call.method==='POST'&&call.url.endsWith('/jobs')).body;
+assert.equal(body.has('auto_video_length'),false);assert.deepEqual(body.getAll('reference_videos'),[first,second]);
+assert.equal(JSON.parse(body.get('config')).frames,243);
+""")
+
+
+def test_batch_auto_length_requires_server_capability_instead_of_silent_fixed_length():
+    run_js(r"""
+showH3Video();await flush();await change('prompt','Preserve the scene');
+batch.active=true;batch.autoVideoLength=true;inventory.batch_auto_video_length=false;batch.onChange();
+assert.equal(batch.enabled,false);assert.match(batch.issue,/Automatic batch length needs/);
+assert.throws(()=>batch.getSnapshot(),/Automatic batch length needs/);
+batch.autoVideoLength=false;batch.onChange();assert.equal(batch.enabled,true);
 """)

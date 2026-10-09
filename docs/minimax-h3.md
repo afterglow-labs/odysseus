@@ -385,6 +385,21 @@ prompt, model, LoRA, GPU, seed, render settings, and shared image/audio inputs
 captured at the moment you queue the batch. Videos upload individually in the
 displayed filename order; generation uses the existing shared FIFO queue.
 
+**Automatically match each video’s length** is on by default for H3 batches.
+After each upload, the server reads that file’s video duration and selects the
+shortest supported 24 fps length that covers it, rounding up rather than cutting
+off the end. For example, a 6-second video uses 158 frames (6.58 seconds), while
+a 10-second video uses 243 frames (10.12 seconds). The chosen length is saved
+with that individual job and displayed beside its batch receipt. Uncheck the
+option to use the same fixed **Length** for every file. A retry retains the
+original automatic/fixed choice, prompt, and settings.
+
+VFX Edit already matches the source duration: it uses a supported sampling
+length and trims padding from the output. The batch receipt distinguishes this
+from ordinary reference generation. Unsupported clips (outside the existing
+2–15 second reference range, or too short for VFX Edit) fail individually with
+an explanation rather than silently cutting them down or using the draft length.
+
 With **Batch job** off, the ordinary reference-video control still puts multiple
 videos in one job; VFX Edit requires exactly one source video. Its selected files
 are preserved while batch mode hides it;

@@ -117,3 +117,40 @@ for(let index=0;index<sent.length;index++){
 }
 assert.equal(references.length,2);
 ''')
+
+
+def test_automatic_length_is_submission_metadata_and_survives_retry_snapshot():
+    run_js(r'''
+let automatic=true,attempts=0;
+const bodies=[];
+const q=new VideoBatchQueue({family:'h3',getSnapshot:()=>({config:{mode:'ref2va',frames:124,prompt:'Keep the scene'},videoField:'reference_videos',autoVideoLength:automatic}),submit:async(f,item)=>{
+ bodies.push(videoBatchFormData(item));
+ if(attempts++===0)throw Object.assign(Error('Response lost'),{status:0});
+ return{id:item.id,status:'queued',batch_video_length:{duration_seconds:8,frames:192,selected_seconds:8}};
+}});
+q.add([new File(['video'],'one.mp4')]);await q.run();automatic=false;
+await q.run({retry:true});
+assert.equal(bodies.length,2);
+for(const body of bodies){
+ assert.equal(body.get('auto_video_length'),'true');
+ assert.deepEqual(JSON.parse(body.get('config')),{mode:'ref2va',frames:124,prompt:'Keep the scene'});
+}
+q.add([new File(['other'],'two.mp4')]);await q.run();
+assert.equal(bodies.at(-1).has('auto_video_length'),false);
+assert.equal(q.items[0].snapshot.config.frames,124);
+''')
+
+
+def test_auto_length_does_not_leak_to_bfs_or_change_reference_attachments():
+    run_js(r'''
+const video=new File(['video'],'one.mp4'),shared=new File(['ref'],'reference.mp4');
+const value={config:{frames:124},autoVideoLength:true,videoField:'source_video',uploads:{reference_videos:[shared]}};
+const h3=videoBatchFormData({file:video,snapshot:snapshotVideoBatch(value,'h3')});
+assert.equal(h3.get('auto_video_length'),'true');assert.deepEqual(h3.getAll('reference_videos'),[shared]);
+const bfs=videoBatchFormData({file:video,snapshot:snapshotVideoBatch(value,'bfs')});
+assert.equal(bfs.has('auto_video_length'),false);
+assert.equal(value.config.frames,124);assert.equal(value.uploads.reference_videos.length,1);
+assert.equal(videoBatchLengthLabel({batch_video_length:{duration_seconds:8,selected_seconds:8.708333,frames:209}}),'8.00s source → 8.71s · 209 frames');
+assert.match(videoBatchLengthLabel({batch_video_length:{duration_seconds:8,selected_seconds:8.708333,frames:209,preserve_source_duration:true}}),/preserves source length/);
+assert.equal(videoBatchLengthLabel({}), '');
+''')

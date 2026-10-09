@@ -659,6 +659,7 @@ class H3JobManager:
             defaults["gpu"] = next((g["id"] for g in gpus if g.get("nvfp4")), gpus[0]["id"])
         preset, preset_error = installed_h3_preset(self.preset_file, components, gpus, defaults)
         return {"components": components, "gpus": gpus, "runtime_ready": not error, "batch_jobs": True,
+                "batch_auto_video_length": True,
                 "lora_stack": True, "max_loras": MAX_LORAS, "vfx_references": True,
                 "runtime_error": error, "defaults": {**defaults, **(preset["config"] if preset else {})},
                 "base_defaults": defaults, "installed_preset": preset, "installed_preset_error": preset_error}
@@ -702,6 +703,10 @@ class H3JobManager:
         result["source_name"] = source_name if isinstance(source_name, str) else None
         result["revision"] = manifest.get("revision", 0)
         result["submission_id"] = state.get("submission_id") if isinstance(state.get("submission_id"), str) else None
+        length = manifest.get("batch_video_length")
+        if (manifest.get("revision", 0) == 0 and isinstance(length, dict)
+                and isinstance(config, dict) and length.get("frames") == config.get("frames")):
+            result["batch_video_length"] = length
         if state["status"] == "queued" and queue_positions is None:
             waiting = [path.name for path, row in _queue_entries(self.root) if row["status"] == "queued"]
             queue_positions = {identifier: index + 1 for index, identifier in enumerate(waiting)}
@@ -766,6 +771,8 @@ class H3JobManager:
                         "project_path": str(self.project.resolve())}
             manifest.update(input_names=submission.get("input_names", {}), source_name=state["source_name"],
                             submission_id=state["submission_id"])
+            if isinstance(submission.get("batch_video_length"), dict):
+                manifest["batch_video_length"] = submission["batch_video_length"]
             _write(directory / "manifest.json", manifest)
             _write(directory / "state.json", state)
             env = os.environ.copy()

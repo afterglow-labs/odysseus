@@ -421,6 +421,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     return loraEditor.getValue().some(row => Number(row.strength) !== 0 && inventory?.components?.some(item => item.id === row.id && item.role === 'lora' && item.recipe === 'vfx_edit'));
   }
   function incompatibleLength() {
+    if (batchActive() && batchQueue?.autoVideoLength) return '';
     return !isVfxEdit() && Number(fields.frames.value) < 124 ? 'This duration is available only for VFX Edit. Choose a length of at least 124 frames.' : '';
   }
   const batchActive = () => !jobEditor?.active && fields.mode.value === 'ref2va' && !!batchQueue?.active;
@@ -448,6 +449,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   function batchIssue() {
     if (jobEditor?.active || jobEditor?.loading) return 'Finish editing the queued job before adding a batch.';
     if (inventory && inventory.batch_jobs !== true) return 'Batch jobs need the updated Odysseus server. Restart the server after active transfers finish.';
+    if (batchQueue?.autoVideoLength && inventory && inventory.batch_auto_video_length !== true) return 'Automatic batch length needs the updated Odysseus server. Refresh components after the server update.';
     if (fields.mode.value !== 'ref2va') return 'Batch jobs require References → video + audio mode.';
     if (queueControls?.busy || inventoryLoading || transferBusy || enhancing || submitting) return 'Wait for the current operation to finish.';
     if (loadFailed || !inventory?.runtime_ready) return inventory?.runtime_error || 'The H3 runtime is not ready.';
@@ -474,7 +476,8 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     const issue = batchIssue(); if (issue) throw new Error(issue);
     save(); setError('');
     return {
-      config: { ...config(), prompt: prompt.value.trim() }, videoField: batchVideoField(),
+      config: { ...config(), ...(batchQueue?.autoVideoLength && !isVfxEdit() ? { frames: Math.max(124, Number(fields.frames.value)) } : {}), prompt: prompt.value.trim() }, videoField: batchVideoField(),
+      autoVideoLength: batchQueue?.autoVideoLength === true,
       uploads: Object.fromEntries(Object.entries(uploads)
         .filter(([key, state]) => key !== batchVideoField() && state.wrap.dataset.mode === 'ref2va')
         .map(([key, state]) => [key, [...state.files]])),
@@ -490,6 +493,10 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     gpuSelectionError.textContent = missingGpu?.length ? `Selected ${missingGpu.map(key => key === 'vae_gpu' ? 'VAE GPU' : 'model GPU').join(' and ')} unavailable. Choose an available GPU before generating.` : '';
     gpuSelectionError.hidden = !missingGpu?.length;
     generate.hidden = batching;
+    fields.frames.disabled = isVfxEdit() || (batching && batchQueue?.autoVideoLength === true);
+    sourceTimingHelp.hidden = !fields.frames.disabled;
+    sourceTimingHelp.textContent = isVfxEdit() ? 'Matches source video. Its aspect ratio is preserved within the Width × Height pixel budget.'
+      : 'Each batch video gets its own length after upload. The chosen length appears beside its queued receipt.';
     updateInputs();
     fields.mode.disabled = fields.model.disabled = batchBusy;
     loraEditor.setDisabled(batchBusy || queueBusy || editLoading || transferBusy || enhancing || submitting);

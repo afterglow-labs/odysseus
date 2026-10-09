@@ -19,12 +19,13 @@ export function snapshotVideoBatch(value, family) {
   const config = JSON.parse(JSON.stringify(value.config));
   const uploads = Object.fromEntries(Object.entries(value.uploads || {})
     .filter(([field]) => field !== videoField).map(([field, files]) => [field, [...files]]));
-  return { config, uploads, videoField };
+  return { config, uploads, videoField, autoVideoLength: family === 'h3' && value.autoVideoLength === true };
 }
 
 export function videoBatchFormData(item) {
   const body = new FormData();
   body.append('config', JSON.stringify(item.snapshot.config));
+  if (item.snapshot.autoVideoLength) body.append('auto_video_length', 'true');
   for (const [field, files] of Object.entries(item.snapshot.uploads)) {
     for (const file of files) body.append(field, file, file.name);
   }
@@ -121,6 +122,14 @@ const node = (tag, className = '', text) => {
 };
 const action = text => { const value = node('button', 'memory-toolbar-btn', text); value.type = 'button'; return value; };
 
+export function videoBatchLengthLabel(job) {
+  const timing = job?.batch_video_length;
+  if (!timing || !Number.isFinite(timing.duration_seconds) || !Number.isFinite(timing.selected_seconds)) return '';
+  return timing.preserve_source_duration
+    ? `${timing.duration_seconds.toFixed(2)}s source · ${timing.frames} sampling frames · preserves source length`
+    : `${timing.duration_seconds.toFixed(2)}s source → ${timing.selected_seconds.toFixed(2)}s · ${timing.frames} frames`;
+}
+
 export function createVideoBatchQueue({ family, container, getSnapshot, onJob, onChange = () => {} }) {
   const retained = sessions.get(family);
   const panel = node('section', 'video-batch-panel');
@@ -129,10 +138,22 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
   label.append(toggle, node('strong', '', 'Batch job')); panel.appendChild(label);
   const content = node('div', 'video-batch-content'); content.hidden = !toggle.checked; panel.appendChild(content);
   const explanation = node('p', 'h3-video-muted'); content.appendChild(explanation);
+  let videoField = fieldFor(family);
+  const lengthLabel = node('label', 'video-batch-toggle'), autoLength = node('input'); autoLength.type = 'checkbox'; autoLength.dataset.batchAutoLength = '';
+  autoLength.checked = retained?.autoVideoLength ?? true;
+  lengthLabel.append(autoLength, node('span', '', 'Automatically match each video’s length'));
+  const lengthHelp = node('p', 'h3-video-muted'); content.append(lengthLabel, lengthHelp);
   function describeVideoField(field) {
-    explanation.textContent = 'One video per job. Every file uses the same prompt, settings, and other attached inputs captured when you queue it. '
+    videoField = field;
+    explanation.textContent = 'One video per job. Every file uses the same prompt and other settings and inputs captured when you queue it. '
       + (family === 'h3' && field === 'source_video' ? 'Each batch video is the VFX source to edit; your reference images, videos and audio are shared across every job.'
         : family === 'h3' ? 'Turn Batch job off to use multiple reference videos together in one job.' : 'Turn Batch job off to work with a single target video.');
+    lengthLabel.hidden = family !== 'h3' || field === 'source_video';
+    lengthHelp.hidden = family !== 'h3';
+    lengthHelp.textContent = field === 'source_video'
+      ? 'VFX Edit automatically matches each source video’s length.'
+      : autoLength.checked ? 'After upload, the server chooses the shortest supported length that covers each video. Clips outside the supported 2–15 second range are reported individually.'
+        : 'Every video uses the Length selected below.';
   }
   describeVideoField(fieldFor(family));
   const drop = node('div', 'video-batch-drop'); drop.tabIndex = 0; drop.setAttribute('role', 'button'); drop.setAttribute('aria-label', 'Add batch videos');
@@ -167,7 +188,7 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
     render();
     if (previousBusy !== queue.running) { previousBusy = queue.running; notifyHost(); }
   };
-  sessions.set(family, { queue, checked: toggle.checked });
+  sessions.set(family, { queue, checked: toggle.checked, autoVideoLength: autoLength.checked });
   function render() {
     if (destroyed) return;
     const pending = queue.items.filter(item => item.status === 'pending').length;
@@ -175,7 +196,7 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
     const accepted = queue.items.filter(item => item.status === 'queued').length;
     const uploading = queue.items.find(item => item.status === 'uploading');
     const readyFor = state => enabled || snapshotEnabled && queue.items.filter(item => item.status === state).every(item => item.snapshot);
-    toggle.disabled = queue.running; input.disabled = queue.running;
+    toggle.disabled = queue.running; input.disabled = queue.running; autoLength.disabled = queue.running;
     drop.setAttribute('aria-disabled', String(queue.running));
     for (const [id, row] of rows) if (!queue.items.some(item => item.id === id)) { row.remove(); rows.delete(id); }
     for (const item of queue.items) {
@@ -188,8 +209,8 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
         row.append(row._name, row._state, row._remove); rows.set(item.id, row); list.appendChild(row);
       }
       row.dataset.status = item.status; row._remove.disabled = queue.running;
-      row._state.textContent = item.status === 'queued' ? `Queued · ${item.job.id}` : item.status === 'error' ? item.error
-        : item.status === 'uploading' ? item.progress?.waiting ? 'Waiting for server…' : 'Uploading…' : 'Waiting to upload';
+      row._state.textContent = item.status === 'queued' ? ['Queued', videoBatchLengthLabel(item.job), item.job.id].filter(Boolean).join(' · ') : item.status === 'error' ? item.error
+        : item.status === 'uploading' ? item.progress?.waiting ? item.snapshot?.autoVideoLength ? 'Detecting video length and queueing…' : 'Waiting for server…' : 'Uploading…' : 'Waiting to upload';
     }
     progress.hidden = !uploading;
     if (uploading?.progress?.total) { progress.max = uploading.progress.total; progress.value = uploading.progress.loaded; }
@@ -214,6 +235,7 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
     } catch (e) { error.textContent = e.message; error.hidden = false; }
   }
   toggle.onchange = () => { content.hidden = !toggle.checked; sessions.get(family).checked = toggle.checked; notifyHost(); render(); };
+  autoLength.onchange = () => { sessions.get(family).autoVideoLength = autoLength.checked; describeVideoField(videoField); notifyHost(); render(); };
   input.onchange = () => { add(input.files || []); input.value = ''; };
   drop.onclick = () => { if (!queue.running) input.click(); };
   drop.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); drop.click(); } };
@@ -241,6 +263,7 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
       available = !!value; panel.hidden = !available;
     },
     get active() { return available && toggle.checked; }, get busy() { return queue.running; },
+    get autoVideoLength() { return family === 'h3' && (videoField === 'source_video' || autoLength.checked); },
     destroy() {
       destroyed = true; queue.dispose(); queue.onChange = () => {}; queue.onJob = () => {};
       queue.getSnapshot = () => { throw new Error('Reopen the workflow panel to queue these files.'); };

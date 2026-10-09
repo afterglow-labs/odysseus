@@ -180,9 +180,13 @@ def setup_h3_video_routes(manager=None):
                 if existing is not None:
                     return existing
                 limited = _limited_request(request, limit + 65536, space_directory=manager.root)
-                async with limited.form(max_files=17, max_fields=1, max_part_size=65536) as form:
-                    if any(key not in {"config", *UPLOAD_EXTENSIONS} for key in form):
+                async with limited.form(max_files=17, max_fields=2, max_part_size=65536) as form:
+                    if any(key not in {"config", "auto_video_length", *UPLOAD_EXTENSIONS} for key in form):
                         raise HTTPException(400, "Unknown video upload field")
+                    auto_lengths = form.getlist("auto_video_length")
+                    if len(auto_lengths) > 1 or (auto_lengths and auto_lengths[0] not in {"true", "false"}):
+                        raise HTTPException(400, "auto_video_length must be true or false")
+                    auto_length = auto_lengths == ["true"]
                     raw_config = form.get("config")
                     if not isinstance(raw_config, str) or len(raw_config) > 65536:
                         raise HTTPException(400, "Missing video config JSON")
@@ -203,6 +207,12 @@ def setup_h3_video_routes(manager=None):
                     directory = pending.stage()
                     pending.save_metadata(uploads, "h3")
                     saved = await _store_uploads(directory, uploads, limit)
+                    if auto_length:
+                        from src.h3_video_length import select_batch_video_length
+                        from src.h3_video import _read, _write
+                        config, length = await asyncio.to_thread(select_batch_video_length, config, saved)
+                        metadata_path = directory / "submission.json"
+                        _write(metadata_path, {**_read(metadata_path), "batch_video_length": length})
                     return await launch_job(manager, directory, owner, config, saved)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
