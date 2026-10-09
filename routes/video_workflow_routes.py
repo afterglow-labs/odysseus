@@ -12,6 +12,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 from starlette.datastructures import UploadFile
 
 from src.h3_video import _locked
+from src.video_server_files import server_video_inputs
+from src.video_submission import known_input_bytes
 from src.upload_limits import get_chat_upload_max_bytes, format_byte_limit
 from src.video_workflow import (CHUNK, JSON_LIMIT, WorkflowTransfers, export_options,
                                 free_space, job_export, specification, stream_zip)
@@ -88,9 +90,9 @@ def add_workflow_routes(router, manager, *, family):
         directory, success = None, False
         try:
             limit = get_chat_upload_max_bytes()
-            limited = _limited_request(request, limit + 2 * JSON_LIMIT,
+            limited = _limited_request(request, limit + 3 * JSON_LIMIT,
                                        f'Workflow input media exceeds {format_byte_limit(limit)}')
-            async with limited.form(max_files=17, max_fields=2, max_part_size=JSON_LIMIT) as form:
+            async with limited.form(max_files=17, max_fields=3, max_part_size=JSON_LIMIT) as form:
                 config_json, options_json = form.get('config'), form.get('options', '{}')
                 if not isinstance(config_json, str) or not isinstance(options_json, str):
                     raise ValueError('Missing workflow config or export options')
@@ -100,37 +102,41 @@ def add_workflow_routes(router, manager, *, family):
                 if not isinstance(config, dict):
                     raise ValueError('Workflow config must be an object')
                 _, _, extensions = specification(family, config)
-                if set(form) - {'config', 'options', *extensions}:
+                if set(form) - {'config', 'options', 'server_inputs', *extensions}:
                     raise ValueError('Unknown workflow upload field')
                 if len(form.getlist('config')) != 1 or len(form.getlist('options')) > 1:
                     raise ValueError('Duplicate workflow config or export options')
-                inventory = await asyncio.to_thread(manager.inventory)
-                directory = await asyncio.to_thread(transfers.stage, owner)
-                with _locked(directory / 'lease.lock'):
-                    uploads, total = {}, 0
-                    for field, suffixes in extensions.items():
-                        for item in form.getlist(field):
-                            if not isinstance(item, UploadFile):
-                                raise ValueError('Workflow media must be uploaded files')
-                            if not options['include_attachments']:
-                                raise ValueError('Input media was sent without selecting Include input media')
-                            original = Path(item.filename or '').name
-                            suffix = Path(original).suffix.lower()
-                            if suffix not in suffixes:
-                                raise ValueError(f'Unsupported media file for {field.replace("_", " ")}')
-                            path = directory / (uuid.uuid4().hex + suffix)
-                            with path.open('xb') as output:
-                                path.chmod(0o600)
-                                while chunk := await item.read(CHUNK):
-                                    total += len(chunk)
-                                    if total > limit:
-                                        raise HTTPException(413, f'Workflow input media exceeds {format_byte_limit(limit)}')
-                                    await asyncio.to_thread(free_space, directory, len(chunk))
-                                    await asyncio.to_thread(output.write, chunk)
-                            uploads.setdefault(field, []).append({'path': str(path), 'name': original})
-                    receipt = await _complete_thread(transfers.finish_export, directory, owner, config, inventory, uploads, options)
-                    success = True
-                    return receipt
+                incoming = {field: form.getlist(field) for field in extensions}
+                if any(not isinstance(item, UploadFile) for values in incoming.values() for item in values):
+                    raise ValueError('Workflow media must be uploaded files')
+                async with server_video_inputs(form, incoming, extensions) as incoming:
+                    if known_input_bytes(incoming) > limit:
+                        raise HTTPException(413, f'Workflow input media exceeds {format_byte_limit(limit)}')
+                    inventory = await asyncio.to_thread(manager.inventory)
+                    directory = await asyncio.to_thread(transfers.stage, owner)
+                    with _locked(directory / 'lease.lock'):
+                        uploads, total = {}, 0
+                        for field, suffixes in extensions.items():
+                            for item in incoming[field]:
+                                if not options['include_attachments']:
+                                    raise ValueError('Input media was sent without selecting Include input media')
+                                original = Path(item.filename or '').name
+                                suffix = Path(original).suffix.lower()
+                                if suffix not in suffixes:
+                                    raise ValueError(f'Unsupported media file for {field.replace("_", " ")}')
+                                path = directory / (uuid.uuid4().hex + suffix)
+                                with path.open('xb') as output:
+                                    path.chmod(0o600)
+                                    while chunk := await item.read(CHUNK):
+                                        total += len(chunk)
+                                        if total > limit:
+                                            raise HTTPException(413, f'Workflow input media exceeds {format_byte_limit(limit)}')
+                                        await asyncio.to_thread(free_space, directory, len(chunk))
+                                        await asyncio.to_thread(output.write, chunk)
+                                uploads.setdefault(field, []).append({'path': str(path), 'name': original})
+                        receipt = await _complete_thread(transfers.finish_export, directory, owner, config, inventory, uploads, options)
+                        success = True
+                        return receipt
         except (ValueError, OSError) as exc:
             raise _failure(exc) from exc
         finally:

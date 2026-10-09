@@ -10,7 +10,8 @@ from starlette.datastructures import UploadFile
 
 from routes.h3_video_routes import _owner, _limited_request
 from src.bfs_video import BFSJobManager, UPLOAD_EXTENSIONS, validate_config
-from src.video_submission import submission, submission_key, launch_job, store_upload_chunk, UploadSpaceError
+from src.video_submission import submission, submission_key, launch_job, store_upload_chunk, known_input_bytes, UploadSpaceError
+from src.video_server_files import server_video_inputs
 from src.upload_limits import get_chat_upload_max_bytes, format_byte_limit
 
 
@@ -71,10 +72,10 @@ def setup_bfs_video_routes(manager=None):
                 if existing is not None:
                     return existing
                 limit = get_chat_upload_max_bytes()
-                limited = _limited_request(request, limit + 65536, f'BFS inputs exceed {format_byte_limit(limit)} per job',
+                limited = _limited_request(request, limit + 2 * 65536, f'BFS inputs exceed {format_byte_limit(limit)} per job',
                                            space_directory=manager.root)
-                async with limited.form(max_files=4, max_fields=1, max_part_size=65536) as form:
-                    if any(key not in {'config', *UPLOAD_EXTENSIONS} for key in form):
+                async with limited.form(max_files=4, max_fields=2, max_part_size=65536) as form:
+                    if any(key not in {'config', 'server_inputs', *UPLOAD_EXTENSIONS} for key in form):
                         raise ValueError('Unknown BFS upload field')
                     raw = form.get('config')
                     if not isinstance(raw, str):
@@ -82,12 +83,15 @@ def setup_bfs_video_routes(manager=None):
                     uploads = {key: form.getlist(key) for key in UPLOAD_EXTENSIONS}
                     if any(not isinstance(file, UploadFile) for values in uploads.values() for file in values):
                         raise ValueError('BFS media must be uploaded files')
-                    current = await asyncio.to_thread(manager.submission_inventory)
-                    config = validate_config(json.loads(raw), current, uploads)
-                    directory = pending.stage()
-                    pending.save_metadata(uploads, "bfs")
-                    saved = await store_uploads(directory, uploads, limit)
-                    return await launch_job(manager, directory, owner, config, saved)
+                    async with server_video_inputs(form, uploads, UPLOAD_EXTENSIONS) as uploads:
+                        current = await asyncio.to_thread(manager.submission_inventory)
+                        config = validate_config(json.loads(raw), current, uploads)
+                        if known_input_bytes(uploads) > limit:
+                            raise HTTPException(413, f'BFS inputs exceed {format_byte_limit(limit)} per job')
+                        directory = pending.stage()
+                        pending.save_metadata(uploads, "bfs")
+                        saved = await store_uploads(directory, uploads, limit)
+                        return await launch_job(manager, directory, owner, config, saved)
         except ValueError as exc:
             raise HTTPException(400, 'Invalid BFS config JSON' if isinstance(exc, json.JSONDecodeError) else str(exc)) from exc
         except UploadSpaceError as exc:
@@ -123,6 +127,8 @@ def setup_bfs_video_routes(manager=None):
                             headers={'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff'})
     from routes.video_workflow_routes import add_workflow_routes
     add_workflow_routes(router, manager, family='bfs')
+    from routes.video_server_file_routes import add_server_video_file_routes
+    add_server_video_file_routes(router, owner_callback=_owner)
     from routes.video_job_edit_routes import add_job_edit_routes
     add_job_edit_routes(router, manager, 'bfs', UPLOAD_EXTENSIONS, store_uploads)
     from routes.video_queue_routes import add_queue_routes

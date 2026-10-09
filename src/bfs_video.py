@@ -268,6 +268,7 @@ class BFSJobManager(H3JobManager):
                               'runtime_error': specific_error,
                               'unavailable_reason': specific_error or ('Missing cached components: ' + ', '.join(missing) if missing else '')})
         return dict(workflows=workflows, components=components, gpus=gpus, runtime_ready=not error, batch_jobs=True,
+                    server_video_files=True,
                     runtime_error=error, defaults={'gpu': next((g['id'] for g in gpus if g.get('nvfp4')), gpus[0]['id'] if gpus else '')})
 
     def view(self, job_id, owner, **kwargs):

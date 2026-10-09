@@ -16,7 +16,8 @@ from src.h3_prompt_enhancement import (
     EnhancementError, IMAGE_FIELDS, enhance_prompt, enhancer_status,
     prepare_prompt_images, validate_request as validate_prompt_request,
 )
-from src.video_submission import submission, submission_key, launch_job, store_upload_chunk, ensure_upload_space, UploadSpaceError
+from src.video_submission import submission, submission_key, launch_job, store_upload_chunk, ensure_upload_space, known_input_bytes, UploadSpaceError
+from src.video_server_files import server_video_inputs
 from src.upload_limits import get_chat_upload_max_bytes, format_byte_limit
 
 
@@ -179,9 +180,9 @@ def setup_h3_video_routes(manager=None):
                 existing = await asyncio.to_thread(pending.existing)
                 if existing is not None:
                     return existing
-                limited = _limited_request(request, limit + 65536, space_directory=manager.root)
-                async with limited.form(max_files=17, max_fields=2, max_part_size=65536) as form:
-                    if any(key not in {"config", "auto_video_length", *UPLOAD_EXTENSIONS} for key in form):
+                limited = _limited_request(request, limit + 2 * 65536, space_directory=manager.root)
+                async with limited.form(max_files=17, max_fields=3, max_part_size=65536) as form:
+                    if any(key not in {"config", "auto_video_length", "server_inputs", *UPLOAD_EXTENSIONS} for key in form):
                         raise HTTPException(400, "Unknown video upload field")
                     auto_lengths = form.getlist("auto_video_length")
                     if len(auto_lengths) > 1 or (auto_lengths and auto_lengths[0] not in {"true", "false"}):
@@ -197,23 +198,26 @@ def setup_h3_video_routes(manager=None):
                     uploads = {key: form.getlist(key) for key in UPLOAD_EXTENSIONS if key in form}
                     if any(not isinstance(value, UploadFile) for values in uploads.values() for value in values):
                         raise HTTPException(400, "Attachments must be uploaded files")
-                    current = await asyncio.to_thread(manager.submission_inventory)
-                    config = validate_config(raw_config, current["components"], current["gpus"], uploads)
-                    from src.h3_vfx import normalize_vfx_inputs
-                    uploads = normalize_vfx_inputs(config, uploads)
-                    uploads.setdefault("source_video", [])
-                    if not current["runtime_ready"]:
-                        raise HTTPException(503, current["runtime_error"])
-                    directory = pending.stage()
-                    pending.save_metadata(uploads, "h3")
-                    saved = await _store_uploads(directory, uploads, limit)
-                    if auto_length:
-                        from src.h3_video_length import select_batch_video_length
-                        from src.h3_video import _read, _write
-                        config, length = await asyncio.to_thread(select_batch_video_length, config, saved)
-                        metadata_path = directory / "submission.json"
-                        _write(metadata_path, {**_read(metadata_path), "batch_video_length": length})
-                    return await launch_job(manager, directory, owner, config, saved)
+                    async with server_video_inputs(form, uploads, UPLOAD_EXTENSIONS) as uploads:
+                        current = await asyncio.to_thread(manager.submission_inventory)
+                        config = validate_config(raw_config, current["components"], current["gpus"], uploads)
+                        from src.h3_vfx import normalize_vfx_inputs
+                        uploads = normalize_vfx_inputs(config, uploads)
+                        uploads.setdefault("source_video", [])
+                        if not current["runtime_ready"]:
+                            raise HTTPException(503, current["runtime_error"])
+                        if known_input_bytes(uploads) > limit:
+                            raise HTTPException(413, f"Video inputs exceed {format_byte_limit(limit)} per job")
+                        directory = pending.stage()
+                        pending.save_metadata(uploads, "h3")
+                        saved = await _store_uploads(directory, uploads, limit)
+                        if auto_length:
+                            from src.h3_video_length import select_batch_video_length
+                            from src.h3_video import _read, _write
+                            config, length = await asyncio.to_thread(select_batch_video_length, config, saved)
+                            metadata_path = directory / "submission.json"
+                            _write(metadata_path, {**_read(metadata_path), "batch_video_length": length})
+                        return await launch_job(manager, directory, owner, config, saved)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         except UploadSpaceError as exc:
@@ -253,6 +257,8 @@ def setup_h3_video_routes(manager=None):
 
     from routes.video_workflow_routes import add_workflow_routes
     add_workflow_routes(router, manager, family='h3')
+    from routes.video_server_file_routes import add_server_video_file_routes
+    add_server_video_file_routes(router, owner_callback=_owner)
     from routes.video_job_edit_routes import add_job_edit_routes
     add_job_edit_routes(router, manager, 'h3', UPLOAD_EXTENSIONS, _store_uploads)
     from routes.video_queue_routes import add_queue_routes

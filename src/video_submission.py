@@ -22,6 +22,12 @@ class UploadSpaceError(OSError):
     pass
 
 
+def known_input_bytes(uploads):
+    """Preflight known sizes; streaming writers still enforce the actual total."""
+    return sum(item.size for values in uploads.values() for item in values
+               if type(item.size) is int and item.size > 0)
+
+
 def ensure_upload_space(directory, size):
     directory = Path(directory)
     while not directory.exists() and directory != directory.parent:

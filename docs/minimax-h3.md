@@ -414,6 +414,29 @@ refresh loses files not yet queued; confirmed server jobs continue independently
 **Clear list** clears the local list without deleting any server jobs. Remove
 and re-add an unqueued file to use changed settings instead of its saved snapshot.
 
+## Selecting videos stored on the server from iPhone
+
+Video inputs in the iOS client offer **Photos**, **Files**, and **Server files**.
+Choose **Server files** to browse the Odysseus computer's `E:` drive, open folders,
+search the current folder, and select videos. Choose **Use video** or **Use N**
+to attach the selection. In **Batch job**, select multiple server videos to
+create one job per video with the same prompt and settings, including automatic
+duration selection. With batch mode off, selected videos remain references in
+one job. BFS target and mask video inputs support the same picker.
+
+The phone sends file selections only. The server copies each selected input into
+that job's private folder when queued; editing, retrying and exporting the job
+use this saved copy. The originals remain on `E:`. Mixed phone/server references
+keep their attachment order. A file changed or removed since selection must be
+selected again. Existing accepted submissions can be retried without reopening
+the original file.
+
+On WSL the default drive is `/mnt/e`; it must be mounted on the server. Browsing
+uses the same administrator authentication as the video workflows. To configure
+different media folders, set `ODYSSEUS_VIDEO_BROWSE_ROOTS` to a JSON map, such as
+`{"e":"/mnt/e","videos":"/home/corey/Videos"}`, and restart the server. The
+picker exposes folders and supported video files inside those roots.
+
 ## Moving workflows to another installation
 
 **Export workflow** above the editor exports the current draft. Each saved job

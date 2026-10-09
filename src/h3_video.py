@@ -660,6 +660,7 @@ class H3JobManager:
         preset, preset_error = installed_h3_preset(self.preset_file, components, gpus, defaults)
         return {"components": components, "gpus": gpus, "runtime_ready": not error, "batch_jobs": True,
                 "batch_auto_video_length": True,
+                "server_video_files": True,
                 "lora_stack": True, "max_loras": MAX_LORAS, "vfx_references": True,
                 "runtime_error": error, "defaults": {**defaults, **(preset["config"] if preset else {})},
                 "base_defaults": defaults, "installed_preset": preset, "installed_preset_error": preset_error}
