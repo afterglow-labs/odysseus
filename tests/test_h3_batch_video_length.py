@@ -216,14 +216,14 @@ def test_real_invalid_media_returns_clear_error(tmp_path):
         length.probe_video(path)
 
 
-@pytest.mark.parametrize("metadata_duration", [None, 5000])
-def test_probe_uses_video_duration_or_vfr_packet_fallback_without_network_protocols(monkeypatch, metadata_duration):
+@pytest.mark.parametrize("metadata_duration", [None, 4920])
+def test_probe_uses_packet_endpoints_even_when_stream_duration_is_shorter(monkeypatch, metadata_duration):
     stream = SimpleNamespace(duration=metadata_duration, time_base=Fraction(1, 1000), average_rate=25)
     packets = [SimpleNamespace(size=1, pts=10000, time_base=Fraction(1, 1000), duration=40),
                SimpleNamespace(size=1, pts=14920, time_base=Fraction(1, 1000), duration=80)]
     source = SimpleNamespace(streams=SimpleNamespace(video=[stream]), duration=99_000_000)
     def demux(selected):
-        assert selected is stream and metadata_duration is None
+        assert selected is stream
         return packets
     source.demux = demux
     class Context:
@@ -237,3 +237,36 @@ def test_probe_uses_video_duration_or_vfr_packet_fallback_without_network_protoc
     monkeypatch.setitem(length.sys.modules, "av", SimpleNamespace(open=open_video))
     actual = length._probe_video("local.mp4")
     assert actual == {"duration_seconds": 5., "source_frames": 120}
+
+
+def test_real_vfr_tail_at_length_boundary_chooses_next_option(tmp_path):
+    av = pytest.importorskip("av")
+    np = pytest.importorskip("numpy")
+    from scripts.h3_video_worker import read_video
+    path = tmp_path / "vfr-boundary.mp4"
+    time_base = Fraction(1, 120)
+    with av.open(str(path), "w") as output:
+        stream = output.add_stream("libx264", rate=24)
+        stream.width, stream.height, stream.pix_fmt = 32, 32, "yuv420p"
+        stream.time_base = stream.codec_context.time_base = time_base
+        timestamp = 0
+        for index in range(141):
+            frame = av.VideoFrame.from_ndarray(np.zeros((32, 32, 3), np.uint8), format="rgb24")
+            frame.pts, frame.time_base = timestamp, time_base
+            for packet in stream.encode(frame):
+                output.mux(packet)
+            timestamp += (3, 7, 4, 6)[index % 4]
+        for packet in stream.encode():
+            output.mux(packet)
+    decoded, _, duration, _ = read_video(path)
+    assert len(decoded) == 141 and duration == pytest.approx(5.883333333333333)
+    with av.open(str(path)) as source:
+        stream = source.streams.video[0]
+        assert float(stream.duration * stream.time_base) == pytest.approx(141 / 24)
+    actual = length.probe_video(path)
+    assert actual["duration_seconds"] == pytest.approx(duration)
+    assert actual["source_frames"] == len(decoded)
+    chosen, info = length.select_batch_video_length({"mode": "ref2va", "loras": [], "frames": 124},
+                                                   {"reference_videos": [str(path)]})
+    assert chosen["frames"] == 158
+    assert info["selected_seconds"] >= duration

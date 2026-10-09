@@ -24,10 +24,9 @@ def _probe_video(path, *, exact_frames=False):
         if not source.streams.video:
             raise ValueError("The file contains no video track")
         stream = source.streams.video[0]
-        if not exact_frames and stream.duration is not None and stream.time_base is not None:
-            duration = float(stream.duration * stream.time_base)
-            if math.isfinite(duration) and duration > 0:
-                return {"duration_seconds": duration, "source_frames": min(round(duration * FPS), 15 * FPS)}
+        # Even stream.duration can omit a fraction of the final VFR frame.
+        # Inspect packet endpoints in every mode so a boundary clip cannot be
+        # assigned the preceding length. This never decodes image pixels.
         rate = float(stream.average_rate or FPS)
         if not math.isfinite(rate) or rate <= 0:
             rate = FPS
