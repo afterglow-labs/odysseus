@@ -101,6 +101,21 @@ expose this port directly to the public internet. To build a clickable app wrapp
 ./build-macos-app.sh
 ```
 
+To make the app window connect to an existing Odysseus server instead of
+starting a server on the Mac, build it with that server's base URL:
+
+```bash
+ODYSSEUS_SERVER_URL=https://your-server.example.com ./script/build_and_run.sh --verify
+```
+
+The resulting `dist/Odysseus.app` and `dist/Odysseus.dmg` remember the server
+address. The remote app uses a Chromium app window when available and otherwise
+opens the default browser; it does not require a local Python environment at
+runtime. Sign in with the account on that server to use its chats, settings,
+and models. Keep your VPN connected if the server is private. This does not
+merge or synchronize a separate local profile. Omit `ODYSSEUS_SERVER_URL` when
+rebuilding to restore the local-server launcher.
+
 <details>
 <summary>Cookbook, GPU, Ollama, and troubleshooting notes</summary>
 

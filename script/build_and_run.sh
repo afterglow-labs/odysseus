@@ -8,6 +8,7 @@ usage() {
   echo "  --verify-existing  Check the running app without rebuilding or restarting."
   echo "  --logs    Follow logs/odysseus-app.log after opening the app."
   echo "Set ODYSSEUS_PORT to override the default port (7860)."
+  echo "Set ODYSSEUS_SERVER_URL to open a remote Odysseus client instead."
 }
 
 MODE="${1:-run}"
@@ -27,6 +28,64 @@ APP_BUNDLE="$ROOT_DIR/dist/Odysseus.app"
 APP_EXECUTABLE="$APP_BUNDLE/Contents/MacOS/Odysseus"
 VENV_PY="$ROOT_DIR/venv/bin/python"
 LOG="$ROOT_DIR/logs/odysseus-app.log"
+if [ -n "${ODYSSEUS_SERVER_URL:-}" ]; then
+  URL="$("$ROOT_DIR/build-macos-app.sh" --check-server-url)"
+  if [ "$MODE" = --logs ]; then
+    echo "Remote mode has no local server log. Use --verify to check the server." >&2
+    exit 2
+  fi
+  verify_remote() {
+    "$VENV_PY" - "$URL" <<'PY'
+import json
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+url = sys.argv[1]
+origin = urllib.parse.urlsplit(url)
+
+class SameServerRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, message, headers, new_url):
+        target = urllib.parse.urlsplit(new_url)
+        if (target.scheme, target.netloc) != (origin.scheme, origin.netloc):
+            raise ValueError("Remote server redirected to another origin")
+        return super().redirect_request(request, fp, code, message, headers, new_url)
+
+# Default HTTPS verification stays enabled. This probe carries no cookies.
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), SameServerRedirect())
+def fetch(path):
+    with opener.open(url + path, timeout=15) as response:
+        return response.read(4 * 1024 * 1024).decode("utf-8")
+
+try:
+    if json.loads(fetch("/api/health")).get("status") != "healthy":
+        raise ValueError("Remote server is not healthy")
+    status = json.loads(fetch("/api/auth/status"))
+    if any(type(status.get(key)) is not bool for key in
+           ("configured", "authenticated", "is_admin", "signup_enabled")):
+        raise ValueError("Remote authentication status is invalid")
+    if status["authenticated"] or status["is_admin"] or status.get("username") is not None:
+        raise ValueError("Remote server unexpectedly authenticated an anonymous request")
+    page = fetch("/")
+    if 'id="authForm"' not in page and 'id="chat-container"' not in page:
+        raise ValueError("Remote Odysseus login or application page is unavailable")
+except (OSError, ValueError) as exc:
+    raise SystemExit(f"Remote verification failed: {exc}")
+print(f"Verified remote Odysseus health and login/application page: {url}")
+PY
+  }
+  if [ "$MODE" = --verify-existing ]; then
+    verify_remote
+    exit 0
+  fi
+  ODYSSEUS_SERVER_URL="$URL" "$ROOT_DIR/build-macos-app.sh"
+  /usr/bin/open -n "$APP_BUNDLE"
+  echo "Opened remote Odysseus client ($URL)"
+  if [ "$MODE" = --verify ]; then verify_remote; fi
+  exit 0
+fi
+
 PORT="${ODYSSEUS_PORT:-7860}"
 if [[ ! "$PORT" =~ ^[0-9]{1,5}$ ]] || (( 10#$PORT < 1 || 10#$PORT > 65535 )); then
   echo "ODYSSEUS_PORT must be a port number between 1 and 65535." >&2

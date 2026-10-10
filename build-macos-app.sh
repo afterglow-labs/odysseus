@@ -11,6 +11,7 @@
 # This is a *launcher* wrapper: it drives the venv we set up in this repo, it
 # does not bundle Python. The install path is baked into the app at build time,
 # so rebuild if you move the repo. Override the port with ODYSSEUS_PORT.
+# Set ODYSSEUS_SERVER_URL to build a remote client that needs no local runtime.
 set -e
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,12 +26,60 @@ if [ ! -x "$VENV_PY" ]; then
   echo "Odysseus needs its supported Python environment first. Run ./start-macos.sh."
   exit 1
 fi
+SERVER_URL="${ODYSSEUS_SERVER_URL:-}"
+if [ -n "$SERVER_URL" ]; then
+  SERVER_URL="$("$VENV_PY" - "$SERVER_URL" <<'PY'
+import ipaddress
+import re
+import sys
+from urllib.parse import urlsplit, urlunsplit
+
+try:
+    raw = sys.argv[1]
+    if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in raw):
+        raise ValueError("whitespace and control characters are not allowed")
+    parsed = urlsplit(raw)
+    if parsed.scheme not in {"https", "http"} or not parsed.hostname:
+        raise ValueError("use an absolute http:// or https:// server URL")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("credentials must not be included in the URL")
+    if "?" in raw or "#" in raw or parsed.path not in {"", "/"}:
+        raise ValueError("use the server origin without a path, query, or fragment")
+    host = parsed.hostname.encode("idna").decode("ascii").lower()
+    if ":" in host:
+        if not re.fullmatch(r"\[[^\]]+\](?::[0-9]+)?", parsed.netloc):
+            raise ValueError("invalid IPv6 server authority")
+        host = "[" + str(ipaddress.IPv6Address(host)) + "]"
+    elif len(host) > 253 or any(
+        not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+        for label in host.rstrip(".").split(".")
+    ):
+        raise ValueError("invalid server hostname")
+    port = parsed.port
+    if port is not None:
+        if not 1 <= port <= 65535:
+            raise ValueError("port must be between 1 and 65535")
+        host += f":{port}"
+    elif parsed.netloc.endswith(":"):
+        raise ValueError("port is empty")
+    print(urlunsplit((parsed.scheme, host, "", "", "")))
+except (ValueError, UnicodeError) as exc:
+    raise SystemExit(f"Invalid ODYSSEUS_SERVER_URL: {exc}")
+PY
+)" || exit 2
+fi
+if [ "${1:-}" = "--check-server-url" ]; then
+  [ -n "$SERVER_URL" ] || { echo "Set ODYSSEUS_SERVER_URL first." >&2; exit 2; }
+  printf '%s\n' "$SERVER_URL"
+  exit 0
+fi
 "$VENV_PY" "$REPO_DIR/src/python_runtime.py"
 if [ "${1:-}" = "--check-python" ]; then exit 0; fi
 
 echo "Building $APP_NAME.app"
 echo "  install dir: $INSTALL_DIR"
 echo "  port:        $PORT"
+[ -z "$SERVER_URL" ] || echo "  server:      $SERVER_URL"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -78,29 +127,10 @@ PLIST
 cat > "$APP/Contents/MacOS/$APP_NAME.tmpl" <<'LAUNCHER'
 #!/bin/bash
 # Odysseus.app — start the local server and open the UI in an app window.
-INSTALL_DIR="__INSTALL_DIR__"
-PORT="__PORT__"
-URL="http://127.0.0.1:${PORT}"
-# uvicorn is started with --port below, but APP_PORT is what the app itself
-# reads when it needs to build a URL for this instance (internal_api_base(),
-# companion pairing, the MCP OAuth callback), so export it as well.
-export APP_PORT="$PORT"
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
-
-VENV_PY="$INSTALL_DIR/venv/bin/python"
-LOG="$INSTALL_DIR/logs/odysseus-app.log"
-
-notify() { /usr/bin/osascript -e "display notification \"$1\" with title \"Odysseus\"" >/dev/null 2>&1; }
-die_gui() {
-  /usr/bin/osascript -e "display dialog \"$1\" with title \"Odysseus\" buttons {\"OK\"} default button 1 with icon stop" >/dev/null 2>&1
-  exit 1
-}
-
-[ -x "$VENV_PY" ] || die_gui "Odysseus isn't set up yet. Open Terminal and run:
-
-cd $INSTALL_DIR
-./start-macos.sh"
-RUNTIME_STATUS="$("$VENV_PY" "$INSTALL_DIR/src/python_runtime.py" 2>&1)" || die_gui "$RUNTIME_STATUS"
+INSTALL_DIR=__INSTALL_DIR__
+PORT=__PORT__
+SERVER_URL=__SERVER_URL__
+URL="${SERVER_URL:-http://127.0.0.1:${PORT}}"
 
 # Open the UI in a chrome-less app window (Chromium browsers), else default browser.
 open_ui() {
@@ -119,6 +149,27 @@ open_ui() {
   done
   /usr/bin/open "$URL"
 }
+
+if [ -n "$SERVER_URL" ]; then
+  open_ui
+  exit $?
+fi
+
+# Local mode alone owns a Python server and its log directory.
+export APP_PORT="$PORT"
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+VENV_PY="$INSTALL_DIR/venv/bin/python"
+LOG="$INSTALL_DIR/logs/odysseus-app.log"
+notify() { /usr/bin/osascript -e "display notification \"$1\" with title \"Odysseus\"" >/dev/null 2>&1; }
+die_gui() {
+  /usr/bin/osascript -e "display dialog \"$1\" with title \"Odysseus\" buttons {\"OK\"} default button 1 with icon stop" >/dev/null 2>&1
+  exit 1
+}
+[ -x "$VENV_PY" ] || die_gui "Odysseus isn't set up yet. Open Terminal and run:
+
+cd $INSTALL_DIR
+./start-macos.sh"
+RUNTIME_STATUS="$("$VENV_PY" "$INSTALL_DIR/src/python_runtime.py" 2>&1)" || die_gui "$RUNTIME_STATUS"
 
 mkdir -p "$INSTALL_DIR/logs"
 
@@ -157,8 +208,17 @@ fi
 wait "$SERVER_PID"
 LAUNCHER
 
-sed -e "s|__INSTALL_DIR__|$INSTALL_DIR|g" -e "s|__PORT__|$PORT|g" \
-    "$APP/Contents/MacOS/$APP_NAME.tmpl" > "$APP/Contents/MacOS/$APP_NAME"
+"$VENV_PY" - "$APP/Contents/MacOS/$APP_NAME" "$INSTALL_DIR" "$PORT" "$SERVER_URL" <<'PY'
+from pathlib import Path
+import shlex
+import sys
+
+target = Path(sys.argv[1])
+template = target.with_suffix(".tmpl").read_text(encoding="utf-8")
+for token, value in zip(("__INSTALL_DIR__", "__PORT__", "__SERVER_URL__"), sys.argv[2:]):
+    template = template.replace(token, shlex.quote(value))
+target.write_text(template, encoding="utf-8")
+PY
 rm -f "$APP/Contents/MacOS/$APP_NAME.tmpl"
 chmod +x "$APP/Contents/MacOS/$APP_NAME"
 
