@@ -550,7 +550,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
       : 'Each batch video gets its own length after upload. The chosen length appears beside its queued receipt.';
     updateInputs();
     fields.mode.disabled = fields.model.disabled = batchBusy;
-    loraEditor.setDisabled(batchBusy || queueBusy || editLoading || transferBusy || enhancing || submitting);
+    loraEditor.setDisabled(inventoryLoading || batchBusy || queueBusy || editLoading || transferBusy || enhancing || submitting);
     loraEditor.setLibraryAvailable?.(inventory?.lora_library === true && !editing);
     refresh.disabled = inventoryLoading || batchBusy || editing || editLoading;
     loraCompatibilityError.textContent = [incompatibleLora(), incompatibleLength()].filter(Boolean).join(' '); loraCompatibilityError.hidden = !loraCompatibilityError.textContent;

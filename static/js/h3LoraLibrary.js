@@ -242,8 +242,9 @@ export function showH3LoraLibrary({ components = [], selectedId = '', onChange =
         const result = await libraryRequest(`/${encodeURIComponent(id)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(profile) });
         savedSelection = result.component?.id || id;
         source.value = 'installed'; componentSelect.value = ''; drafts.set(`installed:${savedSelection}`, rawDraft()); selectAfterLoad = true;
-        fileAfterUpload = null; message.textContent = 'LoRA profile saved. Select the LoRA in your workflow; its trigger and recommended settings remain explicit actions.';
+        fileAfterUpload = null; message.textContent = 'Profile saved. Refreshing workflow components…';
         await changed();
+        if (!closed) message.textContent = 'LoRA profile saved. Select the LoRA in your workflow; its trigger and recommended settings remain explicit actions.';
       }
     } catch (reason) { if (!closed) showError(fileAfterUpload ? new Error(`File uploaded. ${reason.message} Retry saving this profile; the file will not be uploaded again.`) : reason); }
     finally { busy = false; xhr = null; if (!closed) { progress.hidden = true; await load(); renderSource(); } }
