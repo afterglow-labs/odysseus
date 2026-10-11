@@ -162,11 +162,17 @@ def snapshot(manager, job_id, owner, family, *, expected=None, retain=None, inve
                     raise ValueError("Invalid retained input indices for " + field.replace("_", " "))
                 selected[field] = [values[i] for i in indices]
             inputs = selected
-        return {"id": job_id, "revision": revision(manifest), "config": _draft(config, inventory, family), "inputs": inputs}
+        result = {"id": job_id, "revision": revision(manifest), "config": _draft(config, inventory, family), "inputs": inputs}
+        if family == "h3":
+            from src.h3_loras import frozen_inventory, frozen_components
+            result["_inventory"] = frozen_inventory(config, inventory)
+            result["lora_components"] = frozen_components(config, inventory)
+        return result
 
 
 def get_edit(manager, job_id, owner, family):
     result = snapshot(manager, job_id, owner, family)
+    result.pop("_inventory", None)
     result["inputs"] = {field: [{k: item[k] for k in ("index", "name", "size")} for item in values]
                         for field, values in result["inputs"].items() if values or family == "h3" and field == "source_video"}
     return result
@@ -226,6 +232,9 @@ def commit_edit(manager, job_id, owner, family, raw, expected, retain, saved, na
                 labels[field].append(names[field][index])
         if total > limit:
             raise ValueError("Retained and new video inputs exceed the per-job upload limit")
+        if family == "h3":
+            from src.h3_loras import frozen_inventory
+            inventory = frozen_inventory(manifest["config"], inventory)
         config = validate(raw, inventory, inputs, family)
         try:
             # Only validated local staging files can be moved into a job.

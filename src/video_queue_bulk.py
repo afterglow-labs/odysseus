@@ -54,6 +54,9 @@ def _light(directory, state, inventory, family, *, resolved_paths=None):
     result = {key: state.get(key) for key in ("id", "status", "created_at", "started_at", "finished_at", "queue_order")}
     result.update(revision=revision(manifest), source_name=manifest.get("source_name", state.get("source_name")),
                   config=_draft(config, inventory, family, resolved_paths=resolved_paths) if isinstance(config, dict) else {})
+    if family == "h3" and isinstance(config, dict):
+        from src.h3_loras import frozen_components
+        result["lora_components"] = frozen_components(config, inventory)
     return result
 
 
@@ -91,6 +94,9 @@ def list_jobs(manager, owner, family, status="queued"):
 
 
 def _patched(config, patch, inventory, family, inputs, *, resolved_paths=None):
+    if family == "h3":
+        from src.h3_loras import frozen_inventory
+        inventory = frozen_inventory(config, inventory)
     if not isinstance(patch, dict):
         raise ValueError("Parameter changes must be a JSON object")
     settings, roles, _ = specification(family, config)

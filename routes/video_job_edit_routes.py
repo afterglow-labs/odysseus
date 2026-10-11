@@ -68,7 +68,7 @@ def add_job_edit_routes(router, manager, family, extensions, store_uploads):
                     before = await asyncio.to_thread(snapshot, manager, job_id, owner, family,
                                                       expected=expected, retain=retain, inventory=inventory)
                     combined = {field: before['inputs'][field] + uploads[field] for field in extensions}
-                    validate(raw, inventory, combined, family)
+                    validate(raw, before.get('_inventory', inventory), combined, family)
                     retained_bytes = sum(item['size'] for values in before['inputs'].values() for item in values)
                     if retained_bytes > limit:
                         raise HTTPException(413, 'Retained video inputs exceed the per-job upload limit')

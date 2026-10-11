@@ -73,6 +73,76 @@ assert.equal(resolveVideoWorkflow(legacy,{family:'h3',inventory:{components}}).c
 ''')
 
 
+def test_profile_actions_are_explicit_and_custom_strengths_survive_stacks():
+    run_js(r'''
+inventory.lora_library=true;
+const turbo=components.find(item=>item.id==='turbo');
+turbo.display_name='coolthor Turbo';
+turbo.strength_control={kind:'custom',label:'Effect',min:-10,max:10,step:0.2,default:0.4,labels:{min:'Less',max:'More'}};
+turbo.lora_profile={display_name:'coolthor Turbo',trigger_words:'special_effect:',trigger_position:'prefix',notes:'Use a reference video.',recommended_settings:{steps:4,sampler:'res_multistep',shift_video:8},strength_control:turbo.strength_control};
+components.find(item=>item.id==='ref').display_name='coolthor H3';
+showH3Video();await flush();await change('prompt','Keep this scene.');await change('steps','23');await change('lora','turbo');
+assert.equal(byId('prompt').value,'Keep this scene.');assert.equal(byId('steps').value,'23');
+assert.equal(byId('lora_scale').value,'0.4');assert.equal(byId('lora_age').min,-10);
+assert.equal(byId('lora').options.find(item=>item.value==='turbo').textContent,'coolthor Turbo');
+assert.equal(byId('model').options.find(item=>item.value==='ref').textContent,'coolthor H3');
+byText('Insert trigger').onclick();assert.equal(byId('prompt').value,'special_effect:\nKeep this scene.');
+byText('Insert trigger').onclick();assert.equal(byId('prompt').value,'special_effect:\nKeep this scene.');
+byText('Apply recommended settings').onclick();assert.equal(byId('steps').value,'4');assert.equal(byId('sampler').value,'res_multistep');assert.equal(byId('shift_video').value,'8');
+assert.equal(byId('shift_audio').value,'3');assert.equal(byId('mode').value,'ref2va');
+await change('lora_scale','-8');assert.equal(h3LoraIssue([{id:'turbo',strength:-8}],components),'');
+const draft=editorOptions.getDraft();editorOptions.restoreDraft(draft);assert.equal(byId('lora_scale').value,'-8');
+byText('Manage LoRAs').onclick();assert.ok(loraLibraryOptions);
+assert.equal(byId('prompt').value,'special_effect:\nKeep this scene.');
+''')
+
+
+def test_manual_trigger_preserves_surrounding_text_and_suffix_only_dedupes_boundary():
+    run_js(r'''
+assert.equal(insertH3LoraTrigger('first last','trigger:','manual',6),'first trigger:last');
+assert.equal(insertH3LoraTrigger('scene','tag','prefix'),'tag\nscene');
+assert.equal(insertH3LoraTrigger('tag\nscene','tag','prefix'),'tag\nscene');
+assert.equal(insertH3LoraTrigger('scene','tag','suffix'),'scene\ntag');
+assert.equal(insertH3LoraTrigger('scene\ntag','tag','suffix'),'scene\ntag');
+assert.equal(insertH3LoraTrigger('tag\nscene','tag','suffix'),'tag\nscene\ntag');
+assert.equal(insertH3LoraTrigger('scene','','prefix'),'scene');
+''')
+
+
+def test_recommendations_do_not_partially_apply_when_a_control_is_unavailable():
+    run_js(r'''
+const vfx=components.find(item=>item.id==='vfx');
+vfx.lora_profile={recommended_settings:{steps:4,frames:124}};
+showH3Video();await flush();await change('lora','vfx');await change('steps','27');
+assert.equal(byId('frames').disabled,true);
+byText('Apply recommended settings').onclick();
+assert.equal(byId('steps').value,'27');assert.ok(elements.some(item=>item.textContent.includes('controlled by the current workflow')));
+''')
+
+
+def test_saved_job_profile_overlays_only_its_editor_and_rerun_controls():
+    run_js(r'''
+const turbo=components.find(item=>item.id==='turbo');
+turbo.strength_control={kind:'custom',label:'Current effect',min:-2,max:2,step:0.1,default:1};
+turbo.lora_profile={trigger_words:'new_trigger',trigger_position:'prefix'};
+const frozen=[{...turbo,display_name:'Saved effect',strength_control:{kind:'custom',label:'Saved effect',min:-12,max:12,step:0.1,default:0},lora_profile:{trigger_words:'old_trigger',trigger_position:'suffix'}}];
+stored.set(STORAGE,JSON.stringify({...defaults,loras:[{id:'turbo',strength:1}]}));
+showH3Video();await flush();const draft=editorOptions.getDraft();
+const saved={id:'old',config:{...defaults,loras:[{id:'turbo',strength:-9}],prompt:'Job'},inputs:{},lora_components:frozen};
+editor.active={id:'old'};editorOptions.applyEdit(saved);
+assert.equal(byId('lora_scale').min,-12);assert.equal(byId('lora_scale').value,'-9');assert.equal(generate().disabled,false);
+byText('Insert trigger').onclick();assert.equal(byId('prompt').value,'Job\nold_trigger');
+assert.equal(turbo.strength_control.min,-2);assert.equal(turbo.lora_profile.trigger_words,'new_trigger');
+editor.active=null;editorOptions.restoreDraft(draft);assert.equal(byId('lora_scale').min,-2);assert.equal(byId('lora_scale').value,'1');
+const definition=queueOptions.getFields(saved.config,saved).find(item=>item.key==='loras'),rerun=definition.create(()=>{});
+document.body.appendChild(rerun.node);rerun.setValue(saved.config.loras);
+assert.equal(document.getElementById('h3-queue-lora_scale').min,-12);assert.equal(rerun.getValue()[0].strength,-9);
+// A formerly generic adapter must not inherit a newly-added library profile.
+const generic=h3LoraComponents(components,[{id:'turbo',role:'lora',name:'turbo.safetensors',variant:'ref2va'}]).find(item=>item.id==='turbo');
+assert.equal(generic.strength_control,undefined);assert.equal(generic.lora_profile,undefined);
+''')
+
+
 def test_moved_components_restore_saved_and_edited_ids_through_inventory_aliases():
     run_js(r'''
 for (const item of components) item.aliases = ['old-' + item.id];

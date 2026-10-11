@@ -189,6 +189,16 @@ def component_reference(path):
         return None
     root, relative, metadata, row = found
     result = {"name": PurePosixPath(relative).name, "repository": metadata["repository"], "relative_path": relative}
+    # A single-file adapter upload/download can keep a flat, readable local
+    # folder while retaining its actual nested Hugging Face download path.
+    upstream = row.get("upstream_relative_path")
+    if isinstance(upstream, str):
+        try:
+            upstream = _relative(upstream)
+            if PurePosixPath(upstream).name == result["name"]:
+                result["relative_path"] = upstream
+        except ValueError:
+            pass
     revision = row.get("revision")
     # Local-dir metadata describes the current named file. Prefer it to an
     # older migration record when HF has since downloaded a newer revision.

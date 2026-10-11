@@ -190,6 +190,7 @@ _TIMEOUT_EXEMPT_PREFIXES = (
     "/api/model-endpoints", # /probe sub-route also iterates models
     "/api/cookbook/setup",  # remote pacman/apt installs
     "/api/upload",          # large files
+    "/api/video/h3/lora-library/upload",  # streamed multi-GB adapter uploads
     "/api/image",           # diffusion proxies (inpaint/harmonize/upscale/etc.) — own 120s httpx timeout
     "/api/memory/audit",    # retains own 120s LLM inactivity timeout
 )

@@ -142,6 +142,16 @@
 .h3-lora-age-slider { width:100%; min-width:0; margin:0; accent-color:var(--accent,var(--red)); }
 .h3-lora-age-marks { display:flex; justify-content:space-between; gap:10px; font-size:12px; }
 .h3-lora-age-marks span:last-child { text-align:right; }
+.h3-lora-profile-summary { grid-column:1 / -1; padding:8px 10px; border-left:2px solid var(--border,#544c60); }
+.h3-lora-profile-summary p { margin:0 0 8px; white-space:pre-wrap; overflow-wrap:anywhere; }
+.h3-lora-library-dialog { width:min(900px,100%); }
+.h3-lora-library-dialog .h3-video-scroll { display:block; }
+.h3-lora-library-source,.h3-lora-profile-form { display:grid; gap:12px; margin:12px 0; }
+.h3-lora-library-fieldset { min-width:0; border:1px solid var(--border,#544c60); border-radius:8px; padding:12px; margin:0; }
+.h3-lora-library-fieldset legend { padding:0 6px; font-weight:600; }
+.h3-lora-library-fieldset>.h3-video-field,.h3-lora-library-fieldset>div>.h3-video-field { margin-bottom:12px; }
+.h3-lora-library-downloads { margin-top:20px; }
+.h3-lora-library-download { border-top:1px solid var(--border,#544c60); padding:12px 0; overflow-wrap:anywhere; }
 @media (max-width:600px) {
   .h3-lora-row { grid-template-columns:minmax(0,1fr) auto; }
   .h3-lora-row > label:first-child { grid-column:1 / -1; }

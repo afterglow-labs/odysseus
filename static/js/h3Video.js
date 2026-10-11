@@ -5,9 +5,10 @@ import { createVideoBatchQueue } from './videoBatch.js';
 import { createVideoJobEditor, videoJobEditFormData } from './videoJobEdit.js';
 import { createVideoQueueControls, videoQueueField } from './videoQueue.js';
 import { createVideoJobReruns } from './videoJobRerun.js';
-import { h3LoraStack, h3LoraIssue, createH3LoraEditor } from './h3Loras.js';
+import { h3LoraStack, h3LoraIssue, createH3LoraEditor, insertH3LoraTrigger, H3_LORA_RECOMMENDED_FIELDS, h3LoraComponents } from './h3Loras.js';
 import { appendVideoInputs } from './videoInputs.js';
 import { showVideoServerFiles } from './videoServerFiles.js';
+import { showH3LoraLibrary } from './h3LoraLibrary.js';
 
 const API = '/api/video/h3';
 const STORAGE = 'odysseus-h3-video-settings-v1';
@@ -208,6 +209,9 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   let gpuPolling = false, gpuSnapshot = [], gpuUpdated = null, gpuController = null;
   let transferBusy = false, batchQueue = null, inventoryLoading = false, jobEditor = null, queueControls = null, loraTouched = false;
   let serverPicker = null;
+  let loraLibrary = null;
+  let editingLoraComponents = null;
+  const loraComponents = () => h3LoraComponents(inventory?.components || [], editingLoraComponents);
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(STORAGE)) || {}; } catch {}
   let appliedPresetRevision = saved._installedPresetRevision || '';
@@ -270,7 +274,36 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   select(components, 'encoder', 'Text encoder');
   select(components, 'video_vae', 'Video VAE');
   select(components, 'audio_vae', 'Audio VAE');
-  const loraEditor = createH3LoraEditor({ onChange: () => { loraTouched = true; editRevision++; updateMode(true); save(); } });
+  const loraEditor = createH3LoraEditor({ onChange: () => { loraTouched = true; editRevision++; updateMode(true); save(); },
+    onManage: (selectedId, anchor) => {
+      loraLibrary?.close();
+      loraLibrary = showH3LoraLibrary({ components: inventory?.components || [], selectedId,
+        onChange: async () => { if (!closed) await loadInventory(); } }, anchor);
+    },
+    onInsertTrigger: component => {
+      const profile = component?.lora_profile; if (!profile?.trigger_words) return;
+      const next = insertH3LoraTrigger(prompt.value, profile.trigger_words, profile.trigger_position, prompt.selectionStart ?? prompt.value.length);
+      if (next.length > prompt.maxLength) { setError('The trigger would exceed the prompt length limit. Shorten the prompt before inserting it.'); return; }
+      prompt.value = next; editRevision++; setError(''); updateReady(); prompt.focus({ preventScroll: true });
+    },
+    onApplyRecommended: component => {
+      const settings = component?.lora_profile?.recommended_settings || {}, changes = [];
+      for (const [key, value] of Object.entries(settings)) {
+        if (!H3_LORA_RECOMMENDED_FIELDS.includes(key)) continue;
+        const control = fields[key];
+        if (!control || control.disabled) { setError(`${key.replaceAll('_', ' ')} is controlled by the current workflow. Edit that recommendation or choose a workflow that supports it.`); return; }
+        if (control.tagName === 'SELECT' && ![...control.options].some(option => option.value === String(value) && !option.disabled)) {
+          setError(`The recommended ${key.replaceAll('_', ' ')} is unavailable in this workflow.`); return;
+        }
+        changes.push([key, value]);
+      }
+      if (!changes.length) return;
+      for (const [key, value] of changes) fields[key].value = value;
+      editRevision++; setError(''); save(); updateReady();
+      submissionStatus.textContent = `Applied ${component.display_name || component.name} recommendations: ${changes.map(([key, value]) => `${key.replaceAll('_', ' ')} ${value}`).join(' · ')}.`;
+      submissionStatus.hidden = false;
+    },
+  });
   form.appendChild(loraEditor.node);
   const componentPath = el('p', 'h3-video-component-path h3-video-muted'); form.appendChild(componentPath);
   const loraCompatibilityError = el('p', 'h3-video-error'); loraCompatibilityError.hidden = true; loraCompatibilityError.setAttribute('role', 'alert'); form.appendChild(loraCompatibilityError);
@@ -428,11 +461,11 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   function incompatibleLora() {
     const stack = loraEditor.getValue();
     if (inventory && inventory.lora_stack !== true && stack.length > 1) return 'Multiple LoRAs need the updated Odysseus server. Restart the server and refresh components.';
-    return h3LoraIssue(stack, inventory?.components, fields.mode.value, inventory?.max_loras || 8);
+    return h3LoraIssue(stack, loraComponents(), fields.mode.value, inventory?.max_loras || 8);
   }
   const inputCount = key => uploads[key].files.length + uploads[key].retained.length;
   function isVfxEdit() {
-    return loraEditor.getValue().some(row => Number(row.strength) !== 0 && inventory?.components?.some(item => item.id === row.id && item.role === 'lora' && item.recipe === 'vfx_edit'));
+    return loraEditor.getValue().some(row => Number(row.strength) !== 0 && loraComponents().some(item => item.id === row.id && item.role === 'lora' && item.recipe === 'vfx_edit'));
   }
   function incompatibleLength() {
     if (batchActive() && batchQueue?.autoVideoLength) return '';
@@ -518,6 +551,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     updateInputs();
     fields.mode.disabled = fields.model.disabled = batchBusy;
     loraEditor.setDisabled(batchBusy || queueBusy || editLoading || transferBusy || enhancing || submitting);
+    loraEditor.setLibraryAvailable?.(inventory?.lora_library === true && !editing);
     refresh.disabled = inventoryLoading || batchBusy || editing || editLoading;
     loraCompatibilityError.textContent = [incompatibleLora(), incompatibleLength()].filter(Boolean).join(' '); loraCompatibilityError.hidden = !loraCompatibilityError.textContent;
     generate.disabled = queueBusy || batching || batchBusy || editLoading || !!jobEditor?.blocked || transferBusy || enhancing || submitting || loadFailed || !inventory?.runtime_ready || !!missingGpu?.length || !!loraCompatibilityError.textContent || !!vfxInputError.textContent || !required.every(key => fields[key].value);
@@ -722,7 +756,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     preferred = h3ComponentId(preferred, options);
     const control = fields[key]; control.replaceChildren();
     control.add(new Option(optional ? 'None' : options.length ? 'Choose component…' : `No cached ${key.replaceAll('_', ' ')} found`, ''));
-    options.forEach(item => control.add(new Option(item.name, String(item.id))));
+    options.forEach(item => control.add(new Option(item.display_name || item.name, String(item.id))));
     // An explicit empty selection means unresolved or deliberately unselected,
     // including imported components. Refreshing must not replace it silently.
     if (preferred !== undefined && preferred !== null) control.value = [...control.options].some(option => option.value === String(preferred)) ? String(preferred) : '';
@@ -802,7 +836,8 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
         }
         fillOptions(key, options, preferred, key === 'lora');
       }
-      loraEditor.setInventory(data.components || [], data.max_loras || 8);
+      loraEditor.setInventory(loraComponents(), data.max_loras || 8);
+      loraEditor.setLibraryAvailable?.(data.lora_library === true);
       // Migrate the saved source independently: a new server default stack must
       // not override an older draft's single adapter (including explicit None).
       const loraSource = firstInventory && (Object.prototype.hasOwnProperty.call(saved, 'loras') || Object.prototype.hasOwnProperty.call(saved, 'lora')) ? saved : previous;
@@ -1045,7 +1080,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   form.addEventListener('change', () => { save(); updateReady(); renderGpuUsage(); });
   refresh.onclick = () => loadInventory(); refreshJobs.onclick = loadJobs;
   const onKey = event => {
-    if (document.querySelector('.video-workflow-export-overlay, .video-server-files-overlay')) return;
+    if (document.querySelector('.video-workflow-export-overlay, .video-server-files-overlay, .h3-lora-library-overlay')) return;
     if (event.key === 'Escape') {
       event.preventDefault(); event.stopImmediatePropagation();
       const confirming = [...jobNodes.values()].find(nodes => !nodes.deletion.hidden);
@@ -1065,6 +1100,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   const close = bindMenuDismiss(overlay, () => {
     closed = true; clearInterval(timer); window.removeEventListener('keydown', onKey, true);
     serverPicker?.close();
+    loraLibrary?.close();
     batchQueue?.destroy(); queueControls?.destroy();
     enhancementController?.abort();
     gpuController?.abort();
@@ -1072,6 +1108,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   }, () => false);
   closeButton.onclick = close; window.addEventListener('keydown', onKey, true); closeButton.focus();
   function applyEditorDraft(values, attached, retained = {}) {
+    loraEditor.setInventory(loraComponents(), inventory?.max_loras || 8);
     loraEditor.setValue(h3LoraStack(values));
     // Old VFX jobs used the only reference video as their source guide. New
     // records explicitly contain source_video (even when empty), so never
@@ -1098,8 +1135,8 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     form, request, isClosed: () => closed,
     isBusy: () => !!queueControls?.busy || !!queueControls?.editing || submitting || enhancing || transferBusy || inventoryLoading || !!batchQueue?.busy,
     getDraft: () => ({ config: { ...config(), prompt: prompt.value }, uploads: Object.fromEntries(Object.entries(uploads).map(([key, state]) => [key, [...state.files]])), originalPrompt }),
-    applyEdit: value => { originalPrompt = null; submissionStatus.hidden = true; applyEditorDraft(value.config, {}, value.inputs); },
-    restoreDraft: value => { originalPrompt = value.originalPrompt; applyEditorDraft(value.config, value.uploads); },
+    applyEdit: value => { editingLoraComponents = value.lora_components || null; originalPrompt = null; submissionStatus.hidden = true; applyEditorDraft(value.config, {}, value.inputs); },
+    restoreDraft: value => { editingLoraComponents = null; originalPrompt = value.originalPrompt; applyEditorDraft(value.config, value.uploads); },
     onChange: updateReady, onError: setError,
   });
   batchQueue = createVideoBatchQueue({
@@ -1109,17 +1146,17 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   });
   queueControls = createVideoQueueControls({
     container: queueContainer, family: 'h3', request, reload: loadJobs, onChange: updateReady, isClosed: () => closed,
-    getFields: savedConfig => [...SETTINGS, 'prompt'].filter(key => key !== 'mode').map(key => {
+    getFields: (savedConfig, savedJob) => [...SETTINGS, 'prompt'].filter(key => key !== 'mode').map(key => {
       let control = fields[key];
       const label = control.closest('label')?.querySelector('span')?.textContent || (key === 'prompt' ? 'Prompt' : key.replaceAll('_', ' '));
       if (savedConfig && key === 'frames') {
         control = control.cloneNode(true);
-        const vfx = h3LoraStack(savedConfig).some(row => Number(row.strength) !== 0 && inventory?.components?.some(item => item.id === row.id && item.recipe === 'vfx_edit'));
+        const vfx = h3LoraStack(savedConfig).some(row => Number(row.strength) !== 0 && h3LoraComponents(inventory?.components || [], savedJob?.lora_components).some(item => item.id === row.id && item.recipe === 'vfx_edit'));
         for (const option of control.options) option.disabled = option.hidden = !vfx && Number(option.value) < 124;
       }
       return videoQueueField(key, label, control, NUMBER_FIELDS.has(key));
     }).concat([{ key: 'loras', label: 'LoRA stack (replace all)', getSavedValue: h3LoraStack, create: onChange => createH3LoraEditor({
-      components: inventory?.components || [], value: loraEditor.getValue(), max: inventory?.max_loras || 8, idPrefix: 'h3-queue', onChange,
+      components: h3LoraComponents(inventory?.components || [], savedJob?.lora_components), value: loraEditor.getValue(), max: inventory?.max_loras || 8, idPrefix: 'h3-queue', onChange,
     }) }]),
   });
   loadInventory(); loadJobs(); checkEnhancer(); loadGpuUsage();

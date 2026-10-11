@@ -128,12 +128,15 @@ def lora_stack(config):
 
 def validate_loras(config):
     try:
-        from scripts.h3_lora_controls import lora_strength_bounds
+        from scripts.h3_lora_controls import lora_strength_bounds, read_profile
     except ModuleNotFoundError:
-        from h3_lora_controls import lora_strength_bounds
+        from h3_lora_controls import lora_strength_bounds, read_profile
     adapters = lora_stack(config)
     if not isinstance(adapters, list) or len(adapters) > 8:
         raise ValueError("loras must be a list of at most 8 adapters")
+    profiles = config.get("lora_profiles", {})
+    if not isinstance(profiles, dict) or len(profiles) > 8:
+        raise ValueError("Invalid saved LoRA profiles")
     result, seen = [], set()
     for index, item in enumerate(adapters, 1):
         if not isinstance(item, dict) or not isinstance(item.get("path"), str):
@@ -145,7 +148,7 @@ def validate_loras(config):
         if identity in seen:
             raise ValueError("Each LoRA may appear only once in the stack")
         seen.add(identity)
-        low, high = lora_strength_bounds(path.name)
+        low, high = lora_strength_bounds(path.name, profiles.get(str(path)) or read_profile(path))
         try:
             strength = _number(item, "strength", 1, low, high)
         except (TypeError, ValueError) as error:

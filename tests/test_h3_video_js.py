@@ -63,6 +63,8 @@ const videoQueueField=(key,label,control,numeric)=>({key,label,control,numeric})
 const videoJobEditFormData=()=>new FormData();
 let serverPickerOptions;
 const showVideoServerFiles=options=>{serverPickerOptions=options;return{close(){}};};
+let loraLibraryOptions;
+const showH3LoraLibrary=options=>{loraLibraryOptions=options;return{close(){}};};
 const components=[
  {id:'ref',role:'model',variant:'ref2va',name:'Ref2VA'},
  {id:'fl',role:'model',variant:'fl2va',name:'FL2VA'},

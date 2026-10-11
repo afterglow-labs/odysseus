@@ -17,12 +17,13 @@ import zlib
 
 from src.h3_video import _locked, _read, _write
 from src.h3_loras import MAX_LORAS, lora_entries
-from scripts.h3_lora_controls import lora_strength_bounds
+from scripts.h3_lora_controls import lora_strength_bounds, validate_lora_profile, read_profile, write_profile
 from src.h3_vfx import normalize_vfx_inputs
 
 FORMAT, VERSION = "odysseus-video-workflow", 1
 INPUT_LAYOUT = "source-guide-v1"
-CHUNK, JSON_LIMIT, MAX_ENTRIES, TTL = 1024 * 1024, 128 * 1024, 64, 7200
+# Up to eight bounded LoRA profiles can carry Unicode triggers and notes.
+CHUNK, JSON_LIMIT, MAX_ENTRIES, TTL = 1024 * 1024, 1024 * 1024, 64, 7200
 RESERVE_BYTES = 512 * 1024 * 1024
 ID = re.compile(r"^[a-f0-9]{32}$")
 REPO = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}/[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$")
@@ -46,11 +47,11 @@ def specification(family, config):
         roles = {"model", "encoder", "video_vae", "audio_vae"}
         if "lora_strengths" in config:
             strengths = config["lora_strengths"]
-            # Structure first; validate_document applies each named adapter's
-            # bounds after validating component references (only Age reaches 5).
+            # Structure first; each adapter's validated profile supplies its
+            # actual range after component references are checked below.
             if (not isinstance(strengths, list) or len(strengths) > MAX_LORAS or any(
-                    isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
-                    or not -5 <= value <= 5 for value in strengths)):
+                    isinstance(value, bool) or not isinstance(value, (int, float)) or not -100 <= value <= 100
+                    or not math.isfinite(value) for value in strengths)):
                 raise ValueError("Invalid portable LoRA strengths")
             roles |= {f"lora_{index}" for index in range(len(strengths))}
         else:
@@ -157,9 +158,13 @@ def validate_document(value, family):
         if not {f"lora_{index}" for index in range(len(value["config"]["lora_strengths"]))} <= components.keys():
             raise ValueError("A stacked LoRA reference is missing")
     declared, counts = {"workflow.json"}, {}
-    for item in components.values():
-        if not isinstance(item, dict) or item.keys() - {"name", "repository", "relative_path", "revision", "archive_path"}:
+    for role, item in components.items():
+        if not isinstance(item, dict) or item.keys() - {"name", "repository", "relative_path", "revision", "archive_path", "lora_profile"}:
             raise ValueError("Invalid model download reference")
+        if "lora_profile" in item:
+            if family != "h3" or not (role == "lora" or re.fullmatch(r"lora_[0-7]", role)):
+                raise ValueError("Only H3 LoRA references may contain a LoRA profile")
+            validate_lora_profile(item["lora_profile"])
         name = safe_path(item.get("name"), True)
         if not name.lower().endswith(".safetensors"):
             raise ValueError("Only safetensors weights can be transferred")
@@ -177,13 +182,15 @@ def validate_document(value, family):
             declared.add(relative)
     if family == "h3":
         strengths = value["config"].get("lora_strengths")
-        selections = ([(components[f"lora_{i}"]["name"], strength) for i, strength in enumerate(strengths)]
-                      if strengths is not None else [(components.get("lora", {}).get("name", ""),
+        selections = ([(components[f"lora_{i}"], strength) for i, strength in enumerate(strengths)]
+                      if strengths is not None else [(components.get("lora", {}),
                                                       value["config"].get("lora_scale", 1))])
-        for name, strength in selections:
-            low, high = lora_strength_bounds(name)
+        for reference, strength in selections:
+            control = (validate_lora_profile(reference["lora_profile"]).get("strength_control")
+                       if "lora_profile" in reference else None)
+            low, high = (control["min"], control["max"]) if control else lora_strength_bounds(reference.get("name", ""))
             if (isinstance(strength, bool) or not isinstance(strength, (int, float))
-                    or not math.isfinite(strength) or not low <= strength <= high):
+                    or not low <= strength <= high or not math.isfinite(strength)):
                 raise ValueError(f"Portable LoRA strength must be a finite number from {low} to {high}")
     for item in attachments:
         if not isinstance(item, dict) or set(item) != {"field", "name", "path", "size"}:
@@ -273,6 +280,12 @@ def resolve_draft(raw, inventory, family):
                 raise ValueError("The same LoRA file cannot be selected more than once")
             paths.add(path)
             selected[f"lora_{index}"] = item["path"]
+    if family == "h3":
+        profiles = {str(Path(item["path"]).resolve()): item["lora_profile"]
+                    for item in available.values() if item.get("role") == "lora"
+                    and item["path"] in selected.values() and item.get("lora_profile")}
+        if profiles:
+            config["lora_profiles"] = profiles
     return config, selected
 
 
@@ -305,6 +318,11 @@ def make_recipe(config, selected, uploads, family, options):
         if path.suffix.lower() != ".safetensors" or options["include_weights"] and not path.is_file():
             raise ValueError("A selected weight is unavailable")
         item = component_reference(path)
+        if family == "h3" and (role == "lora" or re.fullmatch(r"lora_[0-7]", role)):
+            snapshot = config.get("lora_profiles", {})
+            profile = snapshot.get(str(path.resolve())) or snapshot.get(str(path)) or read_profile(path)
+            if profile:
+                item["lora_profile"] = validate_lora_profile(profile)
         if options["include_weights"]:
             relative = "weights/" + role + "/" + item["name"]
             item["archive_path"] = relative
@@ -553,8 +571,15 @@ class WorkflowTransfers:
 
     def _finish_import(self, directory, owner, document, weights):
         document = normalize_portable_inputs(document)
+        if self.family == "h3":
+            # A user-named adapter need not contain "H3" in its filename.
+            # Register its validated profile before component discovery.
+            for role, path in weights.items():
+                profile = document["components"][role].get("lora_profile")
+                if profile:
+                    write_profile(path, profile, overwrite=False)
         inventory = self.manager.inventory()
-        resolved = {}
+        resolved, warnings, profiles_changed = {}, [], False
         for role, reference in document["components"].items():
             candidates = []
             for item in inventory["components"]:
@@ -567,11 +592,28 @@ class WorkflowTransfers:
                     candidates.append(item["id"])
             if len(candidates) == 1:
                 resolved[role] = candidates[0]
+                if self.family == "h3" and reference.get("lora_profile"):
+                    item = next(row for row in inventory["components"] if row["id"] == candidates[0])
+                    previous = read_profile(item["path"])
+                    profile = validate_lora_profile(reference["lora_profile"])
+                    if previous is None:
+                        write_profile(item["path"], profile, overwrite=False)
+                        profiles_changed = True
+                    elif previous != profile:
+                        warnings.append(f"Kept the existing LoRA profile for {item['name']}. The imported profile is included in the workflow; use Manage LoRAs to change the local settings.")
+        if profiles_changed:
+            inventory = self.manager.inventory()
+        if weights or profiles_changed:
+            # A workflow can be queued immediately after import. Do not reuse
+            # the pre-import adapter list or its old profile validation range.
+            with self.manager._submission_inventory_lock:
+                self.manager._submission_inventory_cache = None
         _write(directory / "receipt.json", {"owner": owner, "kind": "import", "expires": time.time() + TTL, "document": document})
         attachments = [{"field": item["field"], "name": item["name"],
                         "url": f"/api/video/{self.family}/workflow/imports/{directory.name}/attachments/{i}"}
                        for i, item in enumerate(document["attachments"])]
-        return {"workflow": document, "inventory": inventory, "attachments": attachments, "resolved_components": resolved}
+        return {"workflow": document, "inventory": inventory, "attachments": attachments, "resolved_components": resolved,
+                **({"warnings": warnings} if warnings else {})}
 
 
     def import_file(self, directory, owner, source):
@@ -590,7 +632,7 @@ class WorkflowTransfers:
                 source.unlink()
                 result = self._finish_import(directory, owner, document, {})
                 if references_bundle:
-                    result["warnings"] = ["Imported settings and model references from JSON. Import the ZIP to restore its bundled model weights and input media."]
+                    result.setdefault("warnings", []).append("Imported settings and model references from JSON. Import the ZIP to restore its bundled model weights and input media.")
                 return result
         try:
             # ZipFile otherwise parses the entire central directory before we
@@ -652,6 +694,10 @@ class WorkflowTransfers:
             if info.filename in refs:
                 validate_safetensors(destination)
                 role, reference = refs[info.filename]
+                if reference.get("lora_profile"):
+                    from src.model_artifacts import _safetensors_kind
+                    if not _safetensors_kind(destination)[0]:
+                        raise ValueError("A LoRA profile requires adapter weights, not a base model")
                 staged[role] = (destination, reference, digest.hexdigest())
             elif destination.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
                 from PIL import Image
@@ -698,7 +744,7 @@ class WorkflowTransfers:
                         finally:
                             temporary.unlink(missing_ok=True)
                 weights[role] = str(target)
-                original = {key: value for key, value in reference.items() if key != "archive_path"}
+                original = {key: value for key, value in reference.items() if key not in {"archive_path", "lora_profile"}}
                 # Preserve the first source identity for identical imported
                 # bytes. Neither existing weights nor their provenance changes.
                 try:

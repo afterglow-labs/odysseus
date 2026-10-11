@@ -135,10 +135,10 @@ export function createVideoQueueControls({ container, family, request, getFields
     const action = confirmation.dataset.action, result = await post(`/queue/${action}`, { scope: scope.value }); if (!alive()) return;
     confirmation.hidden = true; receipt(result, action === 'delete' ? 'deleted' : 'canceled'); await reload();
   });
-  function buildFields(savedConfig = null) {
+  function buildFields(savedConfig = null, savedJob = null) {
     rows = []; fieldGrid.replaceChildren();
     const seen = new Set();
-    for (const descriptor of getFields(savedConfig)) {
+    for (const descriptor of getFields(savedConfig, savedJob)) {
       const { key, label, control: original, numeric } = descriptor;
       if ((!original && !descriptor.create) || seen.has(key) || ['mode', 'workflow_id', 'inputs'].includes(key)) continue;
       const savedValue = savedConfig ? descriptor.getSavedValue ? descriptor.getSavedValue(savedConfig)
@@ -210,7 +210,7 @@ export function createVideoQueueControls({ container, family, request, getFields
       editorHelp.textContent = 'These are this job’s saved parameters. Edit them to queue a new copy; its existing result and your current draft stay unchanged.';
       fieldHelp.textContent = 'Change a parameter, then choose Queue edited copy. Saved images, videos and audio are reused automatically; opening this editor does not start a job.';
       targetStatus.textContent = `One ${familyName} job selected · ${job.id}`;
-      buildFields(job.config); render(); editor.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      buildFields(job.config, job); render(); editor.scrollIntoView({ block: 'start', behavior: 'smooth' });
       editor.querySelector('textarea')?.focus({ preventScroll: true });
       return { opened: true };
     });

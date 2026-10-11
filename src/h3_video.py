@@ -27,7 +27,7 @@ from src.constants import BASE_DIR, COOKBOOK_STATE_FILE, DATA_DIR, GENERATED_IMA
 from src.hf_cache import effective_hf_cache
 from src.h3_vfx import VFX_LORAS, normalize_vfx_inputs
 from src.model_artifacts import _safetensors_kind
-from scripts.h3_lora_controls import lora_strength_control, lora_strength_bounds
+from scripts.h3_lora_controls import lora_strength_control, lora_strength_bounds, read_profile, validate_lora_profile
 
 log = logging.getLogger(__name__)
 PROJECT_ROOT = Path(BASE_DIR).resolve()
@@ -185,7 +185,13 @@ def discover_components(roots):
                 path = Path(directory, name)
                 text = str(path).lower().replace("-", "_")
                 control = lora_strength_control(name)
-                if not name.lower().endswith(".safetensors") or not (control or re.search(r"minimax.*h3|(?:/|_)h3(?:/|_)", text)):
+                if not name.lower().endswith(".safetensors"):
+                    continue
+                profile = read_profile(path)
+                if not (profile or control or re.search(r"minimax.*h3|(?:/|_)h3(?:/|_)", text)):
+                    continue
+                adapter, _ = _safetensors_kind(path)
+                if not (profile and adapter or control or re.search(r"minimax.*h3|(?:/|_)h3(?:/|_)", text)):
                     continue
                 try:
                     resolved = path.resolve(strict=True)
@@ -205,7 +211,6 @@ def discover_components(roots):
                     continue
                 known_ids.update([identity, *aliases])
                 lower = name.lower()
-                adapter, _ = _safetensors_kind(path)
                 if adapter or "lora" in lower:
                     role = "lora"
                 elif "vae" in lower:
@@ -222,10 +227,26 @@ def discover_components(roots):
                 vfx_edit = role == "lora" and lower in VFX_LORAS
                 if vfx_edit:
                     variant = "ref2va"
+                if role == "lora" and profile is not None and adapter:
+                    variant = profile["variant"]
+                    control = profile.get("strength_control") or control
+                else:
+                    profile = None
+                display_name = None
+                label_file = path.parent / ".odysseus-h3-labels.json"
+                try:
+                    labels = json.loads(label_file.read_text()) if not label_file.is_symlink() and label_file.stat().st_size <= 65536 else {}
+                    label = labels.get(name) if isinstance(labels, dict) else None
+                    if isinstance(label, str) and 0 < len(label.strip()) <= 160 and "\0" not in label:
+                        display_name = label.strip()
+                except (OSError, ValueError):
+                    pass
                 components.append({"id": identity, **({"aliases": aliases} if aliases else {}),
                                    "name": name, "path": str(path.absolute()), "role": role,
                                    "variant": variant, "nvfp4": "nvfp4" in lower,
+                                   **({"display_name": display_name} if display_name else {}),
                                    **({"strength_control": control} if role == "lora" and control else {}),
+                                   **({"lora_profile": profile, "display_name": profile["display_name"] or name} if profile else {}),
                                    **({"recipe": "vfx_edit"} if vfx_edit else {})})
     return sorted(components, key=lambda row: (row["role"], row["name"], row["path"]))
 
@@ -336,7 +357,8 @@ def validate_config(raw, components, gpus, uploads):
     if (config["frames"] - 5) % 17:
         raise ValueError("H3 frame count must be 17 × n + 5 (124, 141, 158 … 362)")
     first_lora_name = by_id.get(adapters[0]["id"], {}).get("name", "") if adapters else ""
-    lora_low, lora_high = lora_strength_bounds(first_lora_name)
+    first_lora_profile = by_id.get(adapters[0]["id"], {}).get("lora_profile") if adapters else None
+    lora_low, lora_high = lora_strength_bounds(first_lora_name, first_lora_profile)
     for key, low, high in (("lora_scale", lora_low, lora_high), ("shift_video", 0.01, 100), ("shift_audio", 0.01, 100)):
         value = config[key]
         if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value) or not low <= value <= high:
@@ -378,6 +400,8 @@ def validate_config(raw, components, gpus, uploads):
         if row["strength"] != 0 and lora.get("variant", "shared") not in {"shared", wanted}:
             raise ValueError(f"{lora['name']} is a {lora['variant'].upper()} LoRA; choose a compatible LoRA for {config['mode']} mode")
         config["loras"].append({"path": lora["path"], "strength": row["strength"]})
+        config.setdefault("lora_profiles", {})[lora["path"]] = validate_lora_profile(
+            lora.get("lora_profile") or {"variant": lora.get("variant", "shared")})
     config["lora"] = config["loras"][0]["path"] if config["loras"] else None
     config["lora_scale"] = config["loras"][0]["strength"] if config["loras"] else 1
     uploads = normalize_vfx_inputs(config, uploads)
@@ -667,7 +691,7 @@ class H3JobManager:
         return {"components": components, "gpus": gpus, "runtime_ready": not error, "batch_jobs": True,
                 "batch_auto_video_length": True,
                 "server_video_files": True,
-                "lora_stack": True, "max_loras": MAX_LORAS, "vfx_references": True,
+                "lora_stack": True, "lora_library": True, "max_loras": MAX_LORAS, "vfx_references": True,
                 "runtime_error": error, "defaults": {**defaults, **(preset["config"] if preset else {})},
                 "base_defaults": defaults, "installed_preset": preset, "installed_preset_error": preset_error}
 

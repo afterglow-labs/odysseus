@@ -166,7 +166,8 @@ export function resolveVideoWorkflow(workflow, { family, inventory, resolvedComp
   const stacked = family === 'h3' && own(workflow.config, 'lora_strengths');
   const strengths = stacked ? workflow.config.lora_strengths : [];
   if (stacked && (!Array.isArray(strengths) || strengths.length > 8 || strengths.some((value, index) => {
-    const control = h3LoraStrengthControl({ name: workflow.components[`lora_${index}`]?.name });
+    const reference = workflow.components[`lora_${index}`] || {};
+    const control = h3LoraStrengthControl({ name: reference.name, strength_control: reference.lora_profile?.strength_control });
     return typeof value !== 'number' || !Number.isFinite(value) || value < control.min || value > control.max;
   }))) throw new Error('Invalid workflow LoRA strengths.');
   const loraRoles = stacked ? strengths.map((_, index) => `lora_${index}`) : [];
@@ -205,8 +206,17 @@ export function resolveVideoWorkflow(workflow, { family, inventory, resolvedComp
     config.loras = stacked ? loraRoles.map((role, index) => ({ id: selections[role], strength: strengths[index] }))
       : config.lora ? [{ id: config.lora, strength: config.lora_scale ?? 1 }] : [];
     if (!stacked && config.loras.length) {
-      const control = h3LoraStrengthControl({ name: workflow.components.lora?.name }), strength = config.loras[0].strength;
+      const reference = workflow.components.lora || {};
+      const control = h3LoraStrengthControl({ name: reference.name, strength_control: reference.lora_profile?.strength_control }), strength = config.loras[0].strength;
       if (typeof strength !== 'number' || !Number.isFinite(strength) || strength < control.min || strength > control.max) throw new Error('Invalid workflow LoRA strength.');
+    }
+    for (const row of config.loras) {
+      const installed = inventory.components.find(item => item.id === row.id);
+      if (!installed) continue;
+      const control = h3LoraStrengthControl(installed);
+      if (row.strength < control.min || row.strength > control.max) {
+        throw new Error(`The saved strength for ${installed.display_name || installed.name} is outside its local LoRA profile range. Review it in Manage LoRAs before importing.`);
+      }
     }
     for (const role of loraRoles) delete config[role];
     config.lora = config.loras[0]?.id || ''; config.lora_scale = config.loras[0]?.strength ?? 1;

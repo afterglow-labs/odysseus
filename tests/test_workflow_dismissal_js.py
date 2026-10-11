@@ -43,7 +43,7 @@ document.addEventListener('keydown', event => { if(event.key==='Escape') { paren
 let closed = false, destroyed = 0, exporting = false, aborted = 0, controller = null;
 const timer = 0, pollTimer = 0;
 const batchQueue = {destroy(){destroyed++;}}, queueControls = {destroy(){}};
-const enhancementController = null, gpuController = null, serverPicker = null, files = new Map(), jobNodes = new Map();
+const enhancementController = null, gpuController = null, serverPicker = null, loraLibrary = null, files = new Map(), jobNodes = new Map();
 const overlay = {connected:true,remove(){this.connected=false;}}, anchor = {isConnected:true,focus(){}};
 const dialog = {querySelectorAll(){return [];}};
 const closeButton = {focus(){}}, cancel = {focus(){}};

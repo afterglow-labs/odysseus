@@ -263,4 +263,6 @@ def setup_h3_video_routes(manager=None):
     add_job_edit_routes(router, manager, 'h3', UPLOAD_EXTENSIONS, _store_uploads)
     from routes.video_queue_routes import add_queue_routes
     add_queue_routes(router, manager, 'h3')
+    from routes.h3_lora_library_routes import add_lora_library_routes
+    add_lora_library_routes(router, manager, _owner)
     return router

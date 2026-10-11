@@ -198,6 +198,35 @@ separate row to keep its strength independent of age. Desktop and iOS support
 the same age range, including batch jobs, queued edits, reruns, bulk edits and
 workflow exports/imports. Other adapters retain their normal −4…4 range.
 
+### Add and configure your own LoRAs
+
+Open **Manage LoRAs** beside the H3 adapter stack. You can upload a
+`.safetensors` adapter, paste its Hugging Face file link, or enter a repository
+and exact filename. Downloads run on the Odysseus server and report progress.
+The library also lists installed adapters so you can configure files you
+already have. Uploads and downloads validate the adapter before adding it to
+the library.
+
+Each adapter can store a display name, trigger text and its placement, notes,
+its H3 model family, and a labeled strength control with a minimum, maximum,
+step and default. You can save recommended steps, sampler, scheduler, video
+and audio shifts, dimensions, frame count, reference sizing and seed. These
+fields use settings the H3 worker supports; record any other instructions in
+Notes. A profile does not convert an adapter made for another model into an
+H3 adapter.
+
+Saving a profile does not change the current prompt or render settings. Use
+**Insert trigger** to put the saved text into the visible prompt, and **Apply
+settings** to copy its recommended settings into the current draft. Review
+the resulting draft before adding jobs. Selecting an adapter with a custom
+strength control uses its default, while reopening a saved draft preserves the
+saved strength.
+
+Profiles are stored with the server's adapter files, shared by desktop and
+iOS, and included in exported H3 workflows. Importing a workflow restores a
+missing profile but keeps an existing local profile when they differ. Signed
+strengths and the profile used for validation are saved with submitted jobs.
+
 Full-width H3 LoRAs, including Larry's
 `minimax_h3_turbo_v4_step600_ema.safetensors`, can also be used with the pruned
 H3 transformers. These transformers compress their time-conditioning input
