@@ -1,6 +1,7 @@
 """Queued edits retain remote media and preserve the unsent draft on conflicts."""
 from pathlib import Path
 import shutil
+import re
 import subprocess
 
 import pytest
@@ -13,6 +14,8 @@ def run_js(script):
     if not node:
         pytest.skip('Node.js is required for queued editor checks')
     source = (ROOT / 'static/js/videoJobEdit.js').read_text()
+    source = (ROOT / 'static/js/videoInputs.js').read_text() + '\n' + source
+    source = re.sub(r'^import .*;\n', '', source, flags=re.MULTILINE)
     subprocess.run([node, '--input-type=module', '-e',
                     "import assert from 'node:assert/strict';\n" + source + '\n' + script],
                    check=True, capture_output=True, text=True)
@@ -48,6 +51,19 @@ assert.equal(body.get('reference_videos').name,'new.mp4');
 assert.equal(body.get('reference_videos').size,9);
 assert.equal(body.get('first_frame'),null);
 assert.equal(JSON.parse(body.get('config')).prompt,'Changed');
+''')
+
+
+def test_edit_server_descriptors_index_new_inputs_without_counting_retained_media():
+    run_js(r'''
+const server=serverVideoInput({root:'f',path:'clips/source.mp4',size:1000,mtime_ns:'1780000000123456789'});
+const file=new File(['local'],'new.mp4');
+const body=videoJobEditFormData({revision:9},{prompt:'edit'},
+ {reference_videos:[server,file]}, {reference_videos:[{index:2,name:'keep.mp4'}]});
+assert.deepEqual(JSON.parse(body.get('retain_inputs')),{reference_videos:[2]});
+assert.equal(JSON.parse(body.get('server_inputs')).reference_videos[0].index,0);
+assert.deepEqual(body.getAll('reference_videos'),[file]);
+assert.equal(body.get('revision'),'9');
 ''')
 
 

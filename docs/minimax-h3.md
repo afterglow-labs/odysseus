@@ -414,28 +414,51 @@ refresh loses files not yet queued; confirmed server jobs continue independently
 **Clear list** clears the local list without deleting any server jobs. Remove
 and re-add an unqueued file to use changed settings instead of its saved snapshot.
 
-## Selecting videos stored on the server from iPhone
+## Selecting videos stored on the server
 
-Video inputs in the iOS client offer **Photos**, **Files**, and **Server files**.
-Choose **Server files** to browse the Odysseus computer's `E:` drive, open folders,
-search the current folder, and select videos. Choose **Use video** or **Use N**
+Video inputs in the desktop workflow offer **Server files** alongside local file
+selection. The iOS client offers **Photos**, **Files**, and **Server files**.
+Choose **Server files**, then choose `E:` or `F:` in **Drive** to browse the
+Odysseus computer. Open folders, search the current folder, and select videos.
+Choose **Use video** or **Use N**
 to attach the selection. In **Batch job**, select multiple server videos to
 create one job per video with the same prompt and settings, including automatic
 duration selection. With batch mode off, selected videos remain references in
 one job. BFS target and mask video inputs support the same picker.
 
-The phone sends file selections only. The server copies each selected input into
+The client sends file selections only. The server copies each selected input into
 that job's private folder when queued; editing, retrying and exporting the job
-use this saved copy. The originals remain on `E:`. Mixed phone/server references
+use this saved copy. The originals remain on their server drive. Mixed phone/server references
 keep their attachment order. A file changed or removed since selection must be
 selected again. Existing accepted submissions can be retried without reopening
 the original file.
 
-On WSL the default drive is `/mnt/e`; it must be mounted on the server. Browsing
+On WSL the default drives are `/mnt/e` and `/mnt/f`; each must be mounted on the server. Browsing
 uses the same administrator authentication as the video workflows. To configure
 different media folders, set `ODYSSEUS_VIDEO_BROWSE_ROOTS` to a JSON map, such as
-`{"e":"/mnt/e","videos":"/home/corey/Videos"}`, and restart the server. The
+`{"e":"/mnt/e","f":"/mnt/f","videos":"/home/corey/Videos"}`, and restart the server. This setting replaces
+the default roots, so include both drives if you want to retain them. The
 picker exposes folders and supported video files inside those roots.
+
+To mount `F:` whenever WSL starts, add this entry to `/etc/fstab` (once):
+
+```fstab
+F: /mnt/f drvfs defaults,nofail,_netdev 0 0
+```
+
+Enable `mountFsTab=true` in the `[automount]` section of `/etc/wsl.conf`, preserving
+its other settings. Mount it now without stopping running jobs:
+
+```bash
+sudo mkdir -p /mnt/f
+sudo mount /mnt/f
+```
+
+Mapped network drives must be connected in Windows for WSL to mount them. The
+server browser marks an unmounted drive unavailable instead of browsing an empty
+Linux mountpoint directory. The authenticated `/api/video/{h3,bfs}/server-file-roots`
+endpoint lists configured drive IDs, names and availability independently of
+directory browsing; desktop can select `F:` even when `E:` is disconnected.
 
 ## Moving workflows to another installation
 

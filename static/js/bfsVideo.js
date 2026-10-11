@@ -3,6 +3,8 @@ import { topPortalZ } from './toolWindowZOrder.js';
 import { showVideoWorkflowExportOptions } from './h3Video.js';
 import * as videoWorkflow from './videoWorkflow.js';
 import { createVideoBatchQueue } from './videoBatch.js';
+import { appendVideoInputs } from './videoInputs.js';
+import { showVideoServerFiles } from './videoServerFiles.js';
 import { createVideoJobEditor, videoJobEditFormData } from './videoJobEdit.js';
 import { createVideoQueueControls, videoQueueField } from './videoQueue.js';
 import { createVideoJobReruns } from './videoJobRerun.js';
@@ -54,6 +56,7 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
   let closed = false, inventory = null, workflow = null, loading = false, submitting = false, polling = false;
   let jobs = [], pollTimer, saved = {}, pendingPreferred = preferred, preferredAdapter = '', refreshFailed = false;
   let transferBusy = false, editRevision = 0, batchQueue = null, jobEditor = null, queueControls = null;
+  let serverPicker = null;
   const controls = new Map(), slots = new Map(), files = new Map(), drafts = new Map(), jobNodes = new Map(), stopping = new Set(), deleting = new Set(), deletedJobs = new Set();
   try { saved = JSON.parse(localStorage.getItem(STORAGE)) || {}; } catch {}
   const overlay = el('div', 'cookbook-edit-overlay bfs-video-overlay'); overlay.style.zIndex = String(topPortalZ());
@@ -96,7 +99,9 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
     if (mediaType === 'video') { preview.controls = true; preview.playsInline = true; preview.preload = 'metadata'; }
     else preview.alt = label;
     const remove = button('Remove file'); remove.hidden = true; remove.setAttribute('aria-label', `Remove ${label.toLowerCase()}`);
-    const state = { file: null, retained: null, url: null, input, wrap, preview, remove, name, labelNode, hint, label, help, allowed: false, required: false };
+    const serverFiles = mediaType === 'video' ? button('Server files') : null;
+    if (serverFiles) serverFiles.hidden = true;
+    const state = { file: null, retained: null, url: null, input, wrap, preview, remove, name, labelNode, hint, label, help, serverFiles, allowed: false, required: false };
     function clear(clearInput = true) {
       editRevision++;
       if (state.url) URL.revokeObjectURL(state.url);
@@ -106,9 +111,12 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
     }
     function setFile(selected) {
       clear(); if (!selected) return;
-      state.file = selected; state.url = URL.createObjectURL(selected); preview.src = state.url;
-      const transfer = new DataTransfer(); transfer.items.add(selected); input.files = transfer.files;
-      preview.hidden = false; remove.hidden = false; name.textContent = `${selected.name} · ${(selected.size / 1048576).toFixed(1)} MB`;
+      state.file = selected;
+      if (!selected.serverFile) {
+        state.url = URL.createObjectURL(selected); preview.src = state.url;
+        const transfer = new DataTransfer(); transfer.items.add(selected); input.files = transfer.files; preview.hidden = false;
+      }
+      remove.hidden = false; name.textContent = `${selected.name} · ${(selected.size / 1048576).toFixed(1)} MB${selected.serverFile ? ` · ${selected.serverFile.root.toUpperCase()}:/${selected.serverFile.path}` : ''}`;
       setError(''); updateReady();
     }
     state.clear = clear; state.setFile = setFile;
@@ -119,7 +127,11 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
       updateReady();
     };
     input.addEventListener('change', () => { const selected = input.files?.[0]; if (selected) setFile(selected); });
-    remove.onclick = () => clear(); wrap.append(labelNode, hint, input, name, preview, remove); inputGrid.appendChild(wrap); files.set(key, state);
+    if (serverFiles) serverFiles.onclick = () => {
+      serverPicker = showVideoServerFiles({ family: 'bfs', onSelect: selected => { if (!closed && selected[0]) setFile(selected[0]); } }, serverFiles);
+    };
+    remove.onclick = () => clear(); wrap.append(labelNode, hint, input); if (serverFiles) wrap.append(serverFiles);
+    wrap.append(name, preview, remove); inputGrid.appendChild(wrap); files.set(key, state);
   }
   addUpload('identity_image', 'Identity image', 'image/jpeg,image/png,image/webp', 'img', 'The face or identity to apply to the video.');
   addUpload('source_video', 'Target video', 'video/*', 'video', 'The video whose movement and background you want to keep.');
@@ -234,6 +246,11 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
       : refreshFailed || !inventory?.runtime_ready ? inventory?.runtime_error || 'The BFS runtime is not ready.' : '';
     batchQueue?.setEnabled(!issue, issue, { snapshotEnabled: !snapshotReason, snapshotReason });
     batchQueue?.setAvailable(!editing && !!workflow && files.get('source_video').allowed);
+    batchQueue?.setServerFilesAvailable?.(inventory?.server_video_files === true);
+    for (const state of files.values()) if (state.serverFiles) {
+      state.serverFiles.hidden = inventory?.server_video_files !== true;
+      state.serverFiles.disabled = !state.allowed || submitting || transferBusy || batchBusy;
+    }
     batchContainer.hidden = editing || !workflow || !files.get('source_video').allowed;
     for (const [id, nodes] of jobNodes) nodes.edit.disabled = queueBusy || !!queueControls?.editing || editing || editLoading || batchBusy || transferBusy || loading || submitting || !inventory || stopping.has(id);
     queueControls?.setBlocked(editing || editLoading || batchBusy || transferBusy || loading || submitting || stopping.size > 0 || deleting.size > 0);
@@ -527,7 +544,7 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
       Object.fromEntries([...files].filter(([, state]) => state.allowed && state.retained).map(([key, state]) => [key, [state.retained]]))) : new FormData();
     if (!editing) {
       body.append('config', JSON.stringify(values));
-      for (const [key, state] of files) if (state.allowed && state.file) body.append(key, state.file, state.file.name);
+      appendVideoInputs(body, Object.fromEntries([...files].filter(([, state]) => state.allowed && state.file).map(([key, state]) => [key, [state.file]])));
     }
     submitting = true; submissionStatus.hidden = true; updateReady();
     try {
@@ -546,7 +563,7 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
   form.addEventListener('change', () => { save(); updateReady(); });
   refresh.onclick = () => loadInventory(); refreshJobs.onclick = loadJobs;
   const onKey = event => {
-    if (document.querySelector('.video-workflow-export-overlay')) return;
+    if (document.querySelector('.video-workflow-export-overlay, .video-server-files-overlay')) return;
     if (event.key === 'Escape') {
       event.preventDefault(); event.stopImmediatePropagation();
       const confirming = [...jobNodes.values()].find(nodes => !nodes.deletion.hidden);
@@ -564,6 +581,7 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
   // button (or explicit programmatic teardown) may discard this live draft.
   const close = bindMenuDismiss(overlay, () => {
     closed = true; clearInterval(pollTimer); window.removeEventListener('keydown', onKey, true);
+    serverPicker?.close();
     batchQueue?.destroy(); queueControls?.destroy();
     for (const state of files.values()) if (state.url) URL.revokeObjectURL(state.url);
     overlay.remove(); if (anchor?.isConnected) anchor.focus();

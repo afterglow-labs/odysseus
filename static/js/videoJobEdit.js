@@ -1,13 +1,12 @@
 // Editing replaces one queued record in place; it never submits a new job.
+import { appendVideoInputs } from './videoInputs.js';
 export function videoJobEditFormData(edit, config, uploads, retained) {
   const body = new FormData();
   body.append('config', JSON.stringify(config));
   body.append('revision', String(edit.revision));
   body.append('retain_inputs', JSON.stringify(Object.fromEntries(
     Object.entries(retained).map(([key, items]) => [key, items.map(item => item.index)]))));
-  for (const [key, items] of Object.entries(uploads)) {
-    for (const file of items) body.append(key, file, file.name);
-  }
+  appendVideoInputs(body, uploads);
   return body;
 }
 

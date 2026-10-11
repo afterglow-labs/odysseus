@@ -38,11 +38,13 @@ def media_roots():
     """ODYSSEUS_VIDEO_BROWSE_ROOTS is a JSON map or list of named root objects."""
     raw = os.environ.get('ODYSSEUS_VIDEO_BROWSE_ROOTS', '').strip()
     if not raw:
-        return [MediaRoot('e', 'E:', Path('E:\\') if os.name == 'nt' else Path('/mnt/e'))]
+        return [MediaRoot(drive, f'{drive.upper()}:',
+                          Path(f'{drive.upper()}:\\') if os.name == 'nt' else Path('/mnt') / drive)
+                for drive in ('e', 'f')]
     try:
         data = json.loads(raw)
         if isinstance(data, dict):
-            data = [{'id': key, 'name': 'E:' if key == 'e' else key, 'path': value}
+            data = [{'id': key, 'name': f'{key.upper()}:' if key in {'e', 'f'} else key, 'path': value}
                     for key, value in data.items()]
         if not isinstance(data, list) or not 1 <= len(data) <= 32:
             raise ValueError()
@@ -91,6 +93,15 @@ def _available(root):
         return root.path.is_dir() and not _linked(root.path)
     except OSError:
         return False
+
+
+def _root_summaries(roots):
+    return [{'id': item.id, 'name': item.name, 'available': _available(item)} for item in roots]
+
+
+def list_server_video_roots():
+    """Discover configured drives even when the previously selected drive is offline."""
+    return {'roots': _root_summaries(media_roots())}
 
 
 def _root(roots, identity):
@@ -214,7 +225,7 @@ def list_server_videos(*, root='e', path='', offset=0, limit=200, search=''):
             os.close(handle)
     entries.sort(key=lambda item: (item['kind'] != 'directory', item['name'].casefold(), item['name']))
     end = offset + limit
-    return {'roots': [{'id': item.id, 'name': item.name, 'available': _available(item)} for item in roots],
+    return {'roots': _root_summaries(roots),
             'root': root, 'path': '/'.join(parts), 'parent_path': '/'.join(parts[:-1]) if parts else None,
             'entries': entries[offset:end], 'total': len(entries),
             'has_more': end < len(entries), 'next_offset': end if end < len(entries) else None}

@@ -1,6 +1,7 @@
 """Bulk uploads keep ordinary multi-reference jobs and retry identities separate."""
 from pathlib import Path
 import shutil
+import re
 import subprocess
 
 import pytest
@@ -13,9 +14,49 @@ def run_js(script):
     if not node:
         pytest.skip('Node.js is required for batch queue checks')
     source = (ROOT / 'static/js/videoBatch.js').read_text()
+    source = (ROOT / 'static/js/videoInputs.js').read_text() + '\n' + source
+    source = re.sub(r'^import .*;\n', '', source, flags=re.MULTILINE)
     subprocess.run([node, '--input-type=module', '-e',
                     "import assert from 'node:assert/strict';\n" + source + '\n' + script],
                    check=True, capture_output=True, text=True)
+
+
+def test_server_batch_keeps_drive_identity_and_never_uploads_server_video_bytes():
+    run_js(r'''
+const remote=(root,path)=>serverVideoInput({root,path,size:123456,mtime_ns:'1780000000000000001'});
+const e=remote('e','folder/clip.mp4'),f=remote('f','folder/clip.mp4');
+const phone=new File(['phone-video'],'local.mp4'),reference=remote('f','refs/reference.mp4');
+const bodies=[];
+const queue=new VideoBatchQueue({family:'h3',getSnapshot:()=>({config:{prompt:'same'},videoField:'source_video',autoVideoLength:true,uploads:{reference_videos:[phone,reference]}}),submit:async(family,item)=>{bodies.push(videoBatchFormData(item));return{id:item.id}}});
+assert.equal(queue.add([e,f,e]).added,2);await queue.run();
+assert.equal(bodies.length,2);
+for(const body of bodies){
+ assert.equal(body.getAll('source_video').length,0);
+ assert.equal(body.getAll('reference_videos').length,1);
+ assert.equal(await body.get('reference_videos').text(),'phone-video');
+ assert.equal(body.get('auto_video_length'),'true');
+ const map=JSON.parse(body.get('server_inputs'));
+ assert.equal(map.source_video[0].index,0);
+ assert.equal(map.reference_videos[0].index,1);
+ assert.equal(map.reference_videos[0].root,'f');
+ assert.equal(map.reference_videos[0].mtime_ns,'1780000000000000001');
+ assert.equal(body.getAll('server_inputs').length,1);
+}
+assert.deepEqual(bodies.map(body=>JSON.parse(body.get('server_inputs')).source_video[0].root),['e','f']);
+assert.ok(Object.isFrozen(e.serverFile));
+''')
+
+
+def test_mixed_reference_order_and_nanosecond_precision_survive_multipart():
+    run_js(r'''
+const make=path=>serverVideoInput({root:'f',path,size:100,mtime_ns:'1780000000123456789'});
+const local=new File(['local'],'local.mp4');const body=new FormData();
+appendVideoInputs(body,{reference_videos:[make('first.mp4'),local,make('third.mp4')],reference_images:[new File(['img'],'img.png')]});
+assert.deepEqual(JSON.parse(body.get('server_inputs')).reference_videos.map(item=>item.index),[0,2]);
+assert.deepEqual(body.getAll('reference_videos'),[local]);
+assert.equal(body.get('reference_images').name,'img.png');
+assert.throws(()=>serverVideoInput({root:'f',path:'bad.mp4',size:2,mtime_ns:1780000000123456789}),/invalid video selection/);
+''')
 
 
 def test_200_jobs_capture_one_snapshot_and_one_video_each_with_shared_images_audio():

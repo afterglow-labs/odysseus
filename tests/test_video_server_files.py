@@ -85,6 +85,39 @@ def test_auth_checked_before_listing(drive, monkeypatch):
     assert called == [dict(root='e', path='TV Shows', search='clip', offset=3, limit=10)]
 
 
+@pytest.mark.parametrize('family', ['h3', 'bfs'])
+def test_authenticated_root_discovery_can_find_f_when_e_is_unavailable(tmp_path, monkeypatch, family):
+    from routes import video_server_file_routes
+    missing_e, drive_f = tmp_path / 'E', tmp_path / 'F'
+    make_file(drive_f)
+    monkeypatch.setenv('ODYSSEUS_VIDEO_BROWSE_ROOTS', json.dumps({'e': str(missing_e), 'f': str(drive_f)}))
+    called = []
+    original = video_server_file_routes.list_server_video_roots
+    monkeypatch.setattr(video_server_file_routes, 'list_server_video_roots',
+                        lambda: called.append(True) or original())
+    router = APIRouter(prefix=f'/api/video/{family}')
+    def owner(request):
+        if request.headers.get('x-user') != 'admin':
+            raise HTTPException(403, 'Admin required')
+        return 'admin'
+    video_server_file_routes.add_server_video_file_routes(router, owner)
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+    endpoint = f'/api/video/{family}'
+    assert client.get(endpoint + '/server-file-roots').status_code == 403
+    assert called == []
+    headers = {'x-user': 'admin'}
+    response = client.get(endpoint + '/server-file-roots', headers=headers)
+    assert response.status_code == 200 and response.headers['cache-control'] == 'private, no-store'
+    assert response.json() == {'roots': [{'id': 'e', 'name': 'E:', 'available': False},
+                                         {'id': 'f', 'name': 'F:', 'available': True}]}
+    assert called == [True] and str(tmp_path) not in response.text
+    assert client.get(endpoint + '/server-files?root=e', headers=headers).status_code == 503
+    listing = client.get(endpoint + '/server-files?root=f', headers=headers)
+    assert listing.status_code == 200 and listing.json()['entries'][0]['name'] == 'clip.mp4'
+
+
 @pytest.mark.parametrize('path', ['../outside', '/etc', 'TV/../elsewhere', 'TV//nested', './TV', 'C:\\Users', 'TV\\file.mp4', 'clip\x00.mp4'])
 def test_browser_rejects_traversal_and_cross_platform_absolute_paths(drive, path):
     with pytest.raises(HTTPException) as error:
@@ -110,12 +143,47 @@ def test_browser_and_submission_reject_symlink_ancestors(drive, tmp_path):
     assert error.value.status_code == 400
 
 
-def test_unmounted_drive_is_not_an_empty_linux_folder(monkeypatch):
+@pytest.mark.parametrize('root', ['e', 'f'])
+def test_unmounted_drive_is_not_an_empty_linux_folder(monkeypatch, root):
     monkeypatch.delenv('ODYSSEUS_VIDEO_BROWSE_ROOTS', raising=False)
     monkeypatch.setattr(media.os.path, 'ismount', lambda _path: False)
     with pytest.raises(HTTPException) as error:
-        media.list_server_videos()
-    assert error.value.status_code == 503 and 'Mount or reconnect' in error.value.detail
+        media.list_server_videos(root=root)
+    assert error.value.status_code == 503 and f'{root.upper()}: is unavailable' in error.value.detail
+
+
+def test_default_roots_advertise_both_windows_drives(monkeypatch):
+    monkeypatch.delenv('ODYSSEUS_VIDEO_BROWSE_ROOTS', raising=False)
+    roots = media.media_roots()
+    assert [(root.id, root.name) for root in roots] == [('e', 'E:'), ('f', 'F:')]
+    assert [str(root.path) for root in roots] == (['E:\\', 'F:\\'] if os.name == 'nt' else ['/mnt/e', '/mnt/f'])
+
+
+def test_f_drive_selection_copies_from_f_not_the_same_path_on_e(tmp_path, monkeypatch):
+    drives = {identity: tmp_path / identity for identity in ('e', 'f')}
+    for identity, drive in drives.items():
+        make_file(drive, 'TV Shows/Cuts/clip.mp4', f'{identity} video'.encode())
+    monkeypatch.setenv('ODYSSEUS_VIDEO_BROWSE_ROOTS', json.dumps({key: str(value) for key, value in drives.items()}))
+    listing = media.list_server_videos(root='f', path='TV Shows/Cuts')
+    assert listing['roots'] == [{'id': 'e', 'name': 'E:', 'available': True},
+                                {'id': 'f', 'name': 'F:', 'available': True}]
+    assert listing['root'] == 'f' and listing['parent_path'] == 'TV Shows'
+    selected = dict(listing['entries'][0]['selection'], index=0)
+    assert selected['root'] == 'f' and selected['path'] == 'TV Shows/Cuts/clip.mp4'
+    async def run():
+        async with media.server_video_inputs(inputs({'source_video': [selected]}), {}, VIDEO_FIELDS) as uploads:
+            assert await uploads['source_video'][0].read() == b'f video'
+    asyncio.run(run())
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='WSL drive mount validation')
+def test_f_subfolder_requires_its_drive_mount(monkeypatch):
+    checked = []
+    monkeypatch.setattr(media.os.path, 'ismount', lambda path: checked.append(path) or False)
+    monkeypatch.setattr(Path, 'is_dir', lambda _path: True)
+    root = media.MediaRoot('f', 'F:', Path('/mnt/f/TV Shows'))
+    assert not media._available(root)
+    assert checked == [Path('/mnt/f')]
 
 
 def test_missing_root_and_bad_configuration(drive, monkeypatch):

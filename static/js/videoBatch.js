@@ -1,5 +1,7 @@
 // A batch is a series of ordinary jobs, each with exactly one input video.
 // File objects remain streamed uploads; no video bytes are buffered in JS.
+import { appendVideoInputs } from './videoInputs.js';
+import { showVideoServerFiles } from './videoServerFiles.js';
 const VIDEO = /\.(mp4|mov|m4v|webm|mkv|avi)$/i;
 const fieldFor = family => {
   if (family === 'h3') return 'reference_videos';
@@ -7,7 +9,8 @@ const fieldFor = family => {
   throw new Error('Unknown video workflow family.');
 };
 const identity = () => crypto.randomUUID?.() || Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
-const fileKey = file => JSON.stringify([file.webkitRelativePath || file.name, file.size, file.lastModified]);
+const fileKey = file => file.serverFile ? JSON.stringify(['server', file.serverFile.root, file.serverFile.path, file.size, file.serverFile.mtime_ns])
+  : JSON.stringify([file.webkitRelativePath || file.name, file.size, file.lastModified]);
 // Keep unsubmitted File objects when a workflow panel is closed and reopened.
 // They live only in this page, never in localStorage or another user's session.
 const sessions = new Map();
@@ -26,10 +29,7 @@ export function videoBatchFormData(item) {
   const body = new FormData();
   body.append('config', JSON.stringify(item.snapshot.config));
   if (item.snapshot.autoVideoLength) body.append('auto_video_length', 'true');
-  for (const [field, files] of Object.entries(item.snapshot.uploads)) {
-    for (const file of files) body.append(field, file, file.name);
-  }
-  body.append(item.snapshot.videoField, item.file, item.file.name);
+  appendVideoInputs(body, { ...item.snapshot.uploads, [item.snapshot.videoField]: [item.file] });
   return body;
 }
 
@@ -160,6 +160,7 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
   drop.append(node('strong', '', 'Drop all your videos here'), node('span', 'h3-video-muted', 'or click to select multiple videos · MP4, MOV, M4V, WebM, MKV, AVI'));
   const input = node('input'); input.type = 'file'; input.multiple = true; input.accept = '.mp4,.mov,.m4v,.webm,.mkv,.avi'; input.hidden = true; input.dataset.batchFiles = '';
   content.append(drop, input);
+  const serverFiles = action('Server files'); serverFiles.hidden = true; content.appendChild(serverFiles);
   const note = node('p', 'h3-video-muted'); note.setAttribute('role', 'status'); content.appendChild(note);
   const list = node('ol', 'video-batch-list'); list.setAttribute('aria-label', 'Batch videos'); content.appendChild(list);
   const progress = node('progress', 'video-batch-progress'); progress.hidden = true; progress.setAttribute('aria-label', 'Current video upload'); content.appendChild(progress);
@@ -197,6 +198,7 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
     const uploading = queue.items.find(item => item.status === 'uploading');
     const readyFor = state => enabled || snapshotEnabled && queue.items.filter(item => item.status === state).every(item => item.snapshot);
     toggle.disabled = queue.running; input.disabled = queue.running; autoLength.disabled = queue.running;
+    serverFiles.disabled = queue.running;
     drop.setAttribute('aria-disabled', String(queue.running));
     for (const [id, row] of rows) if (!queue.items.some(item => item.id === id)) { row.remove(); rows.delete(id); }
     for (const item of queue.items) {
@@ -210,7 +212,8 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
       }
       row.dataset.status = item.status; row._remove.disabled = queue.running;
       row._state.textContent = item.status === 'queued' ? ['Queued', videoBatchLengthLabel(item.job), item.job.id].filter(Boolean).join(' · ') : item.status === 'error' ? item.error
-        : item.status === 'uploading' ? item.progress?.waiting ? item.snapshot?.autoVideoLength ? 'Detecting video length and queueing…' : 'Waiting for server…' : 'Uploading…' : 'Waiting to upload';
+        : item.status === 'uploading' ? item.progress?.waiting ? item.snapshot?.autoVideoLength ? 'Detecting video length and queueing…' : 'Waiting for server…' : item.file.serverFile ? 'Adding server video…' : 'Uploading…'
+          : item.file.serverFile ? 'Ready to queue · server file' : 'Ready to upload · click Queue videos';
     }
     progress.hidden = !uploading;
     if (uploading?.progress?.total) { progress.max = uploading.progress.total; progress.value = uploading.progress.loaded; }
@@ -237,6 +240,8 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
   toggle.onchange = () => { content.hidden = !toggle.checked; sessions.get(family).checked = toggle.checked; notifyHost(); render(); };
   autoLength.onchange = () => { sessions.get(family).autoVideoLength = autoLength.checked; describeVideoField(videoField); notifyHost(); render(); };
   input.onchange = () => { add(input.files || []); input.value = ''; };
+  let picker = null;
+  serverFiles.onclick = () => { if (!queue.running) picker = showVideoServerFiles({ family, multiple: true, onSelect: add }, serverFiles); };
   drop.onclick = () => { if (!queue.running) input.click(); };
   drop.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); drop.click(); } };
   for (const eventName of ['dragenter', 'dragover', 'dragleave', 'drop']) drop.addEventListener(eventName, event => {
@@ -254,6 +259,7 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
   pauseButton.onclick = () => queue.pause(); clearButton.onclick = () => { queue.clear(); note.textContent = ''; error.hidden = true; };
   render();
   return {
+    setServerFilesAvailable(value) { serverFiles.hidden = !value; },
     setVideoField: describeVideoField,
     setEnabled(value, explanation = '', saved = {}) {
       enabled = !!value; reason = explanation;
@@ -265,6 +271,7 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
     get active() { return available && toggle.checked; }, get busy() { return queue.running; },
     get autoVideoLength() { return family === 'h3' && (videoField === 'source_video' || autoLength.checked); },
     destroy() {
+      picker?.close();
       destroyed = true; queue.dispose(); queue.onChange = () => {}; queue.onJob = () => {};
       queue.getSnapshot = () => { throw new Error('Reopen the workflow panel to queue these files.'); };
     },

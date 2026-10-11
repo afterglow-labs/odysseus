@@ -14,7 +14,7 @@ def run_js(script):
     node = shutil.which("node")
     if not node:
         pytest.skip("Node.js is required for H3 UI checks")
-    source = (ROOT / "static/js/videoJobRerun.js").read_text() + '\n' + (ROOT / "static/js/h3Loras.js").read_text() + '\n' + (ROOT / "static/js/h3Video.js").read_text()
+    source = (ROOT / "static/js/videoInputs.js").read_text() + "\n" + (ROOT / "static/js/videoJobRerun.js").read_text() + '\n' + (ROOT / "static/js/h3Loras.js").read_text() + '\n' + (ROOT / "static/js/h3Video.js").read_text()
     source = re.sub(r"^import .*;\n", "", source, flags=re.MULTILINE)
     result = subprocess.run(
         [node, "--input-type=module", "-e", "import assert from 'node:assert/strict';\n" + source + DOM + script],
@@ -61,6 +61,8 @@ let queueOptions;
 const createVideoQueueControls=options=>(queueOptions=options,{busy:false,editing:false,setBlocked(){},update(){},destroy(){}});
 const videoQueueField=(key,label,control,numeric)=>({key,label,control,numeric});
 const videoJobEditFormData=()=>new FormData();
+let serverPickerOptions;
+const showVideoServerFiles=options=>{serverPickerOptions=options;return{close(){}};};
 const components=[
  {id:'ref',role:'model',variant:'ref2va',name:'Ref2VA'},
  {id:'fl',role:'model',variant:'fl2va',name:'FL2VA'},
@@ -108,6 +110,30 @@ assert.equal(byId('frames').value,'124');assert.equal(byId('prompt').value,'Keep
 """)
 
 
+def test_server_picker_appends_multiple_references_and_replaces_single_vfx_source():
+    run_js(r"""
+inventory.server_video_files=true;
+showH3Video();await flush();await change('prompt','Keep the scene');
+const buttonFor=key=>byId(key).parentElement.children.find(node=>node.textContent==='Server files');
+const remote=name=>serverVideoInput({root:'f',path:`Videos/${name}`,size:1000,mtime_ns:'1780000000123456789'});
+const local=source();await attach('reference_videos',local);
+assert.equal(buttonFor('reference_videos').hidden,false);
+buttonFor('reference_videos').onclick();assert.equal(serverPickerOptions.multiple,true);
+serverPickerOptions.onSelect([remote('one.mp4'),remote('two.mp4')]);
+await form().fire('submit');
+const body=calls.find(call=>call.method==='POST'&&call.url.endsWith('/jobs')).body;
+assert.equal(body.getAll('reference_videos').length,1);
+assert.deepEqual(JSON.parse(body.get('server_inputs')).reference_videos.map(item=>item.index),[1,2]);
+await change('lora','vfx');buttonFor('source_video').onclick();assert.equal(serverPickerOptions.multiple,false);
+serverPickerOptions.onSelect([remote('target.mp4')]);
+buttonFor('source_video').onclick();serverPickerOptions.onSelect([remote('replacement.mp4')]);
+batch.active=true;batch.onChange();const snapshot=batch.getSnapshot();
+assert.equal(snapshot.uploads.reference_videos.length,3);
+assert.equal(snapshot.videoField,'source_video');
+assert.equal(snapshot.uploads.source_video,undefined);
+""")
+
+
 def test_vfx_keeps_images_videos_and_audio_as_separate_references_and_sends_image_context():
     run_js(r"""
 showH3Video();await flush();await change('prompt','Use the jacket in <Picture 1>');
@@ -122,8 +148,8 @@ assert.equal(body.getAll('reference_images').length,1);assert.equal(body.getAll(
 const payload=JSON.parse(body.get('config'));
 assert.equal(payload.recipe,'vfx_edit');assert.equal(payload.reference_counts.source_video,1);
 assert.equal(payload.reference_counts.reference_images,1);assert.equal(payload.reference_counts.reference_videos,1);assert.equal(payload.reference_counts.reference_audio,1);
-assert.equal(byId('reference_videos').parentElement.children[2].children[0].children[0].textContent.startsWith('<Video 1>'),true);
-assert.equal(byId('source_video').parentElement.children[2].children[0].children[0].textContent.startsWith('Source video'),true);
+assert.equal(byId('reference_videos').parentElement.children.find(child=>child.className==='h3-video-file-list').children[0].children[0].textContent.startsWith('<Video 1>'),true);
+assert.equal(byId('source_video').parentElement.children.find(child=>child.className==='h3-video-file-list').children[0].children[0].textContent.startsWith('Source video'),true);
 """)
 
 
@@ -132,8 +158,8 @@ def test_vfx_batch_uses_each_source_with_shared_reference_videos_and_ordinary_ba
 showH3Video();await flush();await change('prompt','Glow');
 const refs=[source(),new File(['two'],'second.mp4')];
 await attach('reference_videos',...refs);await change('lora','vfx');
-assert.equal(byId('reference_videos').parentElement.children[2].children.length,2);
-assert.equal(byId('source_video').parentElement.children[2].children.length,0);
+assert.equal(byId('reference_videos').parentElement.children.find(child=>child.className==='h3-video-file-list').children.length,2);
+assert.equal(byId('source_video').parentElement.children.find(child=>child.className==='h3-video-file-list').children.length,0);
 batch.active=true;batch.onChange();
 assert.equal(batch.enabled,true);const snapshot=batch.getSnapshot();
 assert.equal(snapshot.videoField,'source_video');assert.equal(snapshot.config.lora,'vfx');
@@ -185,12 +211,12 @@ editorOptions.applyEdit({config:{...defaults,lora:'vfx',prompt:'Glow',frames:73}
 assert.equal(byId('frames').value,'73');assert.equal(byId('frames').disabled,true);
 assert.equal(byId('first_frame').parentElement.hidden,false);assert.equal(byId('first_frame').disabled,true);
 assert.equal(generate().disabled,true);
-byId('first_frame').parentElement.children[2].children[0].children[1].onclick();assert.equal(generate().disabled,false);
+byId('first_frame').parentElement.children.find(child=>child.className==='h3-video-file-list').children[0].children[1].onclick();assert.equal(generate().disabled,false);
 await change('lora','turbo');assert.equal(byId('frames').value,'73');assert.equal(byId('frames').disabled,false);
 assert.equal(generate().disabled,true);assert.match(batch.issue,/editing the queued job/);
 assert.ok(elements.some(node=>node.textContent.includes('Choose a length of at least 124 frames')));
 await change('frames','124');assert.equal(generate().disabled,true);
-byId('source_video').parentElement.children[2].children[0].children[1].onclick();assert.equal(generate().disabled,false);
+byId('source_video').parentElement.children.find(child=>child.className==='h3-video-file-list').children[0].children[1].onclick();assert.equal(generate().disabled,false);
 """)
 
 
@@ -199,8 +225,8 @@ def test_modern_vfx_reference_video_is_not_promoted_to_source_and_ffp_uses_same_
 inventory.components.push({id:'ffp',role:'lora',variant:'ref2va',recipe:'vfx_edit',name:'VFX Edit FFP'});
 showH3Video();await flush();editor.active={id:'queued',revision:1};
 editorOptions.applyEdit({config:{...defaults,lora:'ffp',prompt:'Keep <Video 1> as a reference'},inputs:{source_video:[],reference_videos:[{index:0,name:'reference.mp4',size:3}]}});
-assert.equal(byId('source_video').parentElement.hidden,false);assert.equal(byId('source_video').parentElement.children[2].children.length,0);
-assert.equal(byId('reference_videos').parentElement.children[2].children.length,1);
+assert.equal(byId('source_video').parentElement.hidden,false);assert.equal(byId('source_video').parentElement.children.find(child=>child.className==='h3-video-file-list').children.length,0);
+assert.equal(byId('reference_videos').parentElement.children.find(child=>child.className==='h3-video-file-list').children.length,1);
 await form().fire('submit');assert.equal(calls.filter(call=>call.method==='PATCH').length,0);
 assert.ok(elements.some(node=>node.textContent.startsWith('Choose a source video')));
 assert.equal(byId('reference_images').disabled,false);assert.equal(byId('reference_audio').disabled,false);

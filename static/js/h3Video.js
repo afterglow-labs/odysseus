@@ -6,6 +6,8 @@ import { createVideoJobEditor, videoJobEditFormData } from './videoJobEdit.js';
 import { createVideoQueueControls, videoQueueField } from './videoQueue.js';
 import { createVideoJobReruns } from './videoJobRerun.js';
 import { h3LoraStack, h3LoraIssue, createH3LoraEditor } from './h3Loras.js';
+import { appendVideoInputs } from './videoInputs.js';
+import { showVideoServerFiles } from './videoServerFiles.js';
 
 const API = '/api/video/h3';
 const STORAGE = 'odysseus-h3-video-settings-v1';
@@ -205,6 +207,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   let enhancerSelection = null, enhancerScope = null, selectionInitialized = false;
   let gpuPolling = false, gpuSnapshot = [], gpuUpdated = null, gpuController = null;
   let transferBusy = false, batchQueue = null, inventoryLoading = false, jobEditor = null, queueControls = null, loraTouched = false;
+  let serverPicker = null;
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(STORAGE)) || {}; } catch {}
   let appliedPresetRevision = saved._installedPresetRevision || '';
@@ -310,14 +313,16 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     const input = el('input'); input.type = 'file'; input.accept = accept; input.multiple = multiple;
     input.id = 'h3-' + key; heading.htmlFor = input.id;
     const list = el('ul', 'h3-video-file-list');
-    const state = { files: [], retained: [], input, wrap, heading, label, multiple };
+    const serverFiles = accept === 'video/*' ? button('Server files') : null;
+    if (serverFiles) serverFiles.hidden = true;
+    const state = { files: [], retained: [], input, wrap, heading, label, multiple, serverFiles };
     const render = () => {
       list.replaceChildren();
       [...state.retained.map(file => ({ file, saved: true })), ...state.files.map(file => ({ file, saved: false }))].forEach(({ file, saved }, index) => {
         const item = el('li');
         const referenceLabel = { reference_images: 'Picture', reference_videos: 'Video', reference_audio: 'Audio' }[key];
         const prefix = key === 'source_video' ? 'Source video · ' : referenceLabel ? `<${referenceLabel} ${index + 1}> · ` : '';
-        const name = el('span', '', `${prefix}${file.name} · ${(file.size / 1048576).toFixed(1)} MB${saved ? ' · Saved on server' : ''}`);
+        const name = el('span', '', `${prefix}${file.name} · ${(file.size / 1048576).toFixed(1)} MB${saved ? ' · Saved on server' : file.serverFile ? ` · ${file.serverFile.root.toUpperCase()}:/${file.serverFile.path}` : ''}`);
         const remove = button('Remove'); remove.setAttribute('aria-label', `Remove ${file.name}`);
         remove.onclick = () => { if (saved) state.retained.splice(index, 1); else state.files.splice(index - state.retained.length, 1); editRevision++; render(); updateReady(); };
         item.append(name, remove); list.appendChild(item);
@@ -330,7 +335,16 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
       state.files = input.multiple ? [...state.files, ...selected] : selected.slice(0, 1);
       input.value = ''; render(); setError('');
     });
-    wrap.append(heading, input, list); inputArea.appendChild(wrap); uploads[key] = state;
+    if (serverFiles) serverFiles.onclick = () => {
+      serverPicker = showVideoServerFiles({ family: 'h3', multiple: state.multiple, onSelect: selected => {
+        if (closed) return;
+        if (!state.multiple && selected.length) state.retained = [];
+        state.files = state.multiple ? [...state.files, ...selected] : selected.slice(0, 1);
+        editRevision++; render(); setError(''); updateReady();
+      } }, serverFiles);
+    };
+    wrap.append(heading, input); if (serverFiles) wrap.append(serverFiles); wrap.append(list);
+    inputArea.appendChild(wrap); uploads[key] = state;
   }
   upload('first_frame', 'First frame', 'image/jpeg,image/png,image/webp', false, 'fl2va');
   upload('last_frame', 'Last frame', 'image/jpeg,image/png,image/webp', false, 'fl2va');
@@ -441,6 +455,10 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
       const unused = vfx && ['first_frame', 'last_frame'].includes(key) || !vfx && key === 'source_video';
       state.wrap.hidden = unused ? !inputCount(key) : state.wrap.dataset.mode !== fields.mode.value || (key === batchVideoField() && batchActive());
       state.input.disabled = unused || state.wrap.dataset.mode !== fields.mode.value;
+      if (state.serverFiles) {
+        state.serverFiles.hidden = inventory?.server_video_files !== true;
+        state.serverFiles.disabled = state.input.disabled || submitting || transferBusy || !!batchQueue?.busy;
+      }
       state.input.multiple = state.multiple;
       state.heading.textContent = unused && inputCount(key) ? `${state.label} · unused in this mode` : state.label;
     }
@@ -513,6 +531,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
       : loadFailed || !inventory?.runtime_ready ? inventory?.runtime_error || 'The H3 runtime is not ready.' : '';
     batchQueue?.setEnabled(!issue, issue, { snapshotEnabled: !snapshotReason, snapshotReason });
     batchQueue?.setAvailable(!editing && fields.mode.value === 'ref2va');
+    batchQueue?.setServerFilesAvailable?.(inventory?.server_video_files === true);
     batchContainer.hidden = editing || fields.mode.value !== 'ref2va';
     for (const [id, nodes] of jobNodes) nodes.edit.disabled = queueBusy || !!queueControls?.editing || editing || editLoading || batchBusy || transferBusy || enhancing || submitting || inventoryLoading || !inventory || pendingStops.has(id);
     queueControls?.setBlocked(editing || editLoading || batchBusy || transferBusy || enhancing || submitting || inventoryLoading || pendingStops.size > 0 || pendingDeletes.size > 0);
@@ -1007,7 +1026,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
       Object.fromEntries(applicable.map(([key, state]) => [key, state.retained]))) : new FormData();
     if (!editing) {
       body.append('config', JSON.stringify(values));
-      applicable.forEach(([key, state]) => state.files.forEach(file => body.append(key, file, file.name)));
+      appendVideoInputs(body, Object.fromEntries(applicable.map(([key, state]) => [key, state.files])));
     }
     submitting = true; submissionStatus.hidden = true; save(); updateReady();
     try {
@@ -1026,7 +1045,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   form.addEventListener('change', () => { save(); updateReady(); renderGpuUsage(); });
   refresh.onclick = () => loadInventory(); refreshJobs.onclick = loadJobs;
   const onKey = event => {
-    if (document.querySelector('.video-workflow-export-overlay')) return;
+    if (document.querySelector('.video-workflow-export-overlay, .video-server-files-overlay')) return;
     if (event.key === 'Escape') {
       event.preventDefault(); event.stopImmediatePropagation();
       const confirming = [...jobNodes.values()].find(nodes => !nodes.deletion.hidden);
@@ -1045,6 +1064,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   // button (or explicit programmatic teardown) may discard this live draft.
   const close = bindMenuDismiss(overlay, () => {
     closed = true; clearInterval(timer); window.removeEventListener('keydown', onKey, true);
+    serverPicker?.close();
     batchQueue?.destroy(); queueControls?.destroy();
     enhancementController?.abort();
     gpuController?.abort();

@@ -87,6 +87,16 @@
 .h3-video-output a { display:inline-block; text-decoration:none; margin:0 0 12px; }
 .h3-video-dialog [hidden] { display:none !important; }
 .h3-video-dialog button:disabled { opacity:.5; cursor:default; }
+.video-server-files-dialog { width:min(760px,100%); }
+.video-server-files-footer { flex-shrink:0; margin:0; padding:14px 22px; border-top:1px solid var(--border,#544c60); }
+.video-server-files-location { overflow-wrap:anywhere; }
+.video-server-files-list { list-style:none; padding:0; margin:12px 0; }
+.video-server-files-row { padding:10px 0; border-bottom:1px solid var(--border,#544c60); }
+.video-server-files-row>button { width:100%; text-align:left; white-space:normal; overflow-wrap:anywhere; }
+.video-server-files-row label { display:flex; align-items:center; gap:10px; cursor:pointer; }
+.video-server-files-row label span { flex:1; overflow-wrap:anywhere; min-width:0; }
+.video-server-files-row input { flex:none; }
+.video-server-files-row small { white-space:nowrap; }
 @media (max-width:600px) {
   .h3-video-overlay { padding:8px; }
   .h3-video-dialog { max-height:calc(100dvh - 16px); }

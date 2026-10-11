@@ -1,5 +1,6 @@
 // Portable workflow transport. Large archives stream to the chosen file or
 // the browser downloader, never through a multi-GB response.blob().
+import { appendVideoInputs } from './videoInputs.js';
 const FORMAT = 'odysseus-video-workflow';
 const H3_SETTINGS = ['mode', 'width', 'height', 'frames', 'steps', 'seed', 'sampler', 'scheduler', 'shift_video', 'shift_audio', 'lora_scale', 'reference_size', 'prompt'];
 const H3_COMPONENTS = ['model', 'encoder', 'video_vae', 'audio_vae', 'lora'];
@@ -120,9 +121,7 @@ export async function exportVideoWorkflow({ family, config, uploads = {}, includ
   body.append('config', JSON.stringify(config));
   body.append('options', JSON.stringify({ include_weights: includeWeights, include_attachments: includeAttachments }));
   if (includeAttachments) {
-    for (const [field, files] of Object.entries(uploads)) {
-      for (const file of files || []) body.append(field, file, file.name);
-    }
+    appendVideoInputs(body, uploads);
   }
   const result = await jsonResponse(await fetch(endpoint + '/workflow/export', { method: 'POST', credentials: 'same-origin', body, signal }));
   const saved = await saveDownload(localUrl(result.download_url, family), { handle, filename: result.filename,

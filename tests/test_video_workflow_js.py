@@ -4,6 +4,7 @@ import base64
 import io
 import zipfile
 import shutil
+import re
 import subprocess
 
 import pytest
@@ -32,6 +33,8 @@ def run_js(script):
     if not node:
         pytest.skip('Node.js is required for workflow transport checks')
     source = (ROOT / 'static/js/videoWorkflow.js').read_text()
+    source = (ROOT / 'static/js/videoInputs.js').read_text() + '\n' + source
+    source = re.sub(r'^import .*;\n', '', source, flags=re.MULTILINE)
     subprocess.run([node, '--input-type=module', '-e',
                     "import assert from 'node:assert/strict';\n" + source + '\n' + script],
                    check=True, capture_output=True, text=True)
@@ -57,6 +60,17 @@ assert.equal(result.config.model,model.id);
 assert.throws(()=>resolveVideoWorkflow({...doc,version:99},{family:'h3',inventory:{}}),/supported/);
 assert.throws(()=>resolveVideoWorkflow({...doc,components:{model:{name:'../../secret'}}},{family:'h3',inventory:{}}),/Invalid/);
 assert.throws(()=>resolveVideoWorkflow({...doc,config:{mode:'bad'}},{family:'h3',inventory:{}}),/Unknown/);
+''')
+
+
+def test_export_server_videos_uses_descriptors_only_when_media_is_requested():
+    run_js(save_fixture() + r'''
+const video=serverVideoInput({root:'f',path:'clips/one.mp4',size:1000,mtime_ns:'1780000000123456789'});
+await exportVideoWorkflow({family:'h3',config:{prompt:'same'},inventory:{},uploads:{reference_videos:[video]},includeWeights:true,includeAttachments:true,destination:'file'});
+const body=calls.find(call=>call.options?.method==='POST').options.body;
+assert.equal(body.getAll('reference_videos').length,0);
+assert.equal(JSON.parse(body.get('server_inputs')).reference_videos[0].path,'clips/one.mp4');
+assert.equal(JSON.parse(body.get('options')).include_attachments,true);
 ''')
 
 
