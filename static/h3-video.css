@@ -88,7 +88,10 @@
 .h3-video-dialog [hidden] { display:none !important; }
 .h3-video-dialog button:disabled { opacity:.5; cursor:default; }
 .video-server-files-dialog { width:min(760px,100%); }
-.video-server-files-footer { flex-shrink:0; margin:0; padding:14px 22px; border-top:1px solid var(--border,#544c60); }
+.video-server-files-footer { flex-shrink:0; flex-wrap:wrap; align-items:center; gap:8px; margin:0; padding:14px 22px; border-top:1px solid var(--border,#544c60); }
+.video-server-files-footer>span { margin-right:auto; white-space:nowrap; }
+.h3-video-actions.video-server-files-footer button { width:auto; }
+@media (max-width:600px) { .video-server-files-footer>span { flex-basis:100%; } }
 .video-server-files-location { overflow-wrap:anywhere; }
 .video-server-files-list { list-style:none; padding:0; margin:12px 0; }
 .video-server-files-row { padding:10px 0; border-bottom:1px solid var(--border,#544c60); }
