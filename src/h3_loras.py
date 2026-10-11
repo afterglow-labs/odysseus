@@ -1,10 +1,12 @@
 """Shared validation for ordered H3 adapter selections and saved manifests."""
 import math
 
+from scripts.h3_lora_controls import lora_strength_bounds
+
 MAX_LORAS = 8
 
 
-def lora_entries(config, key="id"):
+def lora_entries(config, key="id", *, components=None):
     """An explicit stack wins over legacy fields, including an empty stack."""
     rows = config.get("loras") if "loras" in config else (
         [{key: config["lora"], "strength": config.get("lora_scale", 1)}] if config.get("lora") else [])
@@ -17,9 +19,11 @@ def lora_entries(config, key="id"):
         identity, strength = row[key], row["strength"]
         if not isinstance(identity, str) or not identity or len(identity) > 4096:
             raise ValueError("Choose a cached LoRA for each adapter")
+        name = (components or {}).get(identity, {}).get("name", identity)
+        low, high = lora_strength_bounds(name)
         if (isinstance(strength, bool) or not isinstance(strength, (int, float))
-                or not math.isfinite(strength) or not -4 <= strength <= 4):
-            raise ValueError("Each LoRA strength must be a finite number from -4 to 4")
+                or not math.isfinite(strength) or not low <= strength <= high):
+            raise ValueError(f"Each LoRA strength must be a finite number from {low} to {high}")
         if identity in seen:
             raise ValueError("The same LoRA cannot be selected more than once")
         seen.add(identity)

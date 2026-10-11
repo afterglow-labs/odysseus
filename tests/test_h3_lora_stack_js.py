@@ -4,6 +4,75 @@ from test_video_workflow_js import run_js as run_workflow_js
 from test_video_queue_js import run_js as run_queue_js
 
 
+AGE_COMPONENT = r'''
+const ageName='MM-H3 - Ref2VA - Age Slider v2 - EXPERIMENTAL.safetensors';
+const age={id:'age',role:'lora',variant:'ref2va',name:ageName,strength_control:{kind:'age',label:'Age',min:-5,max:5,step:0.1,default:0,labels:{min:'Youngest',zero:'Neutral',max:'Oldest'}}};
+components.push(age);
+'''
+
+
+def test_age_slider_uses_signed_strength_and_keeps_other_adapter_limits():
+    run_js(AGE_COMPONENT + r'''
+stored.set(STORAGE,JSON.stringify({...defaults,loras:[{id:'turbo',strength:0.8}]}));
+showH3Video();await flush();await change('prompt','Same scene');
+byText('Add LoRA').onclick();await change('lora-2','age');
+const slider=byId('lora_age-2'),number=byId('lora_scale-2');
+assert.equal(slider.type,'range');assert.equal(slider.min,-5);assert.equal(slider.max,5);
+assert.equal(slider.step,0.1);assert.equal(slider.parentElement.hidden,false);
+assert.equal(number.value,'0');assert.equal(slider.value,'0');
+slider.value='-5';await slider.fire('input');
+assert.equal(number.value,'-5');assert.deepEqual(batch.getSnapshot().config.loras,[{id:'turbo',strength:0.8},{id:'age',strength:-5}]);
+slider.value='5';await slider.fire('change');
+assert.equal(number.value,'5');assert.equal(generate().disabled,false);
+assert.deepEqual(JSON.parse(stored.get(STORAGE)).loras,[{id:'turbo',strength:0.8},{id:'age',strength:5}]);
+await change('lora_scale-2','-2.3');assert.equal(slider.value,'-2.3');
+assert.equal(h3LoraIssue([{id:'age',strength:-5}],components),'');
+assert.equal(h3LoraIssue([{id:'age',strength:5}],components),'');
+assert.match(h3LoraIssue([{id:'age',strength:5.1}],components),/Age must be/);
+assert.match(h3LoraIssue([{id:'turbo',strength:5}],components),/between/);
+''')
+
+
+def test_age_signed_values_restore_in_draft_job_edit_and_bulk_editor():
+    run_js(AGE_COMPONENT + r'''
+const initial=[{id:'turbo',strength:1},{id:'age',strength:-5}];
+stored.set(STORAGE,JSON.stringify({...defaults,loras:initial}));
+showH3Video();await flush();
+assert.equal(byId('lora_scale-2').value,'-5');assert.equal(byId('lora_age-2').value,'-5');
+await byText('Refresh components').onclick();assert.equal(byId('lora_age-2').value,'-5');
+const draft=editorOptions.getDraft();editor.active={id:'queued',revision:1};
+editorOptions.applyEdit({config:{...defaults,loras:[{id:'age',strength:5}],prompt:'Saved job'},inputs:{}});
+assert.equal(byId('lora_age').value,'5');assert.equal(byId('lora_age').parentElement.hidden,false);
+editor.active=null;editorOptions.restoreDraft(draft);
+assert.deepEqual(editorOptions.getDraft().config.loras,initial);
+const definition=queueOptions.getFields().find(item=>item.key==='loras');
+const bulk=definition.create(()=>{});document.body.appendChild(bulk.node);
+bulk.setValue([{id:'age',strength:-5},{id:'turbo',strength:1}]);
+assert.deepEqual(bulk.getValue(),[{id:'age',strength:-5},{id:'turbo',strength:1}]);
+const slider=document.getElementById('h3-queue-lora_age');assert.equal(slider.value,'-5');
+slider.value='5';await slider.fire('input');assert.equal(bulk.getValue()[0].strength,5);
+bulk.setDisabled(true);assert.equal(slider.disabled,true);
+bulk.setDisabled(false);assert.equal(slider.disabled,false);
+''')
+
+
+def test_portable_age_strengths_accept_endpoints_and_reject_generic_five():
+    run_workflow_js(r'''
+const ageName='MM-H3 - Ref2VA - Age Slider v2 - EXPERIMENTAL.safetensors';
+const components=[{id:'age',role:'lora',name:ageName},{id:'turbo',role:'lora',name:'turbo.safetensors'}];
+const doc={format:'odysseus-video-workflow',version:1,family:'h3',config:{mode:'ref2va',lora_strengths:[-5,1]},components:{lora_0:{name:ageName},lora_1:{name:'turbo.safetensors'}}};
+let result=resolveVideoWorkflow(doc,{family:'h3',inventory:{components}});
+assert.deepEqual(result.config.loras,[{id:'age',strength:-5},{id:'turbo',strength:1}]);
+doc.config.lora_strengths=[5,1];result=resolveVideoWorkflow(doc,{family:'h3',inventory:{components}});
+assert.equal(result.config.loras[0].strength,5);
+result=resolveVideoWorkflow(doc,{family:'h3',inventory:{components:components.slice(1)}});
+assert.equal(result.config.loras[0].strength,5);assert.match(result.config.loras[0].id,/unavailable/);
+assert.throws(()=>resolveVideoWorkflow({...doc,config:{mode:'ref2va',lora_strengths:[5,5]}},{family:'h3',inventory:{components}}),/Invalid/);
+const legacy={...doc,config:{mode:'ref2va',lora_scale:-5},components:{lora:{name:ageName}}};
+assert.equal(resolveVideoWorkflow(legacy,{family:'h3',inventory:{components}}).config.loras[0].strength,-5);
+''')
+
+
 def test_moved_components_restore_saved_and_edited_ids_through_inventory_aliases():
     run_js(r'''
 for (const item of components) item.aliases = ['old-' + item.id];

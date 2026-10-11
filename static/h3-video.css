@@ -138,6 +138,10 @@
 .h3-lora-row { display:grid; grid-template-columns:minmax(0,1fr) 110px auto; gap:10px; align-items:end; }
 .h3-lora-row > button { margin-bottom:2px; }
 .h3-lora-row .h3-video-field { min-width:0; }
+.h3-lora-age-control { grid-column:1 / -1; display:flex; flex-direction:column; gap:7px; }
+.h3-lora-age-slider { width:100%; min-width:0; margin:0; accent-color:var(--accent,var(--red)); }
+.h3-lora-age-marks { display:flex; justify-content:space-between; gap:10px; font-size:12px; }
+.h3-lora-age-marks span:last-child { text-align:right; }
 @media (max-width:600px) {
   .h3-lora-row { grid-template-columns:minmax(0,1fr) auto; }
   .h3-lora-row > label:first-child { grid-column:1 / -1; }

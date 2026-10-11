@@ -27,6 +27,7 @@ from src.constants import BASE_DIR, COOKBOOK_STATE_FILE, DATA_DIR, GENERATED_IMA
 from src.hf_cache import effective_hf_cache
 from src.h3_vfx import VFX_LORAS, normalize_vfx_inputs
 from src.model_artifacts import _safetensors_kind
+from scripts.h3_lora_controls import lora_strength_control, lora_strength_bounds
 
 log = logging.getLogger(__name__)
 PROJECT_ROOT = Path(BASE_DIR).resolve()
@@ -183,7 +184,8 @@ def discover_components(roots):
             for name in sorted(files):
                 path = Path(directory, name)
                 text = str(path).lower().replace("-", "_")
-                if not name.lower().endswith(".safetensors") or not re.search(r"minimax.*h3|(?:/|_)h3(?:/|_)", text):
+                control = lora_strength_control(name)
+                if not name.lower().endswith(".safetensors") or not (control or re.search(r"minimax.*h3|(?:/|_)h3(?:/|_)", text)):
                     continue
                 try:
                     resolved = path.resolve(strict=True)
@@ -216,13 +218,14 @@ def discover_components(roots):
                     continue
                 # LightX2V uses ref2v/fl2v in LoRA names, while H3 checkpoints
                 # use ref2va/fl2va. They describe the same model families.
-                variant = "ref2va" if re.search(r"ref2va?(?:[_.-]|$)", lower) else "fl2va" if re.search(r"fl2va?(?:[_.-]|$)", lower) else "shared"
+                variant = "ref2va" if re.search(r"ref2va?(?:[_.\s-]|$)", lower) else "fl2va" if re.search(r"fl2va?(?:[_.\s-]|$)", lower) else "shared"
                 vfx_edit = role == "lora" and lower in VFX_LORAS
                 if vfx_edit:
                     variant = "ref2va"
                 components.append({"id": identity, **({"aliases": aliases} if aliases else {}),
                                    "name": name, "path": str(path.absolute()), "role": role,
                                    "variant": variant, "nvfp4": "nvfp4" in lower,
+                                   **({"strength_control": control} if role == "lora" and control else {}),
                                    **({"recipe": "vfx_edit"} if vfx_edit else {})})
     return sorted(components, key=lambda row: (row["role"], row["name"], row["path"]))
 
@@ -314,7 +317,7 @@ def validate_config(raw, components, gpus, uploads):
     config = {**DEFAULTS, **raw}
     by_id = {alias: item for item in components for alias in item.get("aliases", [])}
     by_id.update({item["id"]: item for item in components})
-    adapters = lora_entries(config)
+    adapters = lora_entries(config, components=by_id)
     vfx_edit = any(row["strength"] != 0 and by_id.get(row["id"], {}).get("name", "").lower() in VFX_LORAS for row in adapters)
     if "loras" in raw:
         config["lora_scale"] = adapters[0]["strength"] if adapters else 1
@@ -332,7 +335,9 @@ def validate_config(raw, components, gpus, uploads):
         raise ValueError("Dimensions must be multiples of 32, up to 1,032,192 pixels")
     if (config["frames"] - 5) % 17:
         raise ValueError("H3 frame count must be 17 × n + 5 (124, 141, 158 … 362)")
-    for key, low, high in (("lora_scale", -4, 4), ("shift_video", 0.01, 100), ("shift_audio", 0.01, 100)):
+    first_lora_name = by_id.get(adapters[0]["id"], {}).get("name", "") if adapters else ""
+    lora_low, lora_high = lora_strength_bounds(first_lora_name)
+    for key, low, high in (("lora_scale", lora_low, lora_high), ("shift_video", 0.01, 100), ("shift_audio", 0.01, 100)):
         value = config[key]
         if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value) or not low <= value <= high:
             raise ValueError(f"{key} must be a finite number from {low} to {high}")
@@ -605,7 +610,8 @@ def installed_h3_preset(path, components, gpus, defaults):
         if "loras" in values:
             from src.h3_loras import lora_entries
             resolved["loras"] = []
-            for row in lora_entries(values):
+            available = {identity: item for item in components for identity in [item["id"], *item.get("aliases", [])]}
+            for row in lora_entries(values, components=available):
                 value = row["id"]
                 value_id = hashlib.sha256(str(Path(value).expanduser().resolve()).encode()).hexdigest()[:32]
                 matches = [item for item in components if item["role"] == "lora" and

@@ -127,6 +127,10 @@ def lora_stack(config):
 
 
 def validate_loras(config):
+    try:
+        from scripts.h3_lora_controls import lora_strength_bounds
+    except ModuleNotFoundError:
+        from h3_lora_controls import lora_strength_bounds
     adapters = lora_stack(config)
     if not isinstance(adapters, list) or len(adapters) > 8:
         raise ValueError("loras must be a list of at most 8 adapters")
@@ -141,10 +145,11 @@ def validate_loras(config):
         if identity in seen:
             raise ValueError("Each LoRA may appear only once in the stack")
         seen.add(identity)
+        low, high = lora_strength_bounds(path.name)
         try:
-            strength = _number(item, "strength", 1, -4, 4)
+            strength = _number(item, "strength", 1, low, high)
         except (TypeError, ValueError) as error:
-            raise ValueError(f"LoRA {index} strength must be a finite number between -4 and 4") from error
+            raise ValueError(f"LoRA {index} strength must be a finite number between {low} and {high}") from error
         result.append({"path": str(path), "strength": strength})
     config["loras"] = result
     config["lora"] = result[0]["path"] if result else None

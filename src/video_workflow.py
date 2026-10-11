@@ -17,6 +17,7 @@ import zlib
 
 from src.h3_video import _locked, _read, _write
 from src.h3_loras import MAX_LORAS, lora_entries
+from scripts.h3_lora_controls import lora_strength_bounds
 from src.h3_vfx import normalize_vfx_inputs
 
 FORMAT, VERSION = "odysseus-video-workflow", 1
@@ -45,9 +46,11 @@ def specification(family, config):
         roles = {"model", "encoder", "video_vae", "audio_vae"}
         if "lora_strengths" in config:
             strengths = config["lora_strengths"]
+            # Structure first; validate_document applies each named adapter's
+            # bounds after validating component references (only Age reaches 5).
             if (not isinstance(strengths, list) or len(strengths) > MAX_LORAS or any(
                     isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
-                    or not -4 <= value <= 4 for value in strengths)):
+                    or not -5 <= value <= 5 for value in strengths)):
                 raise ValueError("Invalid portable LoRA strengths")
             roles |= {f"lora_{index}" for index in range(len(strengths))}
         else:
@@ -172,6 +175,16 @@ def validate_document(value, family):
             if not relative.startswith("weights/") or PurePosixPath(relative).name != name or relative in declared:
                 raise ValueError("Invalid or duplicate archived model path")
             declared.add(relative)
+    if family == "h3":
+        strengths = value["config"].get("lora_strengths")
+        selections = ([(components[f"lora_{i}"]["name"], strength) for i, strength in enumerate(strengths)]
+                      if strengths is not None else [(components.get("lora", {}).get("name", ""),
+                                                      value["config"].get("lora_scale", 1))])
+        for name, strength in selections:
+            low, high = lora_strength_bounds(name)
+            if (isinstance(strength, bool) or not isinstance(strength, (int, float))
+                    or not math.isfinite(strength) or not low <= strength <= high):
+                raise ValueError(f"Portable LoRA strength must be a finite number from {low} to {high}")
     for item in attachments:
         if not isinstance(item, dict) or set(item) != {"field", "name", "path", "size"}:
             raise ValueError("Invalid workflow attachment")
@@ -248,7 +261,7 @@ def resolve_draft(raw, inventory, family):
         selected[role] = item["path"]
     config = {k: v for k, v in raw.items() if k in settings}
     if family == "h3" and "loras" in raw:
-        rows = lora_entries(raw)
+        rows = lora_entries(raw, components=available)
         config["lora_strengths"] = [row["strength"] for row in rows]
         paths = set()
         for index, row in enumerate(rows):

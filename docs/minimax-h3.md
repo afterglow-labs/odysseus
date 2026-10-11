@@ -182,13 +182,21 @@ The output is a browser-compatible H.264/AAC MP4 with stereo generated audio.
 ### Multiple LoRAs
 
 Use **Add LoRA** to build an ordered stack of up to eight H3 adapters, each with
-its own strength from −4 to 4. A strength of 0 keeps the selection but disables
+its own strength, normally from −4 to 4. A strength of 0 keeps the selection but disables
 that adapter. **Remove** removes one selection; removing all rows uses the base
 model alone. An adapter can appear only once. Active adapters must match the
 selected FL2VA or Ref2VA mode; shared adapters work with either. Stacking is
 supported by the runtime, but different speed and editing adapters can need
 different steps, samplers and strengths; combining them does not guarantee the
 same result as using either one alone.
+
+Selecting **MM-H3 - Ref2VA - Age Slider v2 - EXPERIMENTAL** adds an **Age**
+slider from **−5 (Youngest)** through **0 (Neutral)** to **+5 (Oldest)**. A new
+selection starts at zero; reopening a draft or job preserves its signed value.
+The numeric input and slider stay synchronized. Add the Turbo adapter in a
+separate row to keep its strength independent of age. Desktop and iOS support
+the same age range, including batch jobs, queued edits, reruns, bulk edits and
+workflow exports/imports. Other adapters retain their normal −4…4 range.
 
 Full-width H3 LoRAs, including Larry's
 `minimax_h3_turbo_v4_step600_ema.safetensors`, can also be used with the pruned

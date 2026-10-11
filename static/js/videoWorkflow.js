@@ -1,6 +1,7 @@
 // Portable workflow transport. Large archives stream to the chosen file or
 // the browser downloader, never through a multi-GB response.blob().
 import { appendVideoInputs } from './videoInputs.js';
+import { h3LoraStrengthControl } from './h3Loras.js';
 const FORMAT = 'odysseus-video-workflow';
 const H3_SETTINGS = ['mode', 'width', 'height', 'frames', 'steps', 'seed', 'sampler', 'scheduler', 'shift_video', 'shift_audio', 'lora_scale', 'reference_size', 'prompt'];
 const H3_COMPONENTS = ['model', 'encoder', 'video_vae', 'audio_vae', 'lora'];
@@ -164,7 +165,10 @@ export function resolveVideoWorkflow(workflow, { family, inventory, resolvedComp
   if (family === 'h3' && !['t2va', 'fl2va', 'ref2va'].includes(config.mode)) throw new Error('Unknown MiniMax H3 mode in this workflow.');
   const stacked = family === 'h3' && own(workflow.config, 'lora_strengths');
   const strengths = stacked ? workflow.config.lora_strengths : [];
-  if (stacked && (!Array.isArray(strengths) || strengths.length > 8 || strengths.some(value => typeof value !== 'number' || !Number.isFinite(value) || value < -4 || value > 4))) throw new Error('Invalid workflow LoRA strengths.');
+  if (stacked && (!Array.isArray(strengths) || strengths.length > 8 || strengths.some((value, index) => {
+    const control = h3LoraStrengthControl({ name: workflow.components[`lora_${index}`]?.name });
+    return typeof value !== 'number' || !Number.isFinite(value) || value < control.min || value > control.max;
+  }))) throw new Error('Invalid workflow LoRA strengths.');
   const loraRoles = stacked ? strengths.map((_, index) => `lora_${index}`) : [];
   if (family === 'h3' && Object.keys(workflow.components).some(key => /^lora_/.test(key) && !loraRoles.includes(key))) throw new Error('The workflow LoRA references do not match its strengths.');
   const roles = family === 'h3' ? stacked ? [...H3_COMPONENTS.filter(role => role !== 'lora'), ...loraRoles] : H3_COMPONENTS : (definition.slots || []).map(item => item.key);
@@ -200,6 +204,10 @@ export function resolveVideoWorkflow(workflow, { family, inventory, resolvedComp
   if (family === 'h3') {
     config.loras = stacked ? loraRoles.map((role, index) => ({ id: selections[role], strength: strengths[index] }))
       : config.lora ? [{ id: config.lora, strength: config.lora_scale ?? 1 }] : [];
+    if (!stacked && config.loras.length) {
+      const control = h3LoraStrengthControl({ name: workflow.components.lora?.name }), strength = config.loras[0].strength;
+      if (typeof strength !== 'number' || !Number.isFinite(strength) || strength < control.min || strength > control.max) throw new Error('Invalid workflow LoRA strength.');
+    }
     for (const role of loraRoles) delete config[role];
     config.lora = config.loras[0]?.id || ''; config.lora_scale = config.loras[0]?.strength ?? 1;
   }
