@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from src import h3_video as h3
+from src.h3_loras import frozen_components
 from src.video_job_edit import _draft
 from tests.test_video_queue_bulk import create
 from tests.test_video_submission import backend
@@ -90,6 +91,9 @@ def test_saved_lora_stack_shares_path_resolution_with_scalar_compatibility_field
         draft = _draft(config, inventory, 'h3', resolved_paths=cache)
         assert draft['lora'] == 'layer-0'
         assert draft['loras'] == [{'id': 'layer-0', 'strength': .6}, {'id': 'layer-1', 'strength': 1.1}]
+        frozen = frozen_components(config, inventory, resolved_paths=cache)
+        assert [item['id'] for item in frozen] == ['layer-0', 'layer-1']
+        assert all('path' not in item for item in frozen)
     assert counts == {str(path): 1 for path in paths}
 
 

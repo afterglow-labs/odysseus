@@ -56,7 +56,7 @@ def _light(directory, state, inventory, family, *, resolved_paths=None):
                   config=_draft(config, inventory, family, resolved_paths=resolved_paths) if isinstance(config, dict) else {})
     if family == "h3" and isinstance(config, dict):
         from src.h3_loras import frozen_components
-        result["lora_components"] = frozen_components(config, inventory)
+        result["lora_components"] = frozen_components(config, inventory, resolved_paths=resolved_paths)
         if config.get("recipe"):
             result["recipe"] = config["recipe"]
     return result

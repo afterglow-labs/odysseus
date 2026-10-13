@@ -39,16 +39,25 @@ def lora_entries(config, key="id", *, components=None):
     return result
 
 
-def frozen_inventory(config, inventory):
+def _resolved_path(value, cache):
+    key = str(value)
+    if key not in cache:
+        cache[key] = Path(value).resolve()
+    return str(cache[key])
+
+
+def frozen_inventory(config, inventory, *, resolved_paths=None):
     """Use server-saved profiles when editing a job, never caller metadata."""
     profiles = config.get("lora_profiles", {})
     if not isinstance(profiles, dict) or len(profiles) > MAX_LORAS:
         raise ValueError("Invalid saved LoRA profiles")
-    profiles = {str(Path(path).resolve()): validate_lora_profile(profile) for path, profile in profiles.items()}
+    resolved_paths = {} if resolved_paths is None else resolved_paths
+    profiles = {_resolved_path(path, resolved_paths): validate_lora_profile(profile) for path, profile in profiles.items()}
     components = []
     for component in inventory["components"]:
-        profile = profiles.get(str(Path(component["path"]).resolve()))
-        if profile is not None and component.get("role") == "lora":
+        profile = (profiles.get(_resolved_path(component["path"], resolved_paths))
+                   if profiles and component.get("role") == "lora" else None)
+        if profile is not None:
             component = {**component, "lora_profile": profile, "variant": profile["variant"],
                          "display_name": profile["display_name"] or component["name"]}
             component.pop("strength_control", None)
@@ -59,8 +68,11 @@ def frozen_inventory(config, inventory):
     return {**inventory, "components": components}
 
 
-def frozen_components(config, inventory):
-    selected = {str(Path(row["path"]).resolve()) for row in lora_entries(config, "path")}
+def frozen_components(config, inventory, *, resolved_paths=None):
+    resolved_paths = {} if resolved_paths is None else resolved_paths
+    selected = {_resolved_path(row["path"], resolved_paths) for row in lora_entries(config, "path")}
+    if not selected:
+        return []
     return [{key: value for key, value in component.items() if key != "path"}
-            for component in frozen_inventory(config, inventory)["components"]
-            if component.get("role") == "lora" and str(Path(component["path"]).resolve()) in selected]
+            for component in frozen_inventory(config, inventory, resolved_paths=resolved_paths)["components"]
+            if component.get("role") == "lora" and _resolved_path(component["path"], resolved_paths) in selected]
