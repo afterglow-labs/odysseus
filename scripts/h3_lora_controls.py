@@ -20,6 +20,30 @@ def lora_strength_control(name):
 PROFILE_LIMIT = 65536
 
 
+def built_in_lora_profile(name):
+    """Editable defaults for known adapters; a saved profile always wins."""
+    name = Path(str(name)).name.casefold()
+    if name not in {"minimax_h3_vfx_edit_v1.0_r128.safetensors",
+                    "minimax_h3_vfx_edit_v1.0_r128_ffp.safetensors"}:
+        return None
+    ffp = name.endswith("_ffp.safetensors")
+    notes = (
+        "Start with LoRA strength 1.0. Use the Ref2VA model and one Source video "
+        "as the aligned edit guide. Separate image, video and audio references "
+        "are optional. State the requested edit, then what should stay unchanged. "
+        "Odysseus adds vfx_edit: once at the beginning when submitting. "
+    )
+    if ffp:
+        notes += ("FFP means first-frame propagation. If using an edited first frame, "
+                  "attach it as a reference image and describe <Picture 1>'s role. ")
+    notes += "Author guide: https://huggingface.co/Alissonerdx/Minimax-H3-ComfyUI/blob/main/docs/vfx-edit.md"
+    return validate_lora_profile({
+        "display_name": "VFX Edit FFP · v1.0 r128" if ffp else "VFX Edit · v1.0 r128",
+        "variant": "ref2va", "trigger_words": "vfx_edit:", "trigger_position": "prefix",
+        "notes": notes,
+    })
+
+
 def _text(value, limit, field):
     if not isinstance(value, str) or len(value) > limit or "\0" in value:
         raise ValueError(f"{field} must be text of at most {limit} characters")

@@ -288,6 +288,11 @@ Select the Ref2VA model and either
 for the edit, and its original soundtrack is retained when present. A silent
 source stays silent.
 
+Both known VFX filenames have a default editable profile with the prefix trigger
+`vfx_edit:`, Ref2VA compatibility, and the author's usage notes. A saved custom
+profile takes precedence. The defaults do not change sampling settings or
+overwrite profiles captured by existing jobs.
+
 Choose one **Source video**: this is the clip being edited. The separate
 **Reference images**, **Reference videos**, and **Reference audio** inputs remain
 available to guide the edit. Specify each reference's role in the prompt using

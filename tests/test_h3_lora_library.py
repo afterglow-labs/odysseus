@@ -59,6 +59,22 @@ def test_plain_filename_profile_inventory_and_immutable_filename(service):
     assert read_profile(path)['display_name'] == 'Changed'
 
 
+@pytest.mark.parametrize('suffix', ['', '_ffp'])
+def test_vfx_profile_defaults_and_explicit_user_overrides(service, suffix):
+    path = weights(service.manager.project / 'models' / f'minimax_h3_vfx_edit_v1.0_r128{suffix}.safetensors', True)
+    row, = service.components()
+    assert row['recipe'] == 'vfx_edit' and row['variant'] == 'ref2va'
+    assert row['lora_profile']['trigger_words'] == 'vfx_edit:'
+    assert row['lora_profile']['trigger_position'] == 'prefix'
+    assert row['lora_profile']['recommended_settings'] == {}
+    assert read_profile(path) is None, 'Discovery must not write or impersonate a saved profile'
+    saved = write_profile(path, {'display_name': 'My VFX profile', 'variant': 'ref2va', 'trigger_words': ''})
+    row, = service.components()
+    assert row['lora_profile'] == saved
+    assert row['lora_profile']['trigger_words'] == '', 'An intentionally empty saved field overrides the default'
+    assert row['display_name'] == 'My VFX profile'
+
+
 def test_saved_custom_bounds_survive_library_edits_and_worker(inventory):
     row = next(row for row in inventory['components'] if row['role'] == 'lora')
     write_profile(row['path'], profile(), overwrite=True)

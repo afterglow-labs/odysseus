@@ -27,7 +27,7 @@ from src.constants import BASE_DIR, COOKBOOK_STATE_FILE, DATA_DIR, GENERATED_IMA
 from src.hf_cache import effective_hf_cache
 from src.h3_vfx import VFX_LORAS, normalize_vfx_inputs
 from src.model_artifacts import _safetensors_kind
-from scripts.h3_lora_controls import lora_strength_control, lora_strength_bounds, read_profile, validate_lora_profile
+from scripts.h3_lora_controls import lora_strength_control, lora_strength_bounds, read_profile, validate_lora_profile, built_in_lora_profile
 
 log = logging.getLogger(__name__)
 PROJECT_ROOT = Path(BASE_DIR).resolve()
@@ -230,6 +230,8 @@ def discover_components(roots):
                 vfx_edit = role == "lora" and lower in VFX_LORAS
                 if vfx_edit:
                     variant = "ref2va"
+                    if profile is None and adapter:
+                        profile = built_in_lora_profile(name)
                 if role == "lora" and profile is not None and adapter:
                     variant = profile["variant"]
                     control = profile.get("strength_control") or control
