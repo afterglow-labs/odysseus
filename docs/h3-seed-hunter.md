@@ -46,6 +46,13 @@ codecs, frame count and inputs; rendering parameters and LoRAs remain editable.
   zero noise mask, rather than used only as a loose sound reference.
 - **RefMods:** up to eight encoded reference safetensors bundles, with strengths
   from 0 to 1. These are reference latents, separate from the LoRA stack.
+- **Reference video sections:** attach a longer video, preview and scrub it,
+  then choose a start and a 2–15 second length for each reference. Video and audio
+  use the same section; ranges survive queued edits, reruns and portable workflows.
+  Multiple video sections still share the 15-second reference budget. Choose a
+  generation length at least as long as the selected section to use all of it:
+  H3 caps reference conditioning to the generation's frame count. Refinements
+  retain their preview's original selection with its saved conditioning.
 - **48 fps:** learned RIFE interpolation preserves the 24 fps source duration
   and remuxes its audio. It is not simple frame duplication.
 - Optional sparse attention and KJ feed-forward/head chunking controls mirror

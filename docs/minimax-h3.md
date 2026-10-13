@@ -168,11 +168,24 @@ it does not move an already queued or running job between GPUs.
 | References (`ref2va`) | Prompt, reference image or video; optional audio references | Reference-conditioned video and generated audio |
 
 Reference mode supports up to nine images, three videos and three audio files,
-with at most twelve uploaded references overall. Each reference clip/audio file
-must be 2–15 seconds; videos together must total at most 15 seconds, and all audio
+with at most twelve uploaded references overall. A reference video can be longer
+than 15 seconds: use its **Start at (seconds)** and **Length (seconds)** controls
+to select a 2–15 second section. Expand **Preview video and choose a section**,
+scrub to the desired point, and choose **Use current time as start**. For example,
+start 80 and length 15 uses 1:20–1:35. **Play selected section** previews that range.
+Local files and supported E:/F: server videos can be previewed; timestamps remain
+usable when the browser cannot play a codec or a saved job input has no preview.
+The worker seeks to the selected section and cuts its audio on the same timeline.
+It preserves the original file and saves the range with the job for later edits
+and reruns. Existing upload size and server storage limits still apply.
+
+Selected video sections together must total at most 15 seconds, and all audio
 (including video soundtracks) must total at most 15 seconds. Audio-only reference
 requests are rejected. Reference video is resampled to 24 fps, and its soundtrack
-is paired with the same video. Audio is converted to stereo 32 kHz.
+is paired with the same video. Standalone audio files must be 2–15 seconds;
+audio is converted to stereo 32 kHz. The H3 core limits each video reference to
+the generation's frame count, so choose an output length at least as long as
+the selected section when all of it should guide the render.
 
 Use `<Picture 1>`, `<Video 1>` and `<Audio 1>` in reference prompts. Numbering is
 one-based per type. Images come first, then videos, then standalone audio. A
@@ -428,7 +441,8 @@ captured at the moment you queue the batch. Videos upload individually in the
 displayed filename order; generation uses the existing shared FIFO queue.
 
 **Automatically match each video’s length** is on by default for H3 batches.
-After each upload, the server reads that file’s video duration and selects the
+Each ordinary H3 batch row also has its own reference section controls.
+After each upload, the server reads that file’s selected section duration and selects the
 shortest supported 24 fps length that covers it, rounding up rather than cutting
 off the end. For example, a 6-second video uses 158 frames (6.58 seconds), while
 a 10-second video uses 243 frames (10.12 seconds). The chosen length is saved
@@ -438,8 +452,8 @@ original automatic/fixed choice, prompt, and settings.
 
 VFX Edit already matches the source duration: it uses a supported sampling
 length and trims padding from the output. The batch receipt distinguishes this
-from ordinary reference generation. Unsupported clips (outside the existing
-2–15 second reference range, or too short for VFX Edit) fail individually with
+from ordinary reference generation. Unsupported clips (with less than two seconds
+remaining at the selected reference start, or too short for VFX Edit) fail individually with
 an explanation rather than silently cutting them down or using the draft length.
 
 With **Batch job** off, the ordinary reference-video control still puts multiple

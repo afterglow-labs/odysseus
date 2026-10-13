@@ -335,7 +335,7 @@ def validate_config(raw, components, gpus, uploads):
     if not isinstance(raw, dict):
         raise ValueError("config must be a JSON object")
     from src.h3_loras import lora_entries
-    allowed = set(DEFAULTS) | {"prompt", "model", "encoder", "video_vae", "audio_vae", "lora", "loras", "recipe", "seed_hunter", "latent_upscaler"}
+    allowed = set(DEFAULTS) | {"prompt", "model", "encoder", "video_vae", "audio_vae", "lora", "loras", "recipe", "seed_hunter", "latent_upscaler", "reference_video_ranges"}
     if set(raw) - allowed:
         raise ValueError("Unknown generation setting: " + sorted(set(raw) - allowed)[0])
     config = {**DEFAULTS, **raw}
@@ -428,6 +428,9 @@ def validate_config(raw, components, gpus, uploads):
         config["latent_upscaler"] = upscaler["path"]
     uploads = normalize_vfx_inputs(config, uploads)
     counts = {key: len(uploads.get(key, [])) for key in UPLOAD_EXTENSIONS}
+    if "reference_video_ranges" in config:
+        from scripts.h3_reference_video import validate_ranges
+        config["reference_video_ranges"] = validate_ranges(config["reference_video_ranges"], counts["reference_videos"])
     for key, limit in (("source_video", 1), ("first_frame", 1), ("last_frame", 1), ("reference_images", 9),
                        ("reference_videos", 3), ("reference_audio", 3), ("reference_mods", 8)):
         if counts[key] > limit:
@@ -730,7 +733,7 @@ class H3JobManager:
         from src.h3_seed_hunter import capabilities
         return {"components": components, "gpus": gpus, "runtime_ready": not error, "batch_jobs": True,
                 "seed_hunter": capabilities(self.project, self.runtime, components, gpus),
-                "batch_auto_video_length": True,
+                "batch_auto_video_length": True, "reference_video_ranges": True,
                 "server_video_files": True,
                 "lora_stack": True, "lora_library": True, "max_loras": MAX_LORAS, "vfx_references": True,
                 "runtime_error": error, "defaults": {**defaults, **(preset["config"] if preset else {})},

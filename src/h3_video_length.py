@@ -93,6 +93,12 @@ def select_batch_video_length(config, uploads):
         raise ValueError("Automatic batch length needs exactly one source video per job in Reference mode")
     probe = probe_video(sources[0], exact_frames=vfx)
     duration = probe["duration_seconds"]
+    ranges = []
+    if not vfx:
+        from scripts.h3_reference_video import validate_ranges, selected_duration
+        ranges = validate_ranges(config.get("reference_video_ranges", []), len(sources))
+        if ranges:
+            duration = selected_duration(duration, ranges[0])
     if duration < 2 - 1e-3 or duration > MAX_SOURCE_SECONDS:
         raise ValueError(f"This video is {duration:.3f} seconds long; H3 reference videos must be 2–15 seconds. Trim the clip before adding it to the batch.")
     if vfx and probe["source_frames"] < 73:
@@ -108,6 +114,9 @@ def select_batch_video_length(config, uploads):
     metadata = {"duration_seconds": duration, "frames": frames, "selected_seconds": selected,
                 "source_field": field, "capped": False, "preserve_source_duration": vfx,
                 "output_seconds": probe["source_frames"] / FPS if vfx else selected}
+    if ranges:
+        metadata.update(source_duration_seconds=probe["duration_seconds"],
+                        reference_video_range=ranges[0])
     return {**config, "frames": frames}, metadata
 
 

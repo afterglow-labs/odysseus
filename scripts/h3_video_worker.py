@@ -271,6 +271,12 @@ def validate_job(manifest):
             raise ValueError("VFX Edit prompt, including vfx_edit:, must be at most 16,000 characters")
     elif media["source_video"] and not (hunter and config["seed_hunter"]["stage"] == "continuation"):
         raise ValueError("A source video requires an active VFX Edit LoRA")
+    if "reference_video_ranges" in config:
+        try:
+            from scripts.h3_reference_video import validate_ranges
+        except ModuleNotFoundError:
+            from h3_reference_video import validate_ranges
+        config["reference_video_ranges"] = validate_ranges(config["reference_video_ranges"], len(media["reference_videos"]))
     total = sum(len(media[name]) for name in ("reference_images", "reference_videos", "reference_audio"))
     if total > 12:
         raise ValueError("At most 12 references are supported")
@@ -423,8 +429,16 @@ def prepare_media(media, config):
                               for i, path in enumerate(media["reference_images"], 1)}
     prepared["ref_videos"], prepared["ref_video_audios"] = {}, {}
     video_duration = audio_duration = 0.0
+    ranges = config.get("reference_video_ranges", [])
     for i, path in enumerate(media["reference_videos"], 1):
-        frames, soundtrack, duration, sound_duration = read_video(path)
+        if ranges:
+            try:
+                from scripts.h3_reference_video import read_selected_video
+            except ModuleNotFoundError:
+                from h3_reference_video import read_selected_video
+            frames, soundtrack, duration, sound_duration = read_selected_video(path, ranges[i - 1], read_video)
+        else:
+            frames, soundtrack, duration, sound_duration = read_video(path)
         video_duration += duration
         audio_duration += sound_duration
         if video_duration > 15.05 or audio_duration > 15.05:

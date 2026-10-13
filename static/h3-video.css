@@ -37,6 +37,12 @@
 .h3-video-file-list li { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 0; }
 .h3-video-file-list span { overflow-wrap:anywhere; min-width:0; font-size:12px; }
 .h3-video-file-list button { flex-shrink:0; }
+.h3-video-file-list li.h3-reference-video-row { display:grid; grid-template-columns:minmax(0,1fr) auto; }
+.h3-reference-range { grid-column:1 / -1; min-width:0; width:100%; padding:8px 0; }
+.h3-reference-range-controls { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+.h3-reference-range-controls input { min-width:0; width:100%; box-sizing:border-box; }
+.h3-reference-preview summary { cursor:pointer; font-size:13px; padding:6px 0; }
+.h3-reference-preview video { display:block; width:100%; max-height:260px; background:#000; border-radius:8px; margin:8px 0; }
 .video-batch-panel { margin:14px 0; padding:12px; border:1px solid var(--border,#544c60); border-radius:8px; min-width:0; }
 .video-batch-toggle { display:flex; align-items:center; gap:10px; font-size:13px; cursor:pointer; }
 .video-batch-toggle input { width:20px; height:20px; margin:0; accent-color:var(--accent,var(--red)); flex-shrink:0; }

@@ -29,7 +29,7 @@ ID = re.compile(r"^[a-f0-9]{32}$")
 REPO = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}/[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$")
 REVISION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$")
 H3_SETTINGS = {"mode", "width", "height", "frames", "steps", "seed", "sampler",
-               "scheduler", "shift_video", "shift_audio", "lora_scale", "reference_size", "prompt", "lora_strengths"}
+               "scheduler", "shift_video", "shift_audio", "lora_scale", "reference_size", "prompt", "lora_strengths", "reference_video_ranges"}
 
 
 def safe_path(value, basename=False):
@@ -78,6 +78,10 @@ def portable_config(raw, family):
     if raw.keys() - settings:
         raise ValueError("Unknown portable workflow setting")
     for key, value in raw.items():
+        if family == "h3" and key == "reference_video_ranges":
+            from scripts.h3_reference_video import validate_ranges
+            validate_ranges(value)
+            continue
         if family == "h3" and key == "seed_hunter":
             from scripts.h3_seed_hunter_controls import validate_options
             options = validate_options(value)

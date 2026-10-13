@@ -15,6 +15,7 @@ def run_js(script):
     if not node:
         pytest.skip("Node.js is required for H3 UI checks")
     source = (ROOT / "static/js/videoInputs.js").read_text() + "\n" + (ROOT / "static/js/videoJobRerun.js").read_text() + '\n' + (ROOT / "static/js/h3Loras.js").read_text() + '\n' + (ROOT / "static/js/h3Video.js").read_text()
+    source = (ROOT / 'static/js/referenceVideoRange.js').read_text() + '\n' + source
     source = re.sub(r"^import .*;\n", "", source, flags=re.MULTILINE)
     result = subprocess.run(
         [node, "--input-type=module", "-e", "import assert from 'node:assert/strict';\n" + source + DOM + script],
@@ -40,6 +41,9 @@ class Element {
  add(option){this.append(option);if(this.children.length===1)this.value=option.value;}
  addEventListener(name,handler){(this.listeners[name]??=[]).push(handler);}
  async fire(name,bubble=true){const event={preventDefault(){}};for(const fn of this.listeners[name]||[])await fn(event);if(bubble&&this.parentElement)await this.parentElement.fire(name);}
+ setCustomValidity(value){this.validationMessage=value;}
+ pause(){}
+ load(){}
  reportValidity(){return true;}
  checkValidity(){return true;}
  focus(){}

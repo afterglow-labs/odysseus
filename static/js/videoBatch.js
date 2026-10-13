@@ -2,6 +2,7 @@
 // File objects remain streamed uploads; no video bytes are buffered in JS.
 import { appendVideoInputs } from './videoInputs.js';
 import { showVideoServerFiles } from './videoServerFiles.js';
+import { referenceVideoRange, createReferenceVideoRangeEditor, validateReferenceVideoRanges } from './referenceVideoRange.js';
 const VIDEO = /\.(mp4|mov|m4v|webm|mkv|avi)$/i;
 const fieldFor = family => {
   if (family === 'h3') return 'reference_videos';
@@ -92,7 +93,11 @@ export class VideoBatchQueue {
     // a pause. Editing the form cannot change an in-progress batch or retry.
     if (selected.some(item => !item.snapshot)) {
       const snapshot = snapshotVideoBatch(this.getSnapshot(), this.family);
-      for (const item of selected) if (!item.snapshot) item.snapshot = snapshot;
+      for (const item of selected) if (!item.snapshot) {
+        item.snapshot = this.family === 'h3' && snapshot.videoField === 'reference_videos'
+          ? { ...snapshot, config: { ...snapshot.config, reference_video_ranges: validateReferenceVideoRanges([referenceVideoRange(item.file)]) } }
+          : snapshot;
+      }
     }
     this.running = true; this.pauseRequested = false; this.onChange();
     try {
@@ -152,7 +157,7 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
     lengthHelp.hidden = family !== 'h3';
     lengthHelp.textContent = field === 'source_video'
       ? 'VFX Edit automatically matches each source video’s length.'
-      : autoLength.checked ? 'After upload, the server chooses the shortest supported length that covers each video. Clips outside the supported 2–15 second range are reported individually.'
+      : autoLength.checked ? 'The server chooses the shortest supported output length that covers each selected section. Choose a start and up to 15 seconds per video below.'
         : 'Every video uses the Length selected below.';
   }
   describeVideoField(fieldFor(family));
@@ -200,7 +205,7 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
     toggle.disabled = queue.running; input.disabled = queue.running; autoLength.disabled = queue.running;
     serverFiles.disabled = queue.running;
     drop.setAttribute('aria-disabled', String(queue.running));
-    for (const [id, row] of rows) if (!queue.items.some(item => item.id === id)) { row.remove(); rows.delete(id); }
+    for (const [id, row] of rows) if (!queue.items.some(item => item.id === id)) { row._range?.destroy(); row.remove(); rows.delete(id); }
     for (const item of queue.items) {
       let row = rows.get(item.id);
       if (!row) {
@@ -209,7 +214,9 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
         row._state = node('span', 'video-batch-state');
         row._remove = action('Remove'); row._remove.setAttribute('aria-label', `Remove ${item.file.name} from batch`); row._remove.onclick = () => queue.remove(item.id);
         row.append(row._name, row._state, row._remove); rows.set(item.id, row); list.appendChild(row);
+        if (family === 'h3') { row._range = createReferenceVideoRangeEditor(item.file, () => {}); row.append(row._range.node); }
       }
+      if (row._range) { row._range.node.hidden = videoField !== 'reference_videos'; row._range.setDisabled(queue.running || !!item.snapshot); }
       row.dataset.status = item.status; row._remove.disabled = queue.running;
       row._state.textContent = item.status === 'queued' ? ['Queued', videoBatchLengthLabel(item.job), item.job.id].filter(Boolean).join(' · ') : item.status === 'error' ? item.error
         : item.status === 'uploading' ? item.progress?.waiting ? item.snapshot?.autoVideoLength ? 'Detecting video length and queueing…' : 'Waiting for server…' : item.file.serverFile ? 'Adding server video…' : 'Uploading…'
@@ -272,6 +279,7 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
     get autoVideoLength() { return family === 'h3' && (videoField === 'source_video' || autoLength.checked); },
     destroy() {
       picker?.close();
+      rows.forEach(row => row._range?.destroy());
       destroyed = true; queue.dispose(); queue.onChange = () => {}; queue.onJob = () => {};
       queue.getSnapshot = () => { throw new Error('Reopen the workflow panel to queue these files.'); };
     },

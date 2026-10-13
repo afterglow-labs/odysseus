@@ -15,6 +15,7 @@ def run_js(script):
         pytest.skip('Node.js is required for batch queue checks')
     source = (ROOT / 'static/js/videoBatch.js').read_text()
     source = (ROOT / 'static/js/videoInputs.js').read_text() + '\n' + source
+    source = (ROOT / 'static/js/referenceVideoRange.js').read_text() + '\n' + source
     source = re.sub(r'^import .*;\n', '', source, flags=re.MULTILINE)
     subprocess.run([node, '--input-type=module', '-e',
                     "import assert from 'node:assert/strict';\n" + source + '\n' + script],
@@ -174,7 +175,7 @@ await q.run({retry:true});
 assert.equal(bodies.length,2);
 for(const body of bodies){
  assert.equal(body.get('auto_video_length'),'true');
- assert.deepEqual(JSON.parse(body.get('config')),{mode:'ref2va',frames:124,prompt:'Keep the scene'});
+ assert.deepEqual(JSON.parse(body.get('config')),{mode:'ref2va',frames:124,prompt:'Keep the scene',reference_video_ranges:[{start_seconds:0,duration_seconds:15}]});
 }
 q.add([new File(['other'],'two.mp4')]);await q.run();
 assert.equal(bodies.at(-1).has('auto_video_length'),false);

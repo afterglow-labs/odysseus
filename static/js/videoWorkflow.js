@@ -2,6 +2,7 @@
 // the browser downloader, never through a multi-GB response.blob().
 import { appendVideoInputs } from './videoInputs.js';
 import { h3LoraStrengthControl } from './h3Loras.js';
+import { validateReferenceVideoRanges } from './referenceVideoRange.js';
 const FORMAT = 'odysseus-video-workflow';
 const H3_SETTINGS = ['mode', 'width', 'height', 'frames', 'steps', 'seed', 'sampler', 'scheduler', 'shift_video', 'shift_audio', 'lora_scale', 'reference_size', 'prompt'];
 const SEED_HUNTER_OPTIONS = new Set(['stage','preview_count','denoise','shift_enabled','first_frame_guide','last_frame_guide','force_audio','continuation_overlap','output_fps','attention_backend','sparse_method','sparse_keep_percent','sparse_start','sparse_end','sparse_min_tokens','sparse_extra_tokens','sparse_sink_conditioning','upscaler_chunking','upscaler_force_unload','ff_chunk_size','ff_chunk_threshold','low_vram_chunks','source_start_seconds','source_end_seconds','audio_start_seconds','audio_end_seconds','refmod_strengths']);
@@ -163,6 +164,9 @@ export function resolveVideoWorkflow(workflow, { family, inventory, resolvedComp
     config[key] = value;
   }
   const hunter = family === 'h3' && workflow.config.recipe === 'seed_hunter';
+  if (family === 'h3' && own(workflow.config, 'reference_video_ranges')) {
+    config.reference_video_ranges = validateReferenceVideoRanges(workflow.config.reference_video_ranges);
+  }
   if (hunter) {
     const options = workflow.config.seed_hunter;
     if (!object(options) || Object.keys(options).some(key => !SEED_HUNTER_OPTIONS.has(key))) throw new Error('Invalid Seed Hunter settings.');

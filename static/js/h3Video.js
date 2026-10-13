@@ -6,6 +6,7 @@ import { createVideoJobEditor, videoJobEditFormData } from './videoJobEdit.js';
 import { createVideoQueueControls, videoQueueField } from './videoQueue.js';
 import { createVideoJobReruns } from './videoJobRerun.js';
 import { h3LoraStack, h3LoraIssue, createH3LoraEditor, insertH3LoraTrigger, H3_LORA_RECOMMENDED_FIELDS, h3LoraComponents } from './h3Loras.js';
+import { referenceVideoRanges, restoreReferenceVideoRanges, createReferenceVideoRangeEditor, referenceVideoRangesField } from './referenceVideoRange.js';
 import { appendVideoInputs } from './videoInputs.js';
 import { showVideoServerFiles } from './videoServerFiles.js';
 import { showH3LoraLibrary } from './h3LoraLibrary.js';
@@ -348,8 +349,9 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     const list = el('ul', 'h3-video-file-list');
     const serverFiles = accept === 'video/*' ? button('Server files') : null;
     if (serverFiles) serverFiles.hidden = true;
-    const state = { files: [], retained: [], input, wrap, heading, label, multiple, serverFiles };
+    const state = { files: [], retained: [], input, wrap, heading, label, multiple, serverFiles, rangeEditors: [] };
     const render = () => {
+      state.rangeEditors.forEach(editor => editor.destroy()); state.rangeEditors = [];
       list.replaceChildren();
       [...state.retained.map(file => ({ file, saved: true })), ...state.files.map(file => ({ file, saved: false }))].forEach(({ file, saved }, index) => {
         const item = el('li');
@@ -358,7 +360,13 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
         const name = el('span', '', `${prefix}${file.name} · ${(file.size / 1048576).toFixed(1)} MB${saved ? ' · Saved on server' : file.serverFile ? ` · ${file.serverFile.root.toUpperCase()}:/${file.serverFile.path}` : ''}`);
         const remove = button('Remove'); remove.setAttribute('aria-label', `Remove ${file.name}`);
         remove.onclick = () => { if (saved) state.retained.splice(index, 1); else state.files.splice(index - state.retained.length, 1); editRevision++; render(); updateReady(); };
-        item.append(name, remove); list.appendChild(item);
+        item.append(name, remove);
+        if (key === 'reference_videos') {
+          item.classList.add('h3-reference-video-row');
+          const editor = createReferenceVideoRangeEditor(file, () => { editRevision++; save(); updateReady(); });
+          state.rangeEditors.push(editor); item.append(editor.node);
+        }
+        list.appendChild(item);
       });
     };
     state.render = render;
@@ -377,6 +385,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
       } }, serverFiles);
     };
     wrap.append(heading, input); if (serverFiles) wrap.append(serverFiles); wrap.append(list);
+    if (key === 'reference_videos') wrap.append(el('p', 'h3-video-muted', 'Choose any 2–15 second section of a longer video. Across multiple references, the selected sections must total at most 15 seconds. Choose a generation length at least as long as the section to use all of it.'));
     inputArea.appendChild(wrap); uploads[key] = state;
   }
   upload('first_frame', 'First frame', 'image/jpeg,image/png,image/webp', false, 'fl2va');
@@ -434,7 +443,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   };
   const config = () => {
     const loras = loraEditor.getValue();
-    return { ...Object.fromEntries(SETTINGS.map(key => [key, NUMBER_FIELDS.has(key) ? Number(fields[key].value) : fields[key].value])), loras, lora: loras[0]?.id || '', lora_scale: loras[0]?.strength ?? 1 };
+    return { ...Object.fromEntries(SETTINGS.map(key => [key, NUMBER_FIELDS.has(key) ? Number(fields[key].value) : fields[key].value])), reference_video_ranges: fields.mode.value === 'ref2va' ? referenceVideoRanges(uploads.reference_videos) : [], loras, lora: loras[0]?.id || '', lora_scale: loras[0]?.strength ?? 1 };
   };
   function save() {
     if (jobEditor?.active) return;
@@ -493,6 +502,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
         state.serverFiles.disabled = state.input.disabled || submitting || transferBusy || !!batchQueue?.busy;
       }
       state.input.multiple = state.multiple;
+      state.rangeEditors.forEach(editor => editor.setDisabled(state.input.disabled || submitting || transferBusy || !!batchQueue?.busy));
       state.heading.textContent = unused && inputCount(key) ? `${state.label} · unused in this mode` : state.label;
     }
     vfxInputError.textContent = vfxInputsIssue(); vfxInputError.hidden = !vfxInputError.textContent;
@@ -1037,7 +1047,9 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
       prompt.value = result.config.prompt || '';
       for (const [key, state] of Object.entries(uploads)) {
         state.files = Array.isArray(result.uploads?.[key]) ? (state.multiple ? result.uploads[key] : result.uploads[key].slice(0, 1)) : [];
-        state.input.value = ''; state.render();
+        state.input.value = '';
+        if (key === 'reference_videos') restoreReferenceVideoRanges(state, result.config.reference_video_ranges);
+        state.render();
       }
       originalPrompt = null; editRevision++; updateMode(true); save();
       transferStatus.textContent = ['Workflow imported into this draft. Review settings and inputs before generating.', ...(result.warnings || [])].join(' ');
@@ -1102,6 +1114,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     serverPicker?.close();
     loraLibrary?.close();
     batchQueue?.destroy(); queueControls?.destroy();
+    Object.values(uploads).forEach(state => state.rangeEditors.forEach(editor => editor.destroy()));
     enhancementController?.abort();
     gpuController?.abort();
     overlay.remove(); if (anchor?.isConnected) anchor.focus();
@@ -1127,7 +1140,9 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
       control.value = value;
     }
     for (const [key, state] of Object.entries(uploads)) {
-      state.files = [...(attached[key] || [])]; state.retained = [...(retained[key] || [])]; state.input.value = ''; state.render();
+      state.files = [...(attached[key] || [])]; state.retained = [...(retained[key] || [])]; state.input.value = '';
+      if (key === 'reference_videos') restoreReferenceVideoRanges(state, values.reference_video_ranges);
+      state.render();
     }
     editRevision++; updateMode(true); renderGpuUsage();
   }
@@ -1155,7 +1170,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
         for (const option of control.options) option.disabled = option.hidden = !vfx && Number(option.value) < 124;
       }
       return videoQueueField(key, label, control, NUMBER_FIELDS.has(key));
-    }).concat([{ key: 'loras', label: 'LoRA stack (replace all)', getSavedValue: h3LoraStack, create: onChange => createH3LoraEditor({
+    }).concat(savedConfig?.reference_video_ranges?.length ? [referenceVideoRangesField(savedConfig.reference_video_ranges)] : []).concat([{ key: 'loras', label: 'LoRA stack (replace all)', getSavedValue: h3LoraStack, create: onChange => createH3LoraEditor({
       components: h3LoraComponents(inventory?.components || [], savedJob?.lora_components), value: loraEditor.getValue(), max: inventory?.max_loras || 8, idPrefix: 'h3-queue', onChange,
     }) }]),
   });

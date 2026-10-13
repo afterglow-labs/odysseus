@@ -238,15 +238,17 @@ class ServerVideoUpload(UploadFile):
         self._source_signature = _signature(info)
         self._bytes_read = 0
 
+    def check_unchanged(self):
+        if _signature(os.fstat(self.file.fileno())) != self._source_signature:
+            raise HTTPException(409, 'A selected server video changed. Refresh and select it again.')
+
     def _read(self, size):
         # Check in the same thread as the read. An edited source must not become
         # an accepted job with a mixture of old and new input bytes.
-        if _signature(os.fstat(self.file.fileno())) != self._source_signature:
-            raise HTTPException(409, 'A selected server video changed. Refresh and select it again.')
+        self.check_unchanged()
         data = self.file.read(size)
         self._bytes_read += len(data)
-        if _signature(os.fstat(self.file.fileno())) != self._source_signature:
-            raise HTTPException(409, 'A selected server video changed. Refresh and select it again.')
+        self.check_unchanged()
         if not data and self._bytes_read != self.size:
             raise HTTPException(409, 'A selected server video could not be copied completely. Select it again.')
         return data
@@ -306,6 +308,13 @@ def _open_selection(value, roots):
     finally:
         if file is not None:
             file.close()
+
+
+def open_server_video_preview(selection):
+    """Open the same allowlisted, unchanged video accepted by job submission."""
+    if not isinstance(selection, dict) or set(selection) != {'root', 'path', 'size', 'mtime_ns'}:
+        raise HTTPException(400, 'Invalid server video selection')
+    return _open_selection({**selection, 'index': 0}, media_roots())
 
 
 def _unique_object(pairs):

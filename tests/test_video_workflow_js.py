@@ -34,6 +34,7 @@ def run_js(script):
         pytest.skip('Node.js is required for workflow transport checks')
     source = (ROOT / 'static/js/videoWorkflow.js').read_text()
     source = (ROOT / 'static/js/videoInputs.js').read_text() + '\n' + (ROOT / 'static/js/h3Loras.js').read_text() + '\n' + source
+    source = (ROOT / 'static/js/referenceVideoRange.js').read_text() + '\n' + source
     source = re.sub(r'^import .*;\n', '', source, flags=re.MULTILINE)
     subprocess.run([node, '--input-type=module', '-e',
                     "import assert from 'node:assert/strict';\n" + source + '\n' + script],
