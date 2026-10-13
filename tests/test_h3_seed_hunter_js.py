@@ -57,3 +57,29 @@ const final=seedHunterConfig(fields,{stage:'final',refmod_strengths:[.5],sparse_
 assert.equal(preview.latent_upscaler,'upscaler');assert.equal(final.latent_upscaler,'upscaler');
 assert.deepEqual(final.seed_hunter.refmod_strengths,[.5]);assert.equal(final.seed_hunter.sparse_keep_percent,25);
 """)
+
+
+def test_queued_save_uses_registered_patch_route_and_keeps_multipart_body():
+    # Check the actual backend registration too: the /edit URL is GET-only.
+    route_source = (ROOT / 'routes/video_job_edit_routes.py').read_text()
+    assert "@router.patch('/jobs/{job_id}')" in route_source
+    assert "@router.get('/jobs/{job_id}/edit')" in route_source
+    run_js("""
+const calls=[],body=new FormData();body.append('revision','7');body.append('config','{"steps":3}');
+const result=await saveSeedHunterQueuedJob(async(path,options)=>{calls.push({path,options});return {id:'job',revision:8};},'queued-job',body);
+assert.equal(calls.length,1);assert.equal(calls[0].path,'/jobs/queued-job');assert.equal(calls[0].options.method,'PATCH');
+assert.equal(calls[0].options.body,body);assert.equal(calls[0].options.body.get('revision'),'7');assert.equal(result.revision,8);
+""")
+
+
+def test_enhancer_sends_active_guide_roles_and_blocks_missing_retained_image_bytes():
+    run_js("""
+const first=new File(['first'],'first.png'),last=new File(['last'],'last.png'),reference=new File(['ref'],'ref.png');
+const states={first_frame:{files:[first],retained:[]},last_frame:{files:[last],retained:[]},reference_images:{files:[reference],retained:[]},source_video:{files:[{name:'source.mp4'}]}};
+const active=seedHunterEnhancerInputs(states,{stage:'continuation',first_frame_guide:true,last_frame_guide:false});
+assert.deepEqual(active.images,{reference_images:[reference],first_frame:[first],last_frame:[]});
+assert.equal(active.counts.first_frame,1);assert.equal(active.counts.last_frame,0);assert.equal(active.counts.source_video,1);assert.equal(active.issue,'');
+states.first_frame={files:[],retained:[{index:0,name:'saved.png'}]};
+assert.match(seedHunterEnhancerInputs(states,{first_frame_guide:true}).issue,/Reattach/);
+assert.equal(seedHunterEnhancerInputs(states,{first_frame_guide:false}).issue,'');
+""")

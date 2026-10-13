@@ -405,6 +405,24 @@ def test_actual_keyframes_get_ordered_markers_roles_and_original_pixels(api, end
     assert call["strict_final_only"] is True and call["generation_options"]["thinking"] == "off"
 
 
+def test_seed_hunter_enhancer_accepts_nine_references_and_both_guides(api, endpoints, upstream, inference):
+    endpoints.add("local")
+    upstream.state["capabilities"] = ["completion", "multimodal"]
+    fields = ["first_frame", "last_frame"] + ["reference_images"] * 9
+    files = [(field, (f"image-{index}.png", image_bytes(), "image/png"))
+             for index, field in enumerate(fields)]
+    response = image_request(api, payload(
+        recipe="seed_hunter", mode="ref2va", width=480, height=864, frames=73,
+        reference_counts={"first_frame": 1, "last_frame": 1, "reference_images": 9}), files)
+    assert response.status_code == 200, response.text
+    content = inference.seen[0]["messages"][1]["content"]
+    context = json.loads(content[0]["text"])
+    assert [item["role"] for item in context["observed_images"]] == fields
+    assert [item["marker"] for item in context["observed_images"]] == [
+        f"<Picture {index}>" for index in range(1, 12)]
+    assert sum(part.get("type") == "image_url" for part in content) == 11
+
+
 def test_reference_images_preserve_upload_order_and_video_audio_remain_unobserved(api, endpoints, inference):
     endpoints.add("local")
     files = [("reference_images", ("one.jpeg", image_bytes("red", "JPEG"), "image/jpeg")),

@@ -45,6 +45,19 @@ export function seedHunterConfig(values, options, loras) {
   if(!['preview','final'].includes(config.seed_hunter.stage) || !config.latent_upscaler) delete config.latent_upscaler;
   return config;
 }
+export function seedHunterEnhancerInputs(uploads, options) {
+  const images={}, counts={}; let missingImages=false;
+  for(const key of ['reference_images','reference_videos','reference_audio','source_video','first_frame','last_frame']) {
+    const active=key==='source_video'?options.stage==='continuation':key==='first_frame'?options.first_frame_guide:key==='last_frame'?options.last_frame_guide:true;
+    const state=uploads[key]||{}, files=active?state.files||[]:[], retained=active?state.retained||[]:[];
+    counts[key]=files.length+retained.length;
+    if(['reference_images','first_frame','last_frame'].includes(key)){images[key]=files;missingImages ||= retained.length>0;}
+  }
+  return {images,counts,issue:missingImages?'Reattach the saved images to enhance this prompt with their context. Your job keeps its saved inputs.':''};
+}
+export function saveSeedHunterQueuedJob(send, id, body) {
+  return send(`/jobs/${encodeURIComponent(id)}`, { method: 'PATCH', body });
+}
 async function request(path, options = {}) {
   const response = await fetch(API + path, { credentials: 'same-origin', ...options });
   let data = {}; try { data = await response.json(); } catch {}
@@ -91,7 +104,7 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
   }); form.append(loras.node);
   const prompt = field(form, 'prompt', 'Prompt', make('textarea')); prompt.rows = 5; prompt.maxLength = 16000; prompt.required = true;
   const enhancerBar = make('div', 'h3-video-actions'), enhance = button('Enhance prompt'), restorePrompt = button('Restore original prompt'), enhancerSelect = make('select', 'cookbook-field-input'), checkModels = button('Check models'); enhancerSelect.setAttribute('aria-label', 'Enhancement model');
-  enhancerBar.append(enhancerSelect, enhance, restorePrompt, checkModels); form.append(enhancerBar); restorePrompt.hidden = true;
+  enhancerBar.append(enhancerSelect, enhance, restorePrompt, checkModels); form.append(enhancerBar); const enhancerInfo=make('p','h3-video-muted');form.append(enhancerInfo); restorePrompt.hidden = true;
   const dialoguePanel = group(form, 'Dialogue prompt builder', true), dialogueText = field(dialoguePanel, 'dialogue_text', 'Line of dialogue', make('textarea'));
   const dialogueTone = field(dialoguePanel, 'dialogue_tone', 'Tone and delivery', make('textarea'));
   const dialogueTemplate = field(dialoguePanel, 'dialogue_template', 'Editable prompt template', make('textarea')); dialogueTemplate.rows = 5;
@@ -201,7 +214,8 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
     submit.disabled = busy || loading || enhancing || !inventory?.seed_hunter || !inventory?.runtime_ready || !!jobEditor?.blocked || (['continuation','dialogue'].includes(stage.value) && features[stage.value] !== true);
     submit.textContent = busy ? 'Submitting…' : jobEditor?.active ? 'Save queued job' : stage.value === 'preview' ? 'Generate previews' : stage.value === 'dialogue' ? 'Generate audio previews' : stage.value === 'continuation' ? 'Queue continuation' : 'Queue single pass';
     refresh.disabled = busy || loading; exportButton.disabled = importButton.disabled = busy || loading || !inventory || !!jobEditor?.active;
-    enhance.disabled = finalEdit || busy || enhancing || !enhancerSelect.value; restorePrompt.hidden = previousPrompt === null;
+    const enhancerInputs=seedHunterEnhancerInputs(uploads,readOptions());enhancerInfo.textContent=enhancerInputs.issue;enhancerInfo.hidden=!enhancerInputs.issue;
+    enhance.disabled = finalEdit || busy || enhancing || !enhancerSelect.value || !!enhancerInputs.issue; restorePrompt.hidden = previousPrompt === null;
     queue?.setBlocked(busy || loading || finalBusy || !!jobEditor?.active); finalSubmit.disabled = finalBusy || !selection || !finalFields.latent_upscaler.value || features.latent_upscaler !== true; finalLoras.setDisabled(finalBusy); for(const n of Object.values(finalFields))n.disabled=finalBusy;finalReroll.disabled=cancelSelection.disabled=finalBusy;
   }
   function fill(n, items, selected, blank = false) { n.replaceChildren(); if (blank) n.add(new Option('Use model GPU', '')); for (const item of items) n.add(new Option(displayName(item), item.id)); if(selected!==undefined&&selected!==null){if(![...n.options].some(o=>o.value===String(selected)))n.add(new Option('Choose an available component',selected));n.value=selected;} }
@@ -230,15 +244,16 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
     if (issue) { fail(issue); return; }
     if (!values.prompt.trim()) { fail('Enter a prompt, or build one with the dialogue controls.'); return; }
     if ((values.frames - 5) % 17) { fail('Frame count must be 17 × n + 5, such as 73, 90, 107 or 124.'); return; }
+    const editedJobId=jobEditor.active?.id;
     busy = true; update(); error.hidden = true;
     try {
       if (jobEditor.active) {
         const body = videoJobEditFormData(jobEditor.active, values, currentUploads(), Object.fromEntries(Object.entries(uploads).map(([key,s]) => [key,s.retained])));
-        try { await request(`/jobs/${jobEditor.active.id}/edit`, { method: 'PUT', body }); jobEditor.finish(); }
+        try { await saveSeedHunterQueuedJob(request, jobEditor.active.id, body); jobEditor.finish(); }
         catch (e) { jobEditor.failed(e); return; }
       }
       else { const body = new FormData(); body.append('config', JSON.stringify(values)); appendVideoInputs(body, currentUploads()); await request('/jobs', { method: 'POST', body }); }
-      if (!closed) { status.textContent = 'Job added to the shared video queue. Your draft remains available.'; await loadJobs(); }
+      if (!closed) { status.textContent = editedJobId ? 'Changes saved to the queued job. Its queue position is unchanged, and your previous draft has been restored.' : 'Job added to the shared video queue. Your draft remains available.'; await loadJobs(); }
     } catch (e) { fail(e); } finally { busy = false; if (!closed) update(); }
   });
   async function selectCandidate(job, candidate, remembered = false) {
@@ -312,7 +327,7 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
   importButton.onclick=()=>importInput.click();importInput.onchange=async()=>{const file=importInput.files?.[0];importInput.value='';if(!file||busy)return;const captured=revision;busy=true;update();try{const result=await videoWorkflow.importVideoWorkflow(file,{family:'h3',inventory});if(closed)return;if(captured!==revision)throw new Error('The draft changed while importing. Import again to keep your edits.');if(result.config.recipe!=='seed_hunter')throw new Error('Choose a Seed Hunter workflow for this panel.');inventory=result.inventory||inventory;restore(result.config,result.uploads);save();status.textContent=['Seed Hunter workflow imported. Review settings and inputs before submitting.',...(result.warnings||[])].join(' ');}catch(e){fail(e);}finally{busy=false;if(!closed)update();}};
   async function checkEnhancer(){try{const data=await request('/prompt-enhancer');if(closed)return;const before=enhancer[Number(enhancerSelect.value)] || saved.enhancer || data.default;enhancer=data.models||[];enhancerSelect.replaceChildren(new Option('Choose enhancement model…',''),...enhancer.map((m,i)=>new Option(m.label||m.model,String(i))));enhancerSelect.value=String(enhancer.findIndex(m=>m.model===before?.model&&m.endpoint_id===before?.endpoint_id));update();}catch(e){enhancerSelect.replaceChildren(new Option('Enhancer unavailable',''));update();}}
   enhancerSelect.onchange=()=>{update();save();};
-  enhance.onclick=async()=>{const model=enhancer[Number(enhancerSelect.value)];if(!model||enhancing)return;const before=prompt.value,captured=revision;enhancing=true;enhancerController=new AbortController();update();try{const payload={recipe:'seed_hunter',prompt:before,mode:'ref2va',width:Number(fields.width.value),height:Number(fields.height.value),frames:Number(fields.frames.value),endpoint_id:model.endpoint_id,model:model.model,reference_counts:Object.fromEntries(['reference_images','reference_videos','reference_audio','source_video','first_frame','last_frame'].map(key=>[key,(key==='source_video'&&stage.value!=='continuation'||key==='first_frame'&&!options.first_frame_guide.checked||key==='last_frame'&&!options.last_frame_guide.checked)?0:uploads[key].files.length+uploads[key].retained.length]))};const body=new FormData();body.append('config',JSON.stringify(payload));for(const key of ['reference_images','first_frame','last_frame'])for(const file of currentUploads()[key]||[])body.append(key,file,file.name);const result=await request('/enhance-prompt',{method:'POST',body,signal:enhancerController.signal});if(!closed&&captured===revision&&prompt.value===before){if(!result.prompt?.trim()||result.prompt.length>16000)throw new Error('Enhancement returned no usable prompt.');previousPrompt=before;prompt.value=result.prompt;changed();status.textContent='Prompt enhanced. Review it before generating.';}}catch(e){if(e.name!=='AbortError')fail(e);}finally{enhancing=false;if(!closed)update();}};
+  enhance.onclick=async()=>{const model=enhancer[Number(enhancerSelect.value)];if(!model||enhance.disabled)return;const before=prompt.value,captured=revision;enhancing=true;enhancerController=new AbortController();update();try{const payload={recipe:'seed_hunter',prompt:before,mode:'ref2va',width:Number(fields.width.value),height:Number(fields.height.value),frames:Number(fields.frames.value),endpoint_id:model.endpoint_id,model:model.model,reference_counts:seedHunterEnhancerInputs(uploads,readOptions()).counts};const body=new FormData();body.append('config',JSON.stringify(payload));for(const [key,files] of Object.entries(seedHunterEnhancerInputs(uploads,readOptions()).images))for(const file of files)body.append(key,file,file.name);const result=await request('/enhance-prompt',{method:'POST',body,signal:enhancerController.signal});if(!closed&&captured===revision&&prompt.value===before){if(!result.prompt?.trim()||result.prompt.length>16000)throw new Error('Enhancement returned no usable prompt.');previousPrompt=before;prompt.value=result.prompt;changed();status.textContent='Prompt enhanced. Review it before generating.';}}catch(e){if(e.name!=='AbortError')fail(e);}finally{enhancing=false;if(!closed)update();}};
   restorePrompt.onclick=()=>{if(previousPrompt!==null){prompt.value=previousPrompt;previousPrompt=null;changed();}};checkModels.onclick=checkEnhancer;
   function onKey(event){if(document.querySelector('.video-server-files-overlay,.h3-lora-library-overlay,.video-workflow-export-overlay'))return;if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();}else if(event.key==='Tab'){const controls=[...dialog.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),summary,a[href]')].filter(n=>n.getClientRects().length);if(event.shiftKey&&document.activeElement===controls[0]){event.preventDefault();controls.at(-1)?.focus();}else if(!event.shiftKey&&document.activeElement===controls.at(-1)){event.preventDefault();controls[0]?.focus();}}}
   const close=bindMenuDismiss(overlay,()=>{closed=true;clearInterval(timer);window.removeEventListener('keydown',onKey,true);enhancerController?.abort();picker?.close();library?.close();queue?.destroy();overlay.remove();if(anchor?.isConnected)anchor.focus();},()=>false);

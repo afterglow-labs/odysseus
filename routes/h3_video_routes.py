@@ -135,7 +135,8 @@ def setup_h3_video_routes(manager=None):
                 limit = get_chat_upload_max_bytes()
                 limited = _limited_request(request, limit + 96 * 1024,
                                            f"Prompt images exceed {format_byte_limit(limit)} per request")
-                async with limited.form(max_files=9, max_fields=1, max_part_size=96 * 1024) as form:
+                # Seed Hunter can use nine references plus two frame guides.
+                async with limited.form(max_files=11, max_fields=1, max_part_size=96 * 1024) as form:
                     if any(key not in {"config", *IMAGE_FIELDS} for key in form):
                         raise HTTPException(400, "Only first frame, last frame and reference images can be inspected by the prompt enhancer")
                     raw = form.get("config")
