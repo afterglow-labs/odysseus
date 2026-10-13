@@ -13,6 +13,29 @@ from scripts import h3_seed_hunter as hunter, h3_video_worker as worker
 from scripts.h3_seed_hunter_controls import validate_options
 
 
+@pytest.mark.parametrize("chunks", [0, 1, 8])
+@pytest.mark.parametrize("sink,expected", [("none", "off"), ("exact_kv_and_rows", "exact_kv_and_rows")])
+def test_patch_model_preserves_explicit_chunks_and_translates_sparse_sink(monkeypatch, chunks, sink, expected):
+    calls = []
+    mlp = SimpleNamespace()
+    model = SimpleNamespace(get_model_object=lambda _: SimpleNamespace(blocks=[SimpleNamespace(mlp=mlp)]))
+    backend = ModuleType("comfy_extras.nodes_model_advanced")
+    backend.ModelAttentionBackend = SimpleNamespace(execute=lambda value, *_: (value,))
+    sparse = ModuleType("comfy_extras.nodes_sparse_attention")
+    sparse.BlockSparseAttention = SimpleNamespace(execute=lambda value, *args, **kw: (calls.append(kw) or value,))
+    monkeypatch.setitem(sys.modules, "comfy_extras.nodes_model_advanced", backend)
+    monkeypatch.setitem(sys.modules, "comfy_extras.nodes_sparse_attention", sparse)
+    chunk_calls = []
+    optimizations = SimpleNamespace(MiniMaxChunkFeedForward=SimpleNamespace(
+        execute=lambda value, count, threshold: (chunk_calls.append((count, threshold)) or value,)))
+    monkeypatch.setattr(hunter, "_load_module", lambda *_: optimizations)
+    options = validate_options({"ff_chunk_size": chunks, "sparse_method": "sla", "sparse_sink_conditioning": sink})
+    assert hunter.patch_model(None, {"seed_hunter": options}, model, "/tmp/ComfyUI") is model
+    assert getattr(mlp, "_odysseus_manual_ff_chunks", 0) == chunks
+    assert chunk_calls == ([(chunks, options["ff_chunk_threshold"])] if chunks else [])
+    assert calls[0]["sink_conditioning"] == expected
+
+
 @pytest.fixture
 def manifest(tmp_path):
     config = dict(recipe="seed_hunter", mode="ref2va", prompt="A ball bounces.",

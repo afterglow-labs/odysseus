@@ -669,3 +669,30 @@ They do not establish production quality at four steps, or validate every
 reference/LoRA/model-precision combination.
 
 Upstream implementation: [H3 inference nodes](https://github.com/Comfy-Org/ComfyUI/blob/5c460d8172fe30761ff67c0df3d5643bb74e0d70/comfy_extras/nodes_minimax_h3.py).
+
+### INT8 temporary memory and WSL allocation
+
+The worker bounds large INT8 feedforward activation temporaries by processing
+token rows in smaller groups. This applies to regular H3 and Seed Hunter.
+It detects the actual INT8 layout, preserves per-row quantization and LoRA
+hooks, and leaves NVFP4 and other layouts unchanged. The output and other model
+buffers still need memory; this is not a fixed total-VRAM limit.
+
+On the tested WSL/RTX 5090 installation, a neutral allocation-pressure test
+reproduced `CUDA driver error: device not ready` in PyTorch's virtual-memory
+`setAccess` path with `expandable_segments:True`. The app-private setting
+`ODYSSEUS_H3_PYTORCH_ALLOC_CONF=expandable_segments:False` avoided that reproduced
+failure. It takes effect for newly started workers after restarting the server.
+The worker continues to respect explicit allocator settings; this is not a
+global override or a diagnosis for every error with that wording.
+
+A neutral CUDA test also compared full and bounded INT8/ConvRot/SwiGLU
+computation, including synchronization, at 221,918 token rows and H3's native
+layer widths. This checks the kernel path independently of user prompts,
+references and saved latents; full workflow quality requires separate testing.
+
+Complete neutral regular H3 renders also passed at 256×256 and 768×512,
+124 frames and one step, using the real pruned INT8 transformer, Qwen encoder,
+5090 sampling and 4090 VAE decoding. The larger render exercised automatic
+chunking inside the real inference core and produced an MP4. These smoke tests
+do not establish quality at one step or certify a full-resolution user job.

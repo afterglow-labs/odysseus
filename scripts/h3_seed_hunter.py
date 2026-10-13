@@ -159,6 +159,12 @@ def _load_module(path, name):
 def patch_model(runtime, config, model, runtime_path=None):
     from comfy_extras.nodes_model_advanced import ModelAttentionBackend
     options = config["seed_hunter"]
+    if options["ff_chunk_size"]:
+        # A positive count is an explicit user choice, including 1 (no
+        # splitting). KJ's object patch below owns that behavior; keep the
+        # shared automatic INT8 guard from changing it underneath the patch.
+        for block in model.get_model_object("diffusion_model").blocks:
+            block.mlp._odysseus_manual_ff_chunks = options["ff_chunk_size"]
     if options["ff_chunk_size"] or options["low_vram_chunks"]:
         import types
         path = Path(runtime_path).parent / "seed-hunter/kjnodes/nodes/minimax_nodes.py"
@@ -188,7 +194,8 @@ def patch_model(runtime, config, model, runtime_path=None):
                      "keep_percent": options["sparse_keep_percent"]}
         model = BlockSparseAttention.execute(model, selection, options["sparse_start"], options["sparse_end"],
             min_tokens=options["sparse_min_tokens"], extra_tokens=options["sparse_extra_tokens"],
-            sink_conditioning=options["sparse_sink_conditioning"])[0]
+            sink_conditioning="off" if options["sparse_sink_conditioning"] == "none"
+            else options["sparse_sink_conditioning"])[0]
     return model
 
 

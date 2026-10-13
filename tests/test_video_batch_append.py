@@ -48,5 +48,12 @@ def test_append_distinct_batch_while_first_runs_preserves_existing_jobs(backend,
         config = h3._read(manager.directory(job['id']) / 'manifest.json')['config']
         assert second_config['prompt'] in config['prompt']
         assert config['steps'] == 9 and config['seed'] == 456
+        # The append path must not silently change device mapping, adapters,
+        # dimensions, duration, sampler, or recipe when only these three draft
+        # settings were edited. Compare the whole normalized worker config.
+        previous = h3._read(manager.directory(first_jobs[0]['id']) / 'manifest.json')['config']
+        changed = {'prompt', 'steps', 'seed', *({'prompt_notes'} if family == 'bfs' else set())}
+        assert {key: value for key, value in config.items() if key not in changed} == {
+            key: value for key, value in previous.items() if key not in changed}
     assert manager.view(first_jobs[0]['id'], 'corey')['status'] == 'running'
     assert len(backend.calls) == 5
