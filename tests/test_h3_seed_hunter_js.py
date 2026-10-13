@@ -83,3 +83,26 @@ states.first_frame={files:[],retained:[{index:0,name:'saved.png'}]};
 assert.match(seedHunterEnhancerInputs(states,{first_frame_guide:true}).issue,/Reattach/);
 assert.equal(seedHunterEnhancerInputs(states,{first_frame_guide:false}).issue,'');
 """)
+
+
+def test_each_seed_hunter_input_stage_has_batch_choices_except_derived_final():
+    run_js("""
+assert.deepEqual(seedHunterBatchChoices('preview').map(row=>row.field),['reference_videos','reference_images','reference_audio','copies']);
+assert.deepEqual(seedHunterBatchChoices('single'),seedHunterBatchChoices('preview'));
+assert.deepEqual(seedHunterBatchChoices('continuation').map(row=>row.field),['source_video']);
+assert.deepEqual(seedHunterBatchChoices('dialogue').map(row=>row.field),['reference_audio','copies']);
+assert.deepEqual(seedHunterBatchChoices('final'),[]);
+""")
+
+
+def test_automatic_video_batch_normalizes_a_short_prior_continuation_without_mutating_draft():
+    run_js("""
+for(const stage of ['preview','single']){
+ const draft={recipe:'seed_hunter',frames:22,prompt:'Preserve me',seed_hunter:{stage,preview_count:3}};
+ const automatic=seedHunterBatchConfig(draft,true);
+ assert.equal(automatic.frames,73);assert.equal(draft.frames,22);assert.equal(automatic.prompt,draft.prompt);assert.deepEqual(automatic.seed_hunter,draft.seed_hunter);
+ assert.equal(seedHunterBatchConfig(draft,false).frames,22);
+ assert.equal(seedHunterBatchConfig({...draft,frames:158},true).frames,158);
+}
+assert.equal(seedHunterBatchConfig({frames:22,seed_hunter:{stage:'continuation'}},true).frames,22);
+""")

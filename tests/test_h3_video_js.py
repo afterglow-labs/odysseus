@@ -18,8 +18,8 @@ def run_js(script):
     source = (ROOT / 'static/js/referenceVideoRange.js').read_text() + '\n' + source
     source = re.sub(r"^import .*;\n", "", source, flags=re.MULTILINE)
     result = subprocess.run(
-        [node, "--input-type=module", "-e", "import assert from 'node:assert/strict';\n" + source + DOM + script],
-        capture_output=True, text=True, check=False,
+        [node, "--input-type=module"],
+        input="import assert from 'node:assert/strict';\n" + source + DOM + script, capture_output=True, text=True, check=False,
     )
     assert result.returncode == 0, result.stderr
 

@@ -36,6 +36,13 @@ const button = (text, className = 'memory-toolbar-btn') => {
 
 // H3 packages and their dedicated Qwen encoder must never go through the
 // still-image Diffusers form. Adapter repositories keep their file picker.
+export function h3BatchInputChoices(mode,vfx=false) {
+  const copies={field:'copies',label:'Copies of this draft'};
+  if(vfx)return [{field:'source_video',label:'Source videos'}];
+  if(mode==='t2va')return [copies];
+  if(mode==='fl2va')return [{field:'first_frame',label:'First-frame images'},copies];
+  return [{field:'reference_videos',label:'Reference videos'},{field:'reference_images',label:'Reference images'},{field:'reference_audio',label:'Reference audio'},copies];
+}
 export function isH3VideoComponent(model) {
   if (!model || model.adapter_only) return false;
   const name = `${model.repo_id || ''} ${model.name || ''} ${model.path || ''}`;
@@ -480,8 +487,8 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     if (batchActive() && batchQueue?.autoVideoLength) return '';
     return !isVfxEdit() && Number(fields.frames.value) < 124 ? 'This duration is available only for VFX Edit. Choose a length of at least 124 frames.' : '';
   }
-  const batchActive = () => !jobEditor?.active && fields.mode.value === 'ref2va' && !!batchQueue?.active;
-  const batchVideoField = () => isVfxEdit() ? 'source_video' : 'reference_videos';
+  const batchActive = () => !jobEditor?.active && !!batchQueue?.active;
+  const batchVideoField = () => isVfxEdit() ? 'source_video' : batchQueue?.inputField || (fields.mode.value==='t2va'?'copies':fields.mode.value==='fl2va'?'first_frame':'reference_videos');
   function vfxInputsIssue({ requireSource = false, batch = batchActive() } = {}) {
     if (!isVfxEdit()) return inputCount('source_video') ? 'The source video requires an active VFX Edit LoRA. Enable it or remove the source video.' : '';
     if (inventory?.vfx_references !== true) return 'Separate VFX source and reference inputs need the updated Odysseus server. Restart the server and refresh components.';
@@ -496,7 +503,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     for (const [key, state] of Object.entries(uploads)) {
       const unused = vfx && ['first_frame', 'last_frame'].includes(key) || !vfx && key === 'source_video';
       state.wrap.hidden = unused ? !inputCount(key) : state.wrap.dataset.mode !== fields.mode.value || (key === batchVideoField() && batchActive());
-      state.input.disabled = unused || state.wrap.dataset.mode !== fields.mode.value;
+      state.input.disabled = unused || state.wrap.dataset.mode !== fields.mode.value || key===batchVideoField()&&batchActive();
       if (state.serverFiles) {
         state.serverFiles.hidden = inventory?.server_video_files !== true;
         state.serverFiles.disabled = state.input.disabled || submitting || transferBusy || !!batchQueue?.busy;
@@ -511,7 +518,6 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     if (jobEditor?.active || jobEditor?.loading) return 'Finish editing the queued job before adding a batch.';
     if (inventory && inventory.batch_jobs !== true) return 'Batch jobs need the updated Odysseus server. Restart the server after active transfers finish.';
     if (batchQueue?.autoVideoLength && inventory && inventory.batch_auto_video_length !== true) return 'Automatic batch length needs the updated Odysseus server. Refresh components after the server update.';
-    if (fields.mode.value !== 'ref2va') return 'Batch jobs require References → video + audio mode.';
     if (queueControls?.busy || inventoryLoading || transferBusy || enhancing || submitting) return 'Wait for the current operation to finish.';
     if (loadFailed || !inventory?.runtime_ready) return inventory?.runtime_error || 'The H3 runtime is not ready.';
     if (!['model', 'encoder', 'video_vae', 'audio_vae', 'gpu'].every(key => fields[key].value)) return 'Choose the required models, VAEs, and GPU.';
@@ -519,15 +525,17 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     const primary = inventory.gpus.find(item => String(item.id) === fields.gpu.value);
     const selected = ['model', 'encoder', 'video_vae', 'audio_vae'].map(key => inventory.components?.find(item => item.id === fields[key].value));
     selected.push(...loraEditor.getValue().filter(row => Number(row.strength) !== 0).map(row => inventory.components?.find(item => item.id === row.id)));
-    if (selected.slice(0, 4).some(item => !item) || selected[0]?.variant !== 'ref2va') return 'Choose available components for References → video + audio.';
+    if (selected.slice(0, 4).some(item => !item) || selected[0]?.variant !== (fields.mode.value==='ref2va'?'ref2va':'fl2va')) return 'Choose available components for this generation mode.';
     if (incompatibleLora()) return incompatibleLora();
     if (incompatibleLength()) return incompatibleLength();
     if (vfxInputsIssue({ batch: true })) return vfxInputsIssue({ batch: true });
     if (selected.some(item => item?.nvfp4) && !primary.nvfp4) return 'The selected NVFP4 components require a Blackwell GPU, such as the RTX 5090.';
     if (!prompt.value.trim()) return 'Enter the prompt to use for every video.';
     if (Number(fields.width.value) * Number(fields.height.value) > 1032192) return 'Choose dimensions totaling at most 1,032,192 pixels.';
-    const images = uploads.reference_images.files.length, audio = uploads.reference_audio.files.length;
-    const videos = isVfxEdit() ? uploads.reference_videos.files.length : 1;
+    const images = batchVideoField()==='reference_images'?1:uploads.reference_images.files.length, audio = batchVideoField()==='reference_audio'?1:uploads.reference_audio.files.length;
+    const videos = batchVideoField()==='reference_videos'?1:uploads.reference_videos.files.length;
+    if(fields.mode.value==='ref2va'&&!isVfxEdit()&&!images&&!videos)return 'Audio-only batches need a shared reference image or video.';
+    if(fields.mode.value==='fl2va'&&batchVideoField()==='copies'&&!inputCount('first_frame')&&!inputCount('last_frame'))return 'Attach a first or last frame before creating copies.';
     if (images > 9 || videos > 3 || audio > 3 || images + audio + videos > 12) return 'Each batch job supports up to 9 reference images, 3 reference videos, 3 reference audio files, and 12 references total. The VFX source video is separate.';
     if (!form.checkValidity()) return 'Check the video settings before adding the batch.';
     return '';
@@ -540,12 +548,13 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
       config: { ...config(), ...(batchQueue?.autoVideoLength && !isVfxEdit() ? { frames: Math.max(124, Number(fields.frames.value)) } : {}), prompt: prompt.value.trim() }, videoField: batchVideoField(),
       autoVideoLength: batchQueue?.autoVideoLength === true,
       uploads: Object.fromEntries(Object.entries(uploads)
-        .filter(([key, state]) => key !== batchVideoField() && state.wrap.dataset.mode === 'ref2va')
+        .filter(([key, state]) => key !== batchVideoField() && state.wrap.dataset.mode === fields.mode.value)
         .map(([key, state]) => [key, [...state.files]])),
     };
   }
   function updateReady() {
     jobEditor?.observe(jobs);
+    if(inventory)batchQueue?.setInputChoices?.(h3BatchInputChoices(fields.mode.value,isVfxEdit()));
     const batching = batchActive(), batchBusy = !!batchQueue?.busy;
     const editing = !!jobEditor?.active, editLoading = !!jobEditor?.loading;
     const queueBusy = !!queueControls?.busy;
@@ -574,9 +583,9 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
       : queueBusy || inventoryLoading || transferBusy || enhancing || submitting ? 'Wait for the current operation to finish.'
       : loadFailed || !inventory?.runtime_ready ? inventory?.runtime_error || 'The H3 runtime is not ready.' : '';
     batchQueue?.setEnabled(!issue, issue, { snapshotEnabled: !snapshotReason, snapshotReason });
-    batchQueue?.setAvailable(!editing && fields.mode.value === 'ref2va');
+    batchQueue?.setAvailable(!editing);
     batchQueue?.setServerFilesAvailable?.(inventory?.server_video_files === true);
-    batchContainer.hidden = editing || fields.mode.value !== 'ref2va';
+    batchContainer.hidden = editing;
     for (const [id, nodes] of jobNodes) nodes.edit.disabled = queueBusy || !!queueControls?.editing || editing || editLoading || batchBusy || transferBusy || enhancing || submitting || inventoryLoading || !inventory || pendingStops.has(id);
     queueControls?.setBlocked(editing || editLoading || batchBusy || transferBusy || enhancing || submitting || inventoryLoading || pendingStops.size > 0 || pendingDeletes.size > 0);
     for (const job of jobs) {
@@ -752,10 +761,11 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     for (const option of fields.frames.options) { option.disabled = option.hidden = !vfx && Number(option.value) < 124; }
     fields.frames.disabled = vfx;
     sourceTimingHelp.hidden = !vfx;
-    batchQueue?.setAvailable(fields.mode.value === 'ref2va');
-    batchContainer.hidden = fields.mode.value !== 'ref2va';
+    batchQueue?.setAvailable(true);
+    batchContainer.hidden = false;
     fields.reference_size.disabled = fields.mode.value !== 'ref2va';
-    batchQueue?.setVideoField?.(batchVideoField());
+    if(inventory)batchQueue?.setInputChoices?.(h3BatchInputChoices(fields.mode.value,isVfxEdit()));
+    if(isVfxEdit())batchQueue?.setVideoField?.('source_video');
     modeHelp.textContent = vfx ? 'VFX Edit changes one source video and retains its original sound. Add optional reference images, videos or audio and describe their roles with <Picture 1>, <Video 1> or <Audio 1>. The source video is a separate guide, not <Video 1>. Use Batch job for one source per job with the same references.' : fields.mode.value === 'fl2va' ? 'Choose a first frame, a last frame, or both to guide the video.' : fields.mode.value === 'ref2va' ? 'Add an image or video, with optional audio. In your prompt, use <Picture 1>, <Video 1>, or <Audio 1> to reference uploads. Clips: 2–15 seconds, with 15 seconds total per video/audio type.' : 'Text mode uses the first / last frame model without image inputs.';
     const current = models.find(item => item.id === fields.model.value);
     componentPath.textContent = current?.path || '';

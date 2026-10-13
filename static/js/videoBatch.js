@@ -2,8 +2,12 @@
 // File objects remain streamed uploads; no video bytes are buffered in JS.
 import { appendVideoInputs } from './videoInputs.js';
 import { showVideoServerFiles } from './videoServerFiles.js';
-import { referenceVideoRange, createReferenceVideoRangeEditor, validateReferenceVideoRanges } from './referenceVideoRange.js';
+import { referenceVideoRange, hasReferenceVideoRange, createReferenceVideoRangeEditor, validateReferenceVideoRanges } from './referenceVideoRange.js';
 const VIDEO = /\.(mp4|mov|m4v|webm|mkv|avi)$/i;
+const IMAGE = /\.(png|jpe?g|webp)$/i, AUDIO = /\.(wav|mp3|flac|m4a|aac|ogg|opus)$/i;
+const H3_FIELDS = new Set(['reference_videos','source_video','reference_images','first_frame','reference_audio','copies']);
+const inputKind = field => field === 'copies' ? 'copy' : ['reference_images','first_frame'].includes(field) ? 'image' : field === 'reference_audio' ? 'audio' : 'video';
+const acceptsInput = (file,field) => ({video:VIDEO,image:IMAGE,audio:AUDIO}[inputKind(field)]?.test(file.name) && file.size>0);
 const fieldFor = family => {
   if (family === 'h3') return 'reference_videos';
   if (family === 'bfs') return 'source_video';
@@ -19,7 +23,7 @@ let unloadGuardInstalled = false;
 
 export function snapshotVideoBatch(value, family) {
   const defaultField = fieldFor(family), videoField = value?.videoField;
-  if (!value?.config || !(videoField === defaultField || family === 'h3' && videoField === 'source_video')) throw new Error('Choose a video workflow before adding a batch.');
+  if (!value?.config || !(videoField === defaultField || family === 'h3' && H3_FIELDS.has(videoField))) throw new Error('Choose a video workflow before adding a batch.');
   const config = JSON.parse(JSON.stringify(value.config));
   const uploads = Object.fromEntries(Object.entries(value.uploads || {})
     .filter(([field]) => field !== videoField).map(([field, files]) => [field, [...files]]));
@@ -30,7 +34,7 @@ export function videoBatchFormData(item) {
   const body = new FormData();
   body.append('config', JSON.stringify(item.snapshot.config));
   if (item.snapshot.autoVideoLength) body.append('auto_video_length', 'true');
-  appendVideoInputs(body, { ...item.snapshot.uploads, [item.snapshot.videoField]: [item.file] });
+  appendVideoInputs(body, { ...item.snapshot.uploads, ...(item.snapshot.videoField==='copies'?{}:{[item.snapshot.videoField]:[item.file]}) });
   return body;
 }
 
@@ -66,7 +70,7 @@ export class VideoBatchQueue {
   constructor({ family, getSnapshot, onChange = () => {}, onJob = () => {}, submit = submitVideoBatchJob }) {
     fieldFor(family);
     Object.assign(this, { family, getSnapshot, onChange, onJob, submit });
-    this.items = []; this.running = false; this.pauseRequested = false; this.disposed = false;
+    this.inputField=fieldFor(family); this.items = []; this.running = false; this.pauseRequested = false; this.disposed = false;
   }
   add(files) {
     if (this.running) throw new Error('Pause adding jobs before changing the batch file list.');
@@ -74,15 +78,22 @@ export class VideoBatchQueue {
     const result = { added: 0, duplicates: 0, rejected: [] };
     const ordered = [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
     for (const file of ordered) {
-      if (!VIDEO.test(file.name) || !file.size) { result.rejected.push(file.name); continue; }
+      if (!acceptsInput(file,this.inputField)) { result.rejected.push(file.name); continue; }
       const key = fileKey(file);
       if (keys.has(key)) { result.duplicates++; continue; }
       keys.add(key); this.items.push({ id: identity(), key, file, status: 'pending', snapshot: null, error: '', progress: null }); result.added++;
     }
     this.onChange(); return result;
   }
+  addCopies(count) {
+    if(this.running)throw new Error('Pause adding jobs before changing the batch.');
+    if(!Number.isInteger(count)||count<1||count>1000)throw new Error('Choose 1–1000 copies.');
+    for(let i=0;i<count;i++){const id=identity();this.items.push({id,key:id,file:{name:`Copy ${this.items.length+1}`,copy:true},status:'pending',snapshot:null,error:'',progress:null});}
+    this.onChange();
+  }
   remove(id) { if (!this.running) { this.items = this.items.filter(item => item.id !== id); this.onChange(); } }
   clear() { if (!this.running) { this.items = []; this.onChange(); } }
+  clearAccepted() { if (!this.running) { this.items = this.items.filter(item => item.status !== 'queued'); this.onChange(); } }
   pause() { this.pauseRequested = true; this.onChange(); }
   dispose() { this.disposed = true; this.pauseRequested = true; }
   async run({ retry = false } = {}) {
@@ -93,11 +104,18 @@ export class VideoBatchQueue {
     // a pause. Editing the form cannot change an in-progress batch or retry.
     if (selected.some(item => !item.snapshot)) {
       const snapshot = snapshotVideoBatch(this.getSnapshot(), this.family);
+      const prepared = new Map();
       for (const item of selected) if (!item.snapshot) {
-        item.snapshot = this.family === 'h3' && snapshot.videoField === 'reference_videos'
-          ? { ...snapshot, config: { ...snapshot.config, reference_video_ranges: validateReferenceVideoRanges([referenceVideoRange(item.file)]) } }
-          : snapshot;
+        if(snapshot.videoField==='copies' ? !item.file.copy : item.file.copy || !acceptsInput(item.file,snapshot.videoField))
+          throw new Error('The waiting batch contains a different input type. Switch back to that batch type or clear its waiting files.');
+        if (this.family === 'h3' && snapshot.videoField === 'reference_videos') {
+          const config={...snapshot.config};
+          if(hasReferenceVideoRange(item.file)||!snapshot.autoVideoLength)config.reference_video_ranges=validateReferenceVideoRanges([referenceVideoRange(item.file)]);
+          else delete config.reference_video_ranges;
+          prepared.set(item,{...snapshot,config});
+        } else prepared.set(item,snapshot);
       }
+      for(const [item,value] of prepared)item.snapshot=value;
     }
     this.running = true; this.pauseRequested = false; this.onChange();
     try {
@@ -135,36 +153,42 @@ export function videoBatchLengthLabel(job) {
     : `${timing.duration_seconds.toFixed(2)}s source → ${timing.selected_seconds.toFixed(2)}s · ${timing.frames} frames`;
 }
 
-export function createVideoBatchQueue({ family, container, getSnapshot, onJob, onChange = () => {} }) {
-  const retained = sessions.get(family);
+export function createVideoBatchQueue({ family, container, getSnapshot, onJob, onChange = () => {}, sessionKey = family, recipe = null }) {
+  const retained = sessions.get(sessionKey);
   const panel = node('section', 'video-batch-panel');
   const label = node('label', 'video-batch-toggle'), toggle = node('input'); toggle.type = 'checkbox'; toggle.dataset.batchToggle = '';
   toggle.checked = retained?.checked || false;
   label.append(toggle, node('strong', '', 'Batch job')); panel.appendChild(label);
   const content = node('div', 'video-batch-content'); content.hidden = !toggle.checked; panel.appendChild(content);
   const explanation = node('p', 'h3-video-muted'); content.appendChild(explanation);
-  let videoField = fieldFor(family);
+  let videoField = retained?.inputField || fieldFor(family), choices = [], serverAvailable = false;
+  const typeLabel=node('label','h3-video-field'), typeSelect=node('select','cookbook-field-input');typeSelect.setAttribute('aria-label','Batch input');typeLabel.append(node('span','','Batch input'),typeSelect);typeLabel.hidden=true;content.append(typeLabel);
   const lengthLabel = node('label', 'video-batch-toggle'), autoLength = node('input'); autoLength.type = 'checkbox'; autoLength.dataset.batchAutoLength = '';
   autoLength.checked = retained?.autoVideoLength ?? true;
   lengthLabel.append(autoLength, node('span', '', 'Automatically match each video’s length'));
   const lengthHelp = node('p', 'h3-video-muted'); content.append(lengthLabel, lengthHelp);
   function describeVideoField(field) {
     videoField = field;
-    explanation.textContent = 'One video per job. Every file uses the same prompt and other settings and inputs captured when you queue it. '
-      + (family === 'h3' && field === 'source_video' ? 'Each batch video is the VFX source to edit; your reference images, videos and audio are shared across every job.'
-        : family === 'h3' ? 'Turn Batch job off to use multiple reference videos together in one job.' : 'Turn Batch job off to work with a single target video.');
-    lengthLabel.hidden = family !== 'h3' || field === 'source_video';
-    lengthHelp.hidden = family !== 'h3';
+    const kind=inputKind(field),noun=kind==='copy'?'copies':`${kind}s`;
+    explanation.textContent = field==='copies' ? 'Repeat this draft as separate jobs, including its attached inputs, prompt, settings and seed.'
+      : `One ${kind} per job. Other inputs, prompt and settings are shared. Turn Batch job off to combine multiple references in one job.`;
+    if(field==='source_video')explanation.textContent+=recipe==='seed_hunter'?' Each video is a separate continuation source.':' Each video is the VFX source to edit.';
+    lengthLabel.hidden = family !== 'h3' || field !== 'reference_videos';
+    lengthHelp.hidden = family !== 'h3' || !['reference_videos','source_video'].includes(field);
     lengthHelp.textContent = field === 'source_video'
-      ? 'VFX Edit automatically matches each source video’s length.'
-      : autoLength.checked ? 'The server chooses the shortest supported output length that covers each selected section. Choose a start and up to 15 seconds per video below.'
-        : 'Every video uses the Length selected below.';
+      ? recipe==='seed_hunter'?'Each source uses the continuation length and overlap chosen above.':'VFX Edit automatically matches each source video’s length.'
+      : autoLength.checked ? 'Each video automatically gets its own supported output length. No manual timing is required. Choose a section only when you want a different part.'
+        : 'Every video uses the generation length selected in this draft.';
+    input.accept={video:'.mp4,.mov,.m4v,.webm,.mkv,.avi',image:'.png,.jpg,.jpeg,.webp',audio:'.wav,.mp3,.flac,.m4a,.aac,.ogg,.opus'}[kind]||'';
+    drop.hidden=kind==='copy';repeatControls.hidden=kind!=='copy';dropTitle.textContent=`Drop all your ${noun} here`;dropHelp.textContent=`or click to select multiple ${noun}`;drop.setAttribute('aria-label',`Add batch ${noun}`);
+    serverFiles.hidden=!serverAvailable||kind!=='video';list.setAttribute('aria-label',`Batch ${noun}`);
+    queue.inputField=field;typeSelect.value=field;sessions.get(sessionKey).inputField=field;
   }
-  describeVideoField(fieldFor(family));
   const drop = node('div', 'video-batch-drop'); drop.tabIndex = 0; drop.setAttribute('role', 'button'); drop.setAttribute('aria-label', 'Add batch videos');
-  drop.append(node('strong', '', 'Drop all your videos here'), node('span', 'h3-video-muted', 'or click to select multiple videos · MP4, MOV, M4V, WebM, MKV, AVI'));
+  const dropTitle=node('strong'),dropHelp=node('span','h3-video-muted');drop.append(dropTitle,dropHelp);
   const input = node('input'); input.type = 'file'; input.multiple = true; input.accept = '.mp4,.mov,.m4v,.webm,.mkv,.avi'; input.hidden = true; input.dataset.batchFiles = '';
   content.append(drop, input);
+  const repeatControls=node('div','h3-video-actions'),repeatCount=node('input','cookbook-field-input'),addCopies=action('Add copies');repeatCount.type='number';repeatCount.min=1;repeatCount.max=1000;repeatCount.value=1;repeatCount.setAttribute('aria-label','Number of copies');repeatControls.append(repeatCount,addCopies);content.append(repeatControls);
   const serverFiles = action('Server files'); serverFiles.hidden = true; content.appendChild(serverFiles);
   const note = node('p', 'h3-video-muted'); note.setAttribute('role', 'status'); content.appendChild(note);
   const list = node('ol', 'video-batch-list'); list.setAttribute('aria-label', 'Batch videos'); content.appendChild(list);
@@ -172,9 +196,9 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
   const status = node('p', 'h3-video-muted video-batch-status'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); content.appendChild(status);
   const error = node('p', 'h3-video-error'); error.hidden = true; error.setAttribute('role', 'alert'); content.appendChild(error);
   const actions = node('div', 'h3-video-actions video-batch-actions');
-  const queueButton = action('Queue videos'), retryButton = action('Retry failed'), pauseButton = action('Pause adding'), clearButton = action('Clear list');
-  queueButton.className = 'cookbook-btn'; actions.append(queueButton, retryButton, pauseButton, clearButton); content.appendChild(actions);
-  content.appendChild(node('p', 'h3-video-muted', 'Uploads run one at a time in the listed order; queued jobs render on the server. Pause or closing this panel stops adding after the current upload finishes. Reopen it to resume with the saved prompt and settings. Refreshing the page loses files not yet queued. Clearing this list does not delete server jobs.'));
+  const queueButton = action('Queue videos'), retryButton = action('Retry failed'), pauseButton = action('Pause adding'), newBatchButton = action('New batch'), clearButton = action('Clear list');
+  queueButton.className = 'cookbook-btn'; actions.append(queueButton, retryButton, pauseButton, newBatchButton, clearButton); content.appendChild(actions);
+  content.appendChild(node('p', 'h3-video-muted', 'Uploads run one at a time in the listed order; queued jobs render on the server. Pause or closing this panel stops adding after the current upload finishes. Reopen it to resume with the saved prompt and settings. Refreshing the page loses files not yet queued. Clearing this list does not delete server jobs. You can start another batch with a different prompt and settings while earlier jobs render.'));
   container.appendChild(panel);
   let available = true, enabled = false, reason = '', snapshotEnabled = true, snapshotReason = '', destroyed = false, previousBusy = false;
   const rows = new Map();
@@ -194,7 +218,7 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
     render();
     if (previousBusy !== queue.running) { previousBusy = queue.running; notifyHost(); }
   };
-  sessions.set(family, { queue, checked: toggle.checked, autoVideoLength: autoLength.checked });
+  sessions.set(sessionKey, { queue, checked: toggle.checked, autoVideoLength: autoLength.checked, inputField: videoField });
   function render() {
     if (destroyed) return;
     const pending = queue.items.filter(item => item.status === 'pending').length;
@@ -203,7 +227,7 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
     const uploading = queue.items.find(item => item.status === 'uploading');
     const readyFor = state => enabled || snapshotEnabled && queue.items.filter(item => item.status === state).every(item => item.snapshot);
     toggle.disabled = queue.running; input.disabled = queue.running; autoLength.disabled = queue.running;
-    serverFiles.disabled = queue.running;
+    serverFiles.disabled = queue.running;typeSelect.disabled=repeatCount.disabled=addCopies.disabled=queue.running;
     drop.setAttribute('aria-disabled', String(queue.running));
     for (const [id, row] of rows) if (!queue.items.some(item => item.id === id)) { row._range?.destroy(); row.remove(); rows.delete(id); }
     for (const item of queue.items) {
@@ -214,38 +238,44 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
         row._state = node('span', 'video-batch-state');
         row._remove = action('Remove'); row._remove.setAttribute('aria-label', `Remove ${item.file.name} from batch`); row._remove.onclick = () => queue.remove(item.id);
         row.append(row._name, row._state, row._remove); rows.set(item.id, row); list.appendChild(row);
-        if (family === 'h3') { row._range = createReferenceVideoRangeEditor(item.file, () => {}); row.append(row._range.node); }
       }
+      if (!row._range && family === 'h3' && videoField==='reference_videos' && acceptsInput(item.file,'reference_videos')) { row._range = createReferenceVideoRangeEditor(item.file, () => {}, {automatic:true}); row.append(row._range.node); }
       if (row._range) { row._range.node.hidden = videoField !== 'reference_videos'; row._range.setDisabled(queue.running || !!item.snapshot); }
       row.dataset.status = item.status; row._remove.disabled = queue.running;
       row._state.textContent = item.status === 'queued' ? ['Queued', videoBatchLengthLabel(item.job), item.job.id].filter(Boolean).join(' · ') : item.status === 'error' ? item.error
         : item.status === 'uploading' ? item.progress?.waiting ? item.snapshot?.autoVideoLength ? 'Detecting video length and queueing…' : 'Waiting for server…' : item.file.serverFile ? 'Adding server video…' : 'Uploading…'
-          : item.file.serverFile ? 'Ready to queue · server file' : 'Ready to upload · click Queue videos';
+          : item.file.copy ? 'Ready to queue · saved draft copy' : item.file.serverFile ? 'Ready to queue · server file' : 'Ready to upload · click Queue';
     }
     progress.hidden = !uploading;
     if (uploading?.progress?.total) { progress.max = uploading.progress.total; progress.value = uploading.progress.loaded; }
     else progress.removeAttribute('value');
     const count = `${accepted} / ${queue.items.length} queued${pending ? ` · ${pending} waiting` : ''}${failed ? ` · ${failed} failed` : ''}`;
-    status.textContent = !queue.items.length ? 'Choose videos to build the batch.' : uploading
+    status.textContent = !queue.items.length ? 'Choose inputs to build the batch.' : uploading
       ? `${queue.pauseRequested ? 'Pausing after this upload' : uploading.progress?.waiting ? 'Waiting for server confirmation' : 'Uploading'}: ${uploading.file.name} · ${count}`
       : `${count}${queue.pauseRequested && pending ? ' · Paused' : ''}${!queue.running && !readyFor('pending') && (snapshotReason || reason) ? ` · ${snapshotReason || reason}` : ''}`;
-    queueButton.textContent = `Queue ${pending} video${pending === 1 ? '' : 's'}`;
+    const kind=inputKind(videoField),noun=kind==='copy'?(pending===1?'copy':'copies'):`${kind}${pending===1?'':'s'}`;
+    queueButton.textContent = `Queue ${pending} ${noun}`;
     queueButton.disabled = !readyFor('pending') || queue.running || !pending;
     retryButton.hidden = !failed; retryButton.disabled = !readyFor('error') || queue.running;
     pauseButton.hidden = !queue.running; pauseButton.disabled = queue.pauseRequested;
     clearButton.disabled = queue.running || !queue.items.length;
+    newBatchButton.hidden = !accepted || !!pending || !!failed || queue.running;
   }
   function add(files) {
     error.hidden = true;
     try {
       const result = queue.add(files);
-      note.textContent = [`${result.added} video${result.added === 1 ? '' : 's'} added in filename order.`,
+      note.textContent = [`${result.added} file${result.added === 1 ? '' : 's'} added in filename order.`,
         result.duplicates ? `${result.duplicates} already in this list.` : '',
         result.rejected.length ? `${result.rejected.length} empty or unsupported file${result.rejected.length === 1 ? '' : 's'} skipped: ${result.rejected.slice(0,5).join(', ')}${result.rejected.length > 5 ? '…' : ''}` : ''].filter(Boolean).join(' ');
     } catch (e) { error.textContent = e.message; error.hidden = false; }
   }
-  toggle.onchange = () => { content.hidden = !toggle.checked; sessions.get(family).checked = toggle.checked; notifyHost(); render(); };
-  autoLength.onchange = () => { sessions.get(family).autoVideoLength = autoLength.checked; describeVideoField(videoField); notifyHost(); render(); };
+  toggle.onchange = () => { content.hidden = !toggle.checked; sessions.get(sessionKey).checked = toggle.checked; notifyHost(); render(); };
+  autoLength.onchange = () => { sessions.get(sessionKey).autoVideoLength = autoLength.checked; describeVideoField(videoField); notifyHost(); render(); };
+  // Parent forms re-render on input; keep the new choice until this handler commits it.
+  typeSelect.addEventListener('input', event => event.stopPropagation());
+  typeSelect.onchange=()=>{describeVideoField(typeSelect.value);notifyHost();render();};
+  addCopies.onclick=()=>{try{queue.addCopies(Number(repeatCount.value));error.hidden=true;}catch(e){error.textContent=e.message;error.hidden=false;}};
   input.onchange = () => { add(input.files || []); input.value = ''; };
   let picker = null;
   serverFiles.onclick = () => { if (!queue.running) picker = showVideoServerFiles({ family, multiple: true, onSelect: add }, serverFiles); };
@@ -263,10 +293,16 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
     catch (e) { error.textContent = e.message || 'Could not start this batch.'; error.hidden = false; }
   };
   queueButton.onclick = () => start(false); retryButton.onclick = () => start(true);
+  newBatchButton.onclick = () => { if (queue.running) return; queue.clearAccepted(); error.hidden = true; note.textContent = 'Previous jobs keep running. Choose the next inputs and change the prompt or settings for this batch.'; };
   pauseButton.onclick = () => queue.pause(); clearButton.onclick = () => { queue.clear(); note.textContent = ''; error.hidden = true; };
-  render();
+  describeVideoField(videoField);render();
   return {
-    setServerFilesAvailable(value) { serverFiles.hidden = !value; },
+    setServerFilesAvailable(value) { serverAvailable=!!value;serverFiles.hidden=!serverAvailable||inputKind(videoField)!=='video'; },
+    setInputChoices(value) {
+      const next=value.map(row=>[row.field,row.label]);if(JSON.stringify(next)!==JSON.stringify(choices)){choices=next;typeSelect.replaceChildren(...next.map(([field,label])=>new Option(label,field)));}
+      typeLabel.hidden=choices.length<2;describeVideoField(choices.some(([field])=>field===videoField)?videoField:choices[0]?.[0]||fieldFor(family));
+    },
+    get inputField(){return videoField;},
     setVideoField: describeVideoField,
     setEnabled(value, explanation = '', saved = {}) {
       enabled = !!value; reason = explanation;
@@ -276,7 +312,7 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
       available = !!value; panel.hidden = !available;
     },
     get active() { return available && toggle.checked; }, get busy() { return queue.running; },
-    get autoVideoLength() { return family === 'h3' && (videoField === 'source_video' || autoLength.checked); },
+    get autoVideoLength() { return family === 'h3' && (videoField === 'reference_videos' && autoLength.checked || videoField === 'source_video' && recipe!=='seed_hunter'); },
     destroy() {
       picker?.close();
       rows.forEach(row => row._range?.destroy());

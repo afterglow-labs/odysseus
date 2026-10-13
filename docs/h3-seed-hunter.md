@@ -64,6 +64,28 @@ Preview workflows can be exported with optional weights and attachments.
 Export the source preview workflow rather than a final job: the portable
 workflow format does not currently transfer generated latent snapshots.
 
+## Batch jobs
+
+Turn on **Batch job** and choose the input that changes between jobs. Preview
+and single-pass batches can vary a reference video, image or audio file, or
+repeat the whole draft. Continuation batches use one source video per job;
+dialogue batches use one voice reference per job. Other inputs, the prompt,
+LoRAs and settings are captured separately for each submission. Repeated
+copies keep the chosen seed. Batch inputs do not replace the ordinary controls
+for combining several references in a single job.
+
+Reference video lengths are automatic by default. Each row shows its source
+duration and supported output length; **Choose a section** enables optional
+manual trimming. Preview and single-pass output lengths use the Seed Hunter
+73–362 frame range. Continuation keeps the configured additional generation
+length and overlap instead of matching the duration of its source. Dialogue
+keeps its configured generation length. Final refinement remains tied to one
+selected preview and its saved conditioning.
+
+Server jobs keep rendering while more batches are added. Each batch retains
+its own prompt and settings, so editing a new draft does not alter accepted
+jobs. The server preserves submission order across H3, Seed Hunter and BFS.
+
 ## Private installation
 
 With the H3 inference core already installed:

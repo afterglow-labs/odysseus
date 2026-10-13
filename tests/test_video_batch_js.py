@@ -175,7 +175,7 @@ await q.run({retry:true});
 assert.equal(bodies.length,2);
 for(const body of bodies){
  assert.equal(body.get('auto_video_length'),'true');
- assert.deepEqual(JSON.parse(body.get('config')),{mode:'ref2va',frames:124,prompt:'Keep the scene',reference_video_ranges:[{start_seconds:0,duration_seconds:15}]});
+ assert.deepEqual(JSON.parse(body.get('config')),{mode:'ref2va',frames:124,prompt:'Keep the scene'});
 }
 q.add([new File(['other'],'two.mp4')]);await q.run();
 assert.equal(bodies.at(-1).has('auto_video_length'),false);
@@ -195,4 +195,67 @@ assert.equal(value.config.frames,124);assert.equal(value.uploads.reference_video
 assert.equal(videoBatchLengthLabel({batch_video_length:{duration_seconds:8,selected_seconds:8.708333,frames:209}}),'8.00s source → 8.71s · 209 frames');
 assert.match(videoBatchLengthLabel({batch_video_length:{duration_seconds:8,selected_seconds:8.708333,frames:209,preserve_source_duration:true}}),/preserves source length/);
 assert.equal(videoBatchLengthLabel({}), '');
+''')
+
+
+def test_seed_hunter_media_batches_keep_each_role_settings_and_no_auto_flag():
+    run_js(r'''
+for(const [videoField,name] of [['source_video','source.mp4'],['reference_audio','voice.flac'],['reference_images','face.png'],['first_frame','first.jpg']]){
+ const base={recipe:'seed_hunter',mode:'ref2va',seed_hunter:{stage:videoField==='reference_audio'?'dialogue':videoField==='source_video'?'continuation':'preview',preview_count:3},prompt:'same'};
+ const shared=new File(['shared'],'shared.png'),bodies=[];
+ const q=new VideoBatchQueue({family:'h3',getSnapshot:()=>({config:base,videoField,autoVideoLength:false,uploads:{reference_images:[shared]}}),submit:async(f,item)=>{bodies.push(videoBatchFormData(item));return{id:item.id};}});
+ q.inputField=videoField;q.add([new File(['media'],name)]);await q.run();
+ assert.equal(bodies.length,1);assert.equal(bodies[0].getAll(videoField).length,1);assert.equal(bodies[0].has('auto_video_length'),false);
+ assert.deepEqual(JSON.parse(bodies[0].get('config')),base);
+ if(videoField!=='reference_images')assert.deepEqual(bodies[0].getAll('reference_images'),[shared]);
+}
+''')
+
+
+def test_draft_copies_preserve_shared_inputs_and_independent_submission_ids():
+    run_js(r'''
+const bodies=[],image=new File(['face'],'face.png');
+const q=new VideoBatchQueue({family:'h3',getSnapshot:()=>({config:{mode:'fl2va',prompt:'same',seed:42},videoField:'copies',uploads:{first_frame:[image]}}),submit:async(f,item)=>{bodies.push({id:item.id,body:videoBatchFormData(item)});return{id:item.id};}});
+q.addCopies(3);await q.run();assert.equal(new Set(bodies.map(row=>row.id)).size,3);
+for(const {body} of bodies){assert.deepEqual(body.getAll('first_frame'),[image]);assert.equal(body.has('copies'),false);assert.equal(body.has('auto_video_length'),false);}
+assert.throws(()=>q.addCopies(0),/1–1000/);
+''')
+
+
+def test_automatic_source_uses_server_detection_but_explicit_manual_window_is_preserved():
+    run_js(r'''
+const automatic=new File(['v'],'auto.mp4'),manual=new File(['v'],'manual.mp4'),bodies=[];
+setReferenceVideoRange(manual,{start_seconds:80,duration_seconds:7});
+const q=new VideoBatchQueue({family:'h3',getSnapshot:()=>({config:{recipe:'seed_hunter',seed_hunter:{stage:'preview',preview_count:3},reference_video_ranges:[{start_seconds:999,duration_seconds:2}]},videoField:'reference_videos',autoVideoLength:true}),submit:async(f,item)=>{bodies.push(videoBatchFormData(item));return{id:item.id};}});
+q.add([manual,automatic]);await q.run();
+assert.equal(JSON.parse(bodies[0].get('config')).reference_video_ranges,undefined);
+assert.deepEqual(JSON.parse(bodies[1].get('config')).reference_video_ranges,[{start_seconds:80,duration_seconds:7}]);
+assert.ok(bodies.every(body=>body.get('auto_video_length')==='true'));
+''')
+
+
+def test_second_batch_uses_new_settings_while_prior_server_jobs_still_run():
+    run_js(r'''
+let draft={prompt:'First batch',steps:8,seed:42,loras:[{id:'first',strength:1}]};
+const first=new File(['first'],'first.mp4'),jobs=[];
+const q=new VideoBatchQueue({family:'h3',getSnapshot:()=>({config:draft,videoField:'reference_videos',autoVideoLength:true}),submit:async(f,item)=>{const job={id:item.id,status:jobs.length?'queued':'running',config:JSON.parse(JSON.stringify(item.snapshot.config))};jobs.push(job);return job;}});
+q.add([first,new File(['second'],'second.mp4')]);await q.run();
+assert.equal(q.running,false);assert.deepEqual(jobs.map(j=>j.status),['running','queued']);
+const firstIds=jobs.map(j=>j.id);q.clearAccepted();
+draft.prompt='Different batch';draft.steps=4;draft.seed=99;draft.loras[0].strength=.5;
+assert.equal(q.add([first]).added,1);await q.run();
+assert.equal(jobs.length,3);assert.equal(jobs[0].status,'running');assert.equal(jobs[1].status,'queued');assert.equal(jobs[2].config.prompt,'Different batch');
+assert.equal(jobs[2].config.steps,4);assert.equal(jobs[2].config.seed,99);assert.equal(jobs[2].config.loras[0].strength,.5);
+for(const job of jobs.slice(0,2)){assert.equal(job.config.prompt,'First batch');assert.equal(job.config.steps,8);assert.equal(job.config.seed,42);assert.equal(job.config.loras[0].strength,1);}
+assert.ok(!firstIds.includes(jobs[2].id));
+''')
+
+
+def test_new_batch_cleanup_preserves_failed_and_paused_submission_snapshots():
+    run_js(r'''
+let count=0;const q=new VideoBatchQueue({family:'h3',getSnapshot:()=>({config:{prompt:'First'},videoField:'reference_videos'}),submit:async(f,item)=>{if(++count===2)throw Error('Response lost');return{id:item.id,status:'running'};}});
+q.add([1,2,3].map(n=>new File(['clip'],`${n}.mp4`)));await q.run();
+const unresolved=q.items.slice(1),ids=unresolved.map(row=>row.id),snapshots=unresolved.map(row=>row.snapshot);
+q.clearAccepted();assert.deepEqual(q.items.map(row=>row.status),['error','pending']);assert.deepEqual(q.items.map(row=>row.id),ids);assert.deepEqual(q.items.map(row=>row.snapshot),snapshots);
+q.add([new File(['next'],'4.mp4')]);assert.equal(q.items.length,3);
 ''')

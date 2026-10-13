@@ -34,12 +34,44 @@ def test_ordinary_length_uses_shortest_choice_covering_whole_source(monkeypatch,
     assert (original, uploads) == before
 
 
-@pytest.mark.parametrize("duration", [1, 1.998, 15.051, 1000])
+@pytest.mark.parametrize("duration", [1, 1.998])
 def test_unsupported_duration_is_rejected_before_queueing(monkeypatch, duration):
     monkeypatch.setattr(length, "probe_video", lambda *args, **kwargs:
                         {"duration_seconds": duration, "source_frames": round(duration * 24)})
     with pytest.raises(ValueError, match="2–15 seconds"):
         length.select_batch_video_length({"mode": "ref2va", "loras": []}, {"reference_videos": ["clip.mp4"]})
+
+
+@pytest.mark.parametrize("duration", [15.051, 230.67, 1000])
+def test_automatic_long_reference_chooses_first_fifteen_seconds_without_changing_draft(monkeypatch, duration):
+    monkeypatch.setattr(length, "probe_video", lambda *args, **kwargs:
+                        {"duration_seconds": duration, "source_frames": 360})
+    config = {"mode": "ref2va", "loras": [], "frames": 124}
+    before = copy.deepcopy(config)
+    chosen, info = length.select_batch_video_length(config, {"reference_videos": ["clip.mp4"]})
+    assert chosen["frames"] == 362 and info["duration_seconds"] == 15
+    assert info["source_duration_seconds"] == duration and info["capped"] is True
+    assert chosen["reference_video_ranges"] == [{"start_seconds": 0, "duration_seconds": 15}]
+    assert config == before
+
+
+@pytest.mark.parametrize("stage", ["preview", "single"])
+@pytest.mark.parametrize("duration,frames", [(2, 73), (3.461, 90), (6.172, 158), (8.674, 209), (15, 362)])
+def test_seed_hunter_auto_length_uses_its_available_frame_choices(monkeypatch, stage, duration, frames):
+    monkeypatch.setattr(length, "probe_video", lambda *args, **kwargs:
+                        {"duration_seconds": duration, "source_frames": round(duration * 24)})
+    config = {"recipe": "seed_hunter", "seed_hunter": {"stage": stage}, "mode": "ref2va", "frames": 73}
+    chosen, info = length.select_batch_video_length(config, {"reference_videos": ["clip.mp4"]})
+    assert chosen["frames"] == frames and chosen["seed_hunter"] == config["seed_hunter"]
+    assert info["duration_seconds"] == duration
+
+
+@pytest.mark.parametrize("stage", ["continuation", "dialogue", "final"])
+def test_non_reference_seed_hunter_branches_do_not_guess_auto_length(monkeypatch, stage):
+    monkeypatch.setattr(length, "probe_video", lambda *args, **kwargs: pytest.fail("Should not probe another branch"))
+    with pytest.raises(ValueError, match="continuation and dialogue keep"):
+        length.select_batch_video_length({"recipe": "seed_hunter", "seed_hunter": {"stage": stage}, "mode": "ref2va"},
+                                        {"reference_videos": ["clip.mp4"]})
 
 
 @pytest.mark.parametrize("mode,uploads", [("t2va", {}), ("ref2va", {}),
@@ -134,6 +166,21 @@ def test_each_batch_file_saves_own_frames_and_retry_keeps_receipt(backend, monke
     manifest = h3._read(directory / "manifest.json")
     h3._write(directory / "manifest.json", {**manifest, "revision": 1})
     assert "batch_video_length" not in manager.view(directory.name, "corey")
+
+
+@pytest.mark.parametrize("stage", ["preview", "single"])
+def test_seed_hunter_batch_submission_persists_its_short_clip_frame_count(backend, monkeypatch, stage):
+    monkeypatch.setattr(length, "probe_video", lambda *args, **kwargs:
+                        {"duration_seconds": 3.461, "source_frames": 83})
+    config = {**backend.configs["h3"], "recipe": "seed_hunter", "seed_hunter": {"stage": stage},
+              "frames": 73, "width": 480, "height": 864, "sampler": "er_sde", "scheduler": "beta"}
+    response = _send(backend, config=config)
+    assert response.status_code == 201, response.text
+    directory = backend.managers["h3"].directory(response.json()["id"])
+    manifest = h3._read(directory / "manifest.json")
+    assert manifest["config"]["frames"] == 90
+    assert manifest["config"]["seed_hunter"]["stage"] == stage
+    assert response.json()["batch_video_length"]["duration_seconds"] == 3.461
 
 
 @pytest.mark.parametrize("auto", [None, "false"])
@@ -237,6 +284,20 @@ def test_probe_uses_packet_endpoints_even_when_stream_duration_is_shorter(monkey
     monkeypatch.setitem(length.sys.modules, "av", SimpleNamespace(open=open_video))
     actual = length._probe_video("local.mp4")
     assert actual == {"duration_seconds": 5., "source_frames": 120}
+
+
+def test_long_ordinary_reference_uses_indexed_duration_without_full_movie_scan(monkeypatch):
+    stream = SimpleNamespace(duration=600000, time_base=Fraction(1, 1000))
+    class Source:
+        streams = SimpleNamespace(video=[stream])
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def demux(self, *args):
+            pytest.fail("A known long reference should not scan the whole movie")
+    monkeypatch.setitem(length.sys.modules, "av", SimpleNamespace(open=lambda *args, **kwargs: Source()))
+    assert length._probe_video("long.mp4") == {"duration_seconds": 600., "source_frames": 360}
 
 
 def test_real_vfr_tail_at_length_boundary_chooses_next_option(tmp_path):

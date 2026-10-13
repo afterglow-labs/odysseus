@@ -175,6 +175,11 @@ scrub to the desired point, and choose **Use current time as start**. For exampl
 start 80 and length 15 uses 1:20–1:35. **Play selected section** previews that range.
 Local files and supported E:/F: server videos can be previewed; timestamps remain
 usable when the browser cannot play a codec or a saved job input has no preview.
+For server videos that the phone cannot play directly, Odysseus prepares a small
+H.264/AAC MP4 preview of the selected area. The preview covers up to 30 seconds
+and follows the original video's timeline as you seek. It does not replace the
+source or change generation inputs. Preview preparation failures are displayed
+with a retry action. Temporary previews use a bounded cache on the server.
 The worker seeks to the selected section and cuts its audio on the same timeline.
 It preserves the original file and saves the range with the job for later edits
 and reruns. Existing upload size and server storage limits still apply.
@@ -432,7 +437,7 @@ saved prompt and output, including its linked Gallery record/output. Choose
 and queued jobs must be stopped or canceled first. A deletion error leaves the
 card visible so you can retry; deleting a job does not change your current draft.
 
-## Queuing a batch of videos
+## Queuing batches
 
 In **References → video + audio**, check **Batch job**, drop or select all the
 videos, and click **Queue N videos**. Each file becomes its own job, with the same
@@ -440,8 +445,21 @@ prompt, model, LoRA, GPU, seed, render settings, and shared image/audio inputs
 captured at the moment you queue the batch. Videos upload individually in the
 displayed filename order; generation uses the existing shared FIFO queue.
 
+Other modes also offer batching: first-frame mode accepts one first-frame image
+per job, and reference mode can vary images or audio while keeping the other
+inputs shared. **Copies** repeats the whole draft with its selected seed.
+Text-to-video uses copies without requiring input files. Reference generation
+still needs an image or video, including when the varying input is audio.
+Seed Hunter has its own [batch choices](h3-seed-hunter.md#batch-jobs).
+
+More batches can be appended while earlier jobs render. Every submission keeps
+its captured prompt and settings; later draft changes do not modify accepted
+jobs.
+
 **Automatically match each video’s length** is on by default for H3 batches.
-Each ordinary H3 batch row also has its own reference section controls.
+Each row shows its detected source duration and supported output length.
+**Choose a section** opens optional manual reference section controls; the
+15-second reference limit is not a fixed output length for every file.
 After each upload, the server reads that file’s selected section duration and selects the
 shortest supported 24 fps length that covers it, rounding up rather than cutting
 off the end. For example, a 6-second video uses 158 frames (6.58 seconds), while

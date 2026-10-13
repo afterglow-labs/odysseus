@@ -5,6 +5,7 @@ import { showH3LoraLibrary } from './h3LoraLibrary.js';
 import { showVideoServerFiles } from './videoServerFiles.js';
 import { referenceVideoRanges, restoreReferenceVideoRanges, createReferenceVideoRangeEditor, referenceVideoRangesField } from './referenceVideoRange.js';
 import { appendVideoInputs } from './videoInputs.js';
+import { createVideoBatchQueue } from './videoBatch.js';
 import { createVideoJobReruns } from './videoJobRerun.js';
 import { createVideoQueueControls, videoQueueField } from './videoQueue.js';
 import { createVideoJobEditor, videoJobEditFormData } from './videoJobEdit.js';
@@ -26,6 +27,19 @@ const displayName = item => item.display_name || item.name;
 const clone = value => JSON.parse(JSON.stringify(value));
 const randomSeed = () => Math.floor(Math.random() * 2 ** 48);
 
+export function seedHunterBatchChoices(stage) {
+  const copies={field:'copies',label:'Copies of this draft'};
+  if(stage==='final')return [];
+  if(stage==='continuation')return [{field:'source_video',label:'Continuation source videos'}];
+  if(stage==='dialogue')return [{field:'reference_audio',label:'Voice reference audio'},copies];
+  return [{field:'reference_videos',label:'Reference videos'},{field:'reference_images',label:'Reference pictures'},{field:'reference_audio',label:'Reference audio'},copies];
+}
+export function seedHunterBatchConfig(value, automatic) {
+  // Submission validation runs before the server replaces automatic frame counts.
+  // A preceding continuation draft may still hold a valid shorter duration.
+  return { ...value, ...(automatic && ['preview', 'single'].includes(value.seed_hunter?.stage)
+    ? { frames: Math.max(73, Number(value.frames) || 73) } : {}) };
+}
 export function seedHunterFrames(seconds) {
   const raw = Math.max(5, Math.round(Number(seconds) * 24));
   return raw + (5 - raw % 17 + 17) % 17;
@@ -71,7 +85,7 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
   if (!document.getElementById('h3-video-styles')) { const css = make('link'); css.id = 'h3-video-styles'; css.rel = 'stylesheet'; css.href = '/static/h3-video.css'; document.head.append(css); }
   let saved = {}; try { saved = JSON.parse(localStorage.getItem(STORAGE) || '{}'); } catch {}
   let inventory = null, jobs = [], closed = false, busy = false, loading = false, polling = false, revision = 0;
-  let picker, library, queue, jobEditor, editingComponents = null, selection = null, finalRequest = null, finalBusy = false;
+  let picker, library, queue, batchQueue, jobEditor, editingComponents = null, selection = null, finalRequest = null, finalBusy = false;
   let restoredRangeConfig = {}, optionSnapshot = {}, selecting = 0, finalComponents = [], enhancer = [], enhancing = false, enhancerController, previousPrompt = null;
   const fields = {}, options = {}, uploads = {}, finalFields = {}, jobNodes = new Map();
   const overlay = make('div', 'cookbook-edit-overlay h3-seed-hunter-overlay'); overlay.style.zIndex = String(topPortalZ());
@@ -143,6 +157,7 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
   select(continuationPanel, 'continuation_overlap', 'Overlap frames', [5,22,39,56].map(n => [String(n), String(n)]), options);
   number(continuationPanel, 'source_start_seconds', 'Source start (seconds)', 0, 0, 86400, .01, options); number(continuationPanel, 'source_end_seconds', 'Source end (blank = end)', '', 0, 86400, .01, options);
   const audioPanel = group(form, 'Voice reference timing'); number(audioPanel, 'audio_start_seconds', 'Audio start (seconds)', 0, 0, 86400, .01, options); number(audioPanel, 'audio_end_seconds', 'Audio end (blank = end)', '', 0, 86400, .01, options);
+  const batchContainer=make('div');form.append(batchContainer);
   const media = make('div', 'h3-video-inputs'); form.append(media);
   function upload(key, label, accept, multiple, limit) {
     const wrap = make('section', 'h3-video-upload'), title = make('label', 'h3-video-upload-label', label), input = make('input'); input.type = 'file'; input.accept = accept; input.multiple = multiple; input.id = `seed-hunter-input-${key}`; title.htmlFor = input.id;
@@ -196,15 +211,36 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
     for (const [key, state] of Object.entries(uploads)) { state.files = [...(inputFiles[key] || [])]; state.retained = [...(retained[key] || [])]; state.strengths=key==='reference_mods'?[...(values.seed_hunter?.refmod_strengths||[])]:[]; if(key==='reference_videos')restoreReferenceVideoRanges(state,values.reference_video_ranges); state.render(); }
     revision++; update();
   }
+  function batchIssue() {
+    if(!inventory?.seed_hunter||!inventory.runtime_ready)return 'Seed Hunter components are not ready.';
+    if(!seedHunterBatchChoices(stage.value).some(choice=>choice.field===batchQueue?.inputField))return 'Choose a supported batch input.';
+    if(!['model','encoder','video_vae','audio_vae','gpu'].every(key=>fields[key].value))return 'Choose the models, VAEs and GPU first.';
+    if(!prompt.value.trim())return 'Enter a prompt to use for every job.';
+    const issue=h3LoraIssue(loras.getValue(),effectiveComponents(),'ref2va');if(issue)return issue;
+    const selected=batchQueue?.inputField,counts=Object.fromEntries(['reference_images','reference_videos','reference_audio'].map(key=>[key,key===selected?1:uploads[key].files.length]));
+    if(counts.reference_images>9||counts.reference_videos>3||counts.reference_audio>3||Object.values(counts).reduce((a,b)=>a+b,0)>12)return 'Too many shared references for each job.';
+    if(!form.checkValidity())return 'Check the draft settings before queueing.';
+    return '';
+  }
+  function batchSnapshot() {
+    if(!form.reportValidity())throw new Error('Check the draft settings before queueing.');
+    const issue=batchIssue();if(issue)throw new Error(issue);
+    const field=batchQueue.inputField;
+    return {config:seedHunterBatchConfig(config(),batchQueue.autoVideoLength),videoField:field,autoVideoLength:batchQueue.autoVideoLength,
+      uploads:Object.fromEntries(Object.entries(currentUploads()).filter(([key])=>key!==field))};
+  }
   function update() {
+    batchQueue?.setInputChoices(seedHunterBatchChoices(stage.value));
+    const batchBusy=!!batchQueue?.busy, batching=!!batchQueue?.active&&!jobEditor?.active&&stage.value!=='final',locked=busy||batchBusy;
     const finalEdit = stage.value === 'final', single = ['single', 'continuation','final'].includes(stage.value);
     fields.latent_upscaler.parentElement.hidden = !finalEdit && stage.value !== 'preview';
-    for(const key of [...OUTER,'prompt']) if(!['shift_video','shift_audio'].includes(key)) fields[key].disabled = busy || enhancing || (finalEdit && !FINAL_FIELDS.has(key));
-    media.hidden = finalEdit; sizeTools.hidden = finalEdit; applyDialogue.disabled = finalEdit; reroll.disabled = busy;
-    for(const state of Object.values(uploads)) {state.input.disabled = finalEdit || busy; if(state.server)state.server.disabled = finalEdit || busy;state.rangeEditors.forEach(editor=>editor.setDisabled(finalEdit||busy));}
-    for(const key of Object.keys(options)) options[key].disabled = busy || (finalEdit && !FINAL_OPTIONS.has(key));
+    for(const key of [...OUTER,'prompt']) if(!['shift_video','shift_audio'].includes(key)) fields[key].disabled = locked || enhancing || (finalEdit && !FINAL_FIELDS.has(key));
+    for(const key of ['reference_images','reference_videos','reference_audio'])uploads[key].wrap.hidden=false;
+    media.hidden = finalEdit; sizeTools.hidden = finalEdit; applyDialogue.disabled = finalEdit; reroll.disabled = locked;
+    for(const state of Object.values(uploads)) {state.input.disabled = finalEdit || locked; if(state.server)state.server.disabled = finalEdit || locked;state.rangeEditors.forEach(editor=>editor.setDisabled(finalEdit||locked));}
+    for(const key of Object.keys(options)) options[key].disabled = locked || (finalEdit && !FINAL_OPTIONS.has(key));
     const features = inventory?.seed_hunter?.features || {};
-    stage.disabled = !!jobEditor?.active || busy;
+    stage.disabled = !!jobEditor?.active || locked;
     for (const item of stage.options) item.hidden = item.value === 'final' && !finalEdit;
     for (const item of stage.options) item.disabled = (item.value === 'final' && !finalEdit) || ['continuation', 'dialogue'].includes(item.value) && features[item.value] !== true;
     for (const [feature, keys] of Object.entries({ guides: ['first_frame_guide', 'last_frame_guide'], force_audio: ['force_audio'], attention_backend: ['attention_backend'], sparse_attention: ['sparse_method','sparse_keep_percent','sparse_start','sparse_end','sparse_min_tokens','sparse_extra_tokens','sparse_sink_conditioning'], ff_chunking: ['ff_chunk_size','ff_chunk_threshold'], low_vram_attention:['low_vram_chunks'], rife: ['output_fps'], latent_upscaler: ['upscaler_chunking', 'upscaler_force_unload'] })) {
@@ -213,19 +249,28 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
     uploads.reference_mods.input.disabled ||= features.refmods !== true;
     uploads.first_frame.wrap.hidden = !options.first_frame_guide.checked; uploads.last_frame.wrap.hidden = !options.last_frame_guide.checked;
     uploads.reference_mods.wrap.title = features.refmods === true ? '' : 'Reference mods are unavailable in the installed Seed Hunter runtime.';
-    options.preview_count.disabled = single || busy; options.preview_count.parentElement.hidden = single;
+    options.preview_count.disabled = single || locked; options.preview_count.parentElement.hidden = single;
     dialoguePanel.parentElement.hidden = stage.value !== 'dialogue'; audioPanel.parentElement.hidden = false; continuationPanel.parentElement.hidden = stage.value !== 'continuation'; uploads.source_video.wrap.hidden = stage.value !== 'continuation';
     fields.seed.max = Number.MAX_SAFE_INTEGER - 1000 * ((single ? 1 : Number(options.preview_count.value)||1)-1);
     duration.textContent = `${(Number(fields.frames.value) / 24).toFixed(2)} seconds · seeds ${Array.from({ length: single ? 1 : Number(options.preview_count.value) || 1 }, (_, i) => Number(fields.seed.value) + i * 1000).join(', ')}`;
-    fields.shift_video.disabled = fields.shift_audio.disabled = busy || !options.shift_enabled.checked;
+    fields.shift_video.disabled = fields.shift_audio.disabled = locked || !options.shift_enabled.checked;
+    fields.frames.disabled ||= batching&&batchQueue.autoVideoLength;
+    if(batching&&batchQueue.autoVideoLength)duration.textContent='Automatic: each batch video gets its own generation length after detection.';
+    if(batching&&uploads[batchQueue.inputField]){const state=uploads[batchQueue.inputField];state.wrap.hidden=true;state.input.disabled=true;state.rangeEditors.forEach(editor=>editor.setDisabled(true));}
     fields.frames.min = stage.value === 'continuation' ? '5' : '73'; fields.width.min = fields.height.min = stage.value === 'dialogue' ? '64' : '256';
-    loras.setDisabled(busy || loading || enhancing); loras.setLibraryAvailable(inventory?.lora_library === true && !jobEditor?.active);
-    submit.disabled = busy || loading || enhancing || !inventory?.seed_hunter || !inventory?.runtime_ready || !!jobEditor?.blocked || (['continuation','dialogue'].includes(stage.value) && features[stage.value] !== true);
-    submit.textContent = busy ? 'Submitting…' : jobEditor?.active ? 'Save queued job' : stage.value === 'preview' ? 'Generate previews' : stage.value === 'dialogue' ? 'Generate audio previews' : stage.value === 'continuation' ? 'Queue continuation' : 'Queue single pass';
-    refresh.disabled = busy || loading; exportButton.disabled = importButton.disabled = busy || loading || !inventory || !!jobEditor?.active;
+    loras.setDisabled(locked || loading || enhancing); loras.setLibraryAvailable(inventory?.lora_library === true && !jobEditor?.active);
+    submit.disabled = locked || loading || enhancing || !inventory?.seed_hunter || !inventory?.runtime_ready || !!jobEditor?.blocked || (['continuation','dialogue'].includes(stage.value) && features[stage.value] !== true);
+    submit.hidden=batching;
+    submit.textContent = locked ? 'Submitting…' : jobEditor?.active ? 'Save queued job' : stage.value === 'preview' ? 'Generate previews' : stage.value === 'dialogue' ? 'Generate audio previews' : stage.value === 'continuation' ? 'Queue continuation' : 'Queue single pass';
+    refresh.disabled = locked || loading; exportButton.disabled = importButton.disabled = locked || loading || !inventory || !!jobEditor?.active;
     const enhancerInputs=seedHunterEnhancerInputs(uploads,readOptions());enhancerInfo.textContent=enhancerInputs.issue;enhancerInfo.hidden=!enhancerInputs.issue;
-    enhance.disabled = finalEdit || busy || enhancing || !enhancerSelect.value || !!enhancerInputs.issue; restorePrompt.hidden = previousPrompt === null;
-    queue?.setBlocked(busy || loading || finalBusy || !!jobEditor?.active); finalSubmit.disabled = finalBusy || !selection || !finalFields.latent_upscaler.value || features.latent_upscaler !== true; finalLoras.setDisabled(finalBusy); for(const n of Object.values(finalFields))n.disabled=finalBusy;finalReroll.disabled=cancelSelection.disabled=finalBusy;
+    enhance.disabled = finalEdit || locked || enhancing || !enhancerSelect.value || !!enhancerInputs.issue; restorePrompt.hidden = previousPrompt === null;
+    batchQueue?.setAvailable(!finalEdit&&!jobEditor?.active&&!jobEditor?.loading);
+    batchQueue?.setServerFilesAvailable(inventory?.server_video_files===true);
+    const batchBlock=busy||loading||enhancing||finalBusy||!!jobEditor?.active||!!jobEditor?.loading||!inventory?.runtime_ready;
+    const batchReason=batchBlock?'Finish the current operation before adding a batch.':batchIssue();
+    batchQueue?.setEnabled(!batchReason,batchReason,{snapshotEnabled:!batchBlock,snapshotReason:batchReason});
+    queue?.setBlocked(locked || loading || finalBusy || !!jobEditor?.active); finalSubmit.disabled = finalBusy || !selection || !finalFields.latent_upscaler.value || features.latent_upscaler !== true; finalLoras.setDisabled(finalBusy); for(const n of Object.values(finalFields))n.disabled=finalBusy;finalReroll.disabled=cancelSelection.disabled=finalBusy;
   }
   function fill(n, items, selected, blank = false) { n.replaceChildren(); if (blank) n.add(new Option('Use model GPU', '')); for (const item of items) n.add(new Option(displayName(item), item.id)); if(selected!==undefined&&selected!==null){if(![...n.options].some(o=>o.value===String(selected)))n.add(new Option('Choose an available component',selected));n.value=selected;} }
   async function loadInventory() {
@@ -248,7 +293,7 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
   }
   form.addEventListener('input', changed); form.addEventListener('change', changed);
   form.addEventListener('submit', async event => {
-    event.preventDefault(); if (submit.disabled || !form.reportValidity()) return;
+    event.preventDefault(); if (batchQueue?.active&&!jobEditor?.active || submit.disabled || !form.reportValidity()) return;
     const values = config(), issue = h3LoraIssue(values.loras, effectiveComponents(), values.mode);
     if (issue) { fail(issue); return; }
     if (!values.prompt.trim()) { fail('Enter a prompt, or build one with the dialogue controls.'); return; }
@@ -318,7 +363,8 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
   }
   async function loadJobs() { if(polling||closed)return;polling=true;try{const data=await request('/jobs');if(closed)return;jobs=(data.jobs||[]).filter(j=>j.seed_hunter||j.recipe==='seed_hunter');queue?.update(data.queue);jobEditor?.observe(jobs);renderJobs();if(saved.selected&&!selection&&inventory){const job=jobs.find(j=>j.id===saved.selected.job_id),candidate=job?.seed_hunter?.candidates?.find(c=>c.index===saved.selected.index);const remembered=saved.selected;saved.selected=null;if(candidate?.can_refine)await selectCandidate(job,candidate,true);else if(remembered)save();}}catch(e){if(!closed)jobStatus.textContent=e.message;}finally{polling=false;}}
   refresh.onclick=loadInventory;refreshJobs.onclick=loadJobs;
-  jobEditor=createVideoJobEditor({form,request,isClosed:()=>closed,isBusy:()=>busy||loading||finalBusy,getDraft:()=>({config:config(),uploads:Object.fromEntries(Object.entries(uploads).map(([key,s])=>[key,[...s.files]]))}),applyEdit:value=>{editingComponents=value.lora_components||null;restore(value.config,{},value.inputs);},restoreDraft:value=>{editingComponents=null;restore(value.config,value.uploads);},onChange:update,onError:fail});
+  jobEditor=createVideoJobEditor({form,request,isClosed:()=>closed,isBusy:()=>busy||loading||finalBusy||!!batchQueue?.busy,getDraft:()=>({config:config(),uploads:Object.fromEntries(Object.entries(uploads).map(([key,s])=>[key,[...s.files]]))}),applyEdit:value=>{editingComponents=value.lora_components||null;restore(value.config,{},value.inputs);},restoreDraft:value=>{editingComponents=null;restore(value.config,value.uploads);},onChange:update,onError:fail});
+  batchQueue=createVideoBatchQueue({family:'h3',recipe:'seed_hunter',sessionKey:'h3:seed_hunter',container:batchContainer,getSnapshot:batchSnapshot,onJob:job=>{if(!closed){jobs=[job,...jobs.filter(item=>item.id!==job.id)];renderJobs();}},onChange:()=>{if(!closed){revision++;update();}}});
   function nestedEditor(onChange, savedConfig) {
     const node=make('div','h3-video-grid'), rows=[];
     const allowed=savedConfig?.seed_hunter?.stage==='final'||!savedConfig ? FINAL_OPTIONS : new Set(Object.keys(options).filter(k=>k!=='stage'));
@@ -339,7 +385,7 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
   enhance.onclick=async()=>{const model=enhancer[Number(enhancerSelect.value)];if(!model||enhance.disabled)return;const before=prompt.value,captured=revision;enhancing=true;enhancerController=new AbortController();update();try{const payload={recipe:'seed_hunter',prompt:before,mode:'ref2va',width:Number(fields.width.value),height:Number(fields.height.value),frames:Number(fields.frames.value),endpoint_id:model.endpoint_id,model:model.model,reference_counts:seedHunterEnhancerInputs(uploads,readOptions()).counts};const body=new FormData();body.append('config',JSON.stringify(payload));for(const [key,files] of Object.entries(seedHunterEnhancerInputs(uploads,readOptions()).images))for(const file of files)body.append(key,file,file.name);const result=await request('/enhance-prompt',{method:'POST',body,signal:enhancerController.signal});if(!closed&&captured===revision&&prompt.value===before){if(!result.prompt?.trim()||result.prompt.length>16000)throw new Error('Enhancement returned no usable prompt.');previousPrompt=before;prompt.value=result.prompt;changed();status.textContent='Prompt enhanced. Review it before generating.';}}catch(e){if(e.name!=='AbortError')fail(e);}finally{enhancing=false;if(!closed)update();}};
   restorePrompt.onclick=()=>{if(previousPrompt!==null){prompt.value=previousPrompt;previousPrompt=null;changed();}};checkModels.onclick=checkEnhancer;
   function onKey(event){if(document.querySelector('.video-server-files-overlay,.h3-lora-library-overlay,.video-workflow-export-overlay'))return;if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();}else if(event.key==='Tab'){const controls=[...dialog.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),summary,a[href]')].filter(n=>n.getClientRects().length);if(event.shiftKey&&document.activeElement===controls[0]){event.preventDefault();controls.at(-1)?.focus();}else if(!event.shiftKey&&document.activeElement===controls.at(-1)){event.preventDefault();controls[0]?.focus();}}}
-  const close=bindMenuDismiss(overlay,()=>{closed=true;clearInterval(timer);window.removeEventListener('keydown',onKey,true);enhancerController?.abort();picker?.close();library?.close();queue?.destroy();Object.values(uploads).forEach(state=>state.rangeEditors.forEach(editor=>editor.destroy()));overlay.remove();if(anchor?.isConnected)anchor.focus();},()=>false);
+  const close=bindMenuDismiss(overlay,()=>{closed=true;clearInterval(timer);window.removeEventListener('keydown',onKey,true);enhancerController?.abort();picker?.close();library?.close();queue?.destroy();batchQueue?.destroy();Object.values(uploads).forEach(state=>state.rangeEditors.forEach(editor=>editor.destroy()));overlay.remove();if(anchor?.isConnected)anchor.focus();},()=>false);
   closeButton.onclick=close;window.addEventListener('keydown',onKey,true);closeButton.focus();
   for(const [key,value]of Object.entries({...BASE,...(saved.config||{})}))if(fields[key])fields[key].value=value;
   for(const key of NESTED){const n=options[key],v=saved.config?.seed_hunter?.[key]??OPTIONS[key];if(n.type==='checkbox')n.checked=v;else n.value=v??'';}

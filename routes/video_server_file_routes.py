@@ -62,6 +62,34 @@ class _VideoPreviewResponse(StreamingResponse):
 
 
 def add_server_video_file_routes(router, owner_callback):
+    @router.get('/server-files/metadata')
+    async def server_video_metadata(request: Request, root: str, path: str, size: int, mtime_ns: str):
+        owner_callback(request)
+        from src.video_media_metadata import get_server_video_metadata
+        result = await anyio.to_thread.run_sync(get_server_video_metadata, {
+            'root': root, 'path': path, 'size': size, 'mtime_ns': mtime_ns})
+        return JSONResponse(result, headers={'Cache-Control': 'private, no-store'})
+
+    @router.api_route('/server-files/preview', methods=['GET', 'HEAD'])
+    async def compatible_server_video(request: Request, root: str, path: str, size: int, mtime_ns: str,
+                                       start_seconds: float = 0, duration_seconds: float = 30):
+        owner_callback(request)
+        from functools import partial
+        from src.video_preview_proxy import open_server_video_proxy
+        upload = await anyio.to_thread.run_sync(partial(open_server_video_proxy, {
+            'root': root, 'path': path, 'size': size, 'mtime_ns': mtime_ns},
+            start_seconds=start_seconds, duration_seconds=duration_seconds))
+        try:
+            value = None if request.headers.get('if-range') else request.headers.get('range')
+            start, end, status = _byte_range(value, upload.size)
+            response = _VideoPreviewResponse(upload, start=start, end=end, status_code=status,
+                                             head=request.method == 'HEAD')
+            response.headers['X-Preview-Start-Seconds'] = str(start_seconds)
+            return response
+        except BaseException:
+            await asyncio.shield(upload.close())
+            raise
+
     @router.api_route('/server-files/video', methods=['GET', 'HEAD'])
     async def preview_server_video(request: Request, root: str, path: str, size: int, mtime_ns: str):
         owner_callback(request)
