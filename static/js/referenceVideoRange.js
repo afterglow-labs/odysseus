@@ -51,9 +51,16 @@ export function createReferenceVideoRangeEditor(file, onChange = () => {}, { pre
   if (preview && (typeof File !== 'undefined' && file instanceof File || file.preview_url || file.serverFile)) {
     const details = document.createElement('details'); details.className = 'h3-reference-preview';
     const heading = document.createElement('summary'); heading.textContent = 'Preview video and choose a section';
-    video = document.createElement('video'); video.controls = true; video.playsInline = true; video.preload = 'metadata';
+    video = document.createElement('video'); video.controls = true; video.playsInline = true; video.preload = 'none';
     video.setAttribute('aria-label', `Preview ${file.name}`);
-    video.src = file.preview_url || (file.serverFile ? `/api/video/h3/server-files/video?${new URLSearchParams(file.serverFile)}` : (objectUrl = URL.createObjectURL(file)));
+    // A batch can contain hundreds of videos. Do not open local files or issue
+    // server range requests until this particular preview is expanded.
+    details.addEventListener('toggle', () => {
+      if (!details.open) { video.pause(); return; }
+      if (disposed || video.hasAttribute('src')) return;
+      video.preload = 'metadata';
+      video.src = file.preview_url || (file.serverFile ? `/api/video/h3/server-files/video?${new URLSearchParams(file.serverFile)}` : (objectUrl = URL.createObjectURL(file)));
+    });
     const actions = document.createElement('div'); actions.className = 'h3-video-actions';
     const action = text => { const button = document.createElement('button'); button.type = 'button'; button.className = 'memory-toolbar-btn'; button.textContent = text; actions.append(button); return button; };
     useCurrent = action('Use current time as start'); playSelection = action('Play selected section');
