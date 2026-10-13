@@ -4,6 +4,7 @@ import { appendVideoInputs } from './videoInputs.js';
 import { h3LoraStrengthControl } from './h3Loras.js';
 const FORMAT = 'odysseus-video-workflow';
 const H3_SETTINGS = ['mode', 'width', 'height', 'frames', 'steps', 'seed', 'sampler', 'scheduler', 'shift_video', 'shift_audio', 'lora_scale', 'reference_size', 'prompt'];
+const SEED_HUNTER_OPTIONS = new Set(['stage','preview_count','denoise','shift_enabled','first_frame_guide','last_frame_guide','force_audio','continuation_overlap','output_fps','attention_backend','sparse_method','sparse_keep_percent','sparse_start','sparse_end','sparse_min_tokens','sparse_extra_tokens','sparse_sink_conditioning','upscaler_chunking','upscaler_force_unload','ff_chunk_size','ff_chunk_threshold','low_vram_chunks','source_start_seconds','source_end_seconds','audio_start_seconds','audio_end_seconds','refmod_strengths']);
 const H3_COMPONENTS = ['model', 'encoder', 'video_vae', 'audio_vae', 'lora'];
 const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -161,6 +162,19 @@ export function resolveVideoWorkflow(workflow, { family, inventory, resolvedComp
     if (!['string', 'number', 'boolean'].includes(typeof value) || (typeof value === 'number' && !Number.isFinite(value))) throw new Error(`Invalid workflow setting: ${key}.`);
     config[key] = value;
   }
+  const hunter = family === 'h3' && workflow.config.recipe === 'seed_hunter';
+  if (hunter) {
+    const options = workflow.config.seed_hunter;
+    if (!object(options) || Object.keys(options).some(key => !SEED_HUNTER_OPTIONS.has(key))) throw new Error('Invalid Seed Hunter settings.');
+    if (options.stage === 'final') throw new Error('Import the source preview workflow; refinement needs its saved preview latent.');
+    if (!['preview','single','continuation','dialogue'].includes(options.stage)) throw new Error('Unknown Seed Hunter stage.');
+    for (const [key,value] of Object.entries(options)) {
+      if (key === 'refmod_strengths') { if (!Array.isArray(value) || value.length > 8 || value.some(v=>typeof v !== 'number' || !Number.isFinite(v) || v<0 || v>1)) throw new Error('Invalid reference mod strengths.'); }
+      else if (value === null && ['source_end_seconds','audio_end_seconds'].includes(key)) continue;
+      else if (!['string','number','boolean'].includes(typeof value) || typeof value==='number' && !Number.isFinite(value)) throw new Error(`Invalid Seed Hunter setting: ${key}.`);
+    }
+    config.recipe = 'seed_hunter'; config.seed_hunter = JSON.parse(JSON.stringify(options));
+  }
   if (own(config, 'prompt') && (typeof config.prompt !== 'string' || config.prompt.length > 16000)) throw new Error('Invalid workflow prompt.');
   if (family === 'h3' && !['t2va', 'fl2va', 'ref2va'].includes(config.mode)) throw new Error('Unknown MiniMax H3 mode in this workflow.');
   const stacked = family === 'h3' && own(workflow.config, 'lora_strengths');
@@ -172,7 +186,8 @@ export function resolveVideoWorkflow(workflow, { family, inventory, resolvedComp
   }))) throw new Error('Invalid workflow LoRA strengths.');
   const loraRoles = stacked ? strengths.map((_, index) => `lora_${index}`) : [];
   if (family === 'h3' && Object.keys(workflow.components).some(key => /^lora_/.test(key) && !loraRoles.includes(key))) throw new Error('The workflow LoRA references do not match its strengths.');
-  const roles = family === 'h3' ? stacked ? [...H3_COMPONENTS.filter(role => role !== 'lora'), ...loraRoles] : H3_COMPONENTS : (definition.slots || []).map(item => item.key);
+  const baseRoles = hunter ? [...H3_COMPONENTS, 'latent_upscaler'] : H3_COMPONENTS;
+  const roles = family === 'h3' ? stacked ? [...baseRoles.filter(role => role !== 'lora'), ...loraRoles] : baseRoles : (definition.slots || []).map(item => item.key);
   const selections = family === 'h3' ? config : (config.components = {});
   for (const role of roles) {
     selections[role] = '';
@@ -260,7 +275,7 @@ export async function importVideoWorkflow(file, { family, inventory, signal, onP
   const result = await uploadWorkflow(file, family, signal, onProgress);
   const resolved = resolveVideoWorkflow(result.workflow, { family, inventory: result.inventory || inventory, resolvedComponents: result.resolved_components || {} });
   for (const attachment of result.attachments || []) {
-    const allowed = family === 'h3' ? ['first_frame', 'last_frame', 'source_video', 'reference_images', 'reference_videos', 'reference_audio'] : ['identity_image', 'source_video', 'last_frame', 'mask_video'];
+    const allowed = family === 'h3' ? ['first_frame', 'last_frame', 'source_video', 'reference_images', 'reference_videos', 'reference_audio', ...(resolved.config.recipe === 'seed_hunter' ? ['reference_mods'] : [])] : ['identity_image', 'source_video', 'last_frame', 'mask_video'];
     if (!allowed.includes(attachment.field) || typeof attachment.name !== 'string' || /[\\/\x00]/.test(attachment.name)) throw new Error('Invalid workflow attachment.');
     const response = await fetch(localUrl(attachment.url, family), { credentials: 'same-origin', signal });
     if (!response.ok) throw new Error(`Could not restore ${attachment.name}.`);

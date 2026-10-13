@@ -193,6 +193,14 @@ def visible_gpu_ids(config):
 
 def validate_job(manifest):
     config = dict(manifest["config"])
+    hunter = config.get("recipe") == "seed_hunter"
+    if hunter:
+        try:
+            from scripts.h3_seed_hunter_controls import validate_options, limits, SAMPLERS, SCHEDULERS
+        except ModuleNotFoundError:
+            from h3_seed_hunter_controls import validate_options, limits, SAMPLERS, SCHEDULERS
+        config["seed_hunter"] = validate_options(config.get("seed_hunter", {}))
+        bounds = limits(config["seed_hunter"])
     uploads = manifest.get("uploads", manifest)
     if config.get("mode", "t2va") not in {"t2va", "fl2va", "ref2va"}:
         raise ValueError("Unknown MiniMax H3 mode")
@@ -211,14 +219,16 @@ def validate_job(manifest):
     devices = visible_gpu_ids(config)
     config["gpu"] = devices[0]
     config["vae_gpu"] = devices[1] if len(devices) > 1 else ""
-    for name, default, low, high in (("width", 960, 32, 2048), ("height", 544, 32, 2048),
-                                   ("frames", 124, 5, 362), ("steps", 20, 1, 100)):
+    min_edge, max_edge = (bounds["min_edge"], bounds["max_edge"]) if hunter else (32, 2048)
+    for name, default, low, high in (("width", 960, min_edge, max_edge), ("height", 544, min_edge, max_edge),
+                                   ("frames", 124, bounds["min_frames"] if hunter else 5, 362), ("steps", 20, 1, 100)):
         config[name] = _number(config, name, default, low, high, True)
     for name in ("width", "height"):
         if config[name] % 32:
             raise ValueError(f"{name} must be a multiple of 32")
-    if config["width"] * config["height"] > 768 * 1344:
-        raise ValueError("MiniMax H3 canvas must not exceed 1,032,192 pixels")
+    max_pixels = bounds["max_pixels"] if hunter else 768 * 1344
+    if config["width"] * config["height"] > max_pixels:
+        raise ValueError(f"MiniMax H3 canvas must not exceed {max_pixels:,} pixels")
     config["frames"] += (5 - config["frames"]) % 17
     seed = config.get("seed", 42)
     if isinstance(seed, bool) or str(seed).strip() != str(int(seed)) or not 0 <= int(seed) <= 2**64 - 1:
@@ -226,8 +236,8 @@ def validate_job(manifest):
     config["seed"] = int(seed)
     for name, default, low, high in (("shift_video", 12, 0.01, 100), ("shift_audio", 3, 0.01, 100)):
         config[name] = _number(config, name, default, low, high)
-    for name, default, choices in (("sampler", "euler", {"euler", "res_multistep"}),
-                                   ("scheduler", "simple", {"simple", "normal"}),
+    for name, default, choices in (("sampler", "euler", set(SAMPLERS) if hunter else {"euler", "res_multistep"}),
+                                   ("scheduler", "simple", set(SCHEDULERS) if hunter else {"simple", "normal"}),
                                    ("reference_size", "match", {"match", "max"})):
         config.setdefault(name, default)
         if config[name] not in choices:
@@ -259,15 +269,15 @@ def validate_job(manifest):
         config["prompt"] = vfx_edit_prompt(config["prompt"])
         if len(config["prompt"]) > 16000:
             raise ValueError("VFX Edit prompt, including vfx_edit:, must be at most 16,000 characters")
-    elif media["source_video"]:
+    elif media["source_video"] and not (hunter and config["seed_hunter"]["stage"] == "continuation"):
         raise ValueError("A source video requires an active VFX Edit LoRA")
     total = sum(len(media[name]) for name in ("reference_images", "reference_videos", "reference_audio"))
     if total > 12:
         raise ValueError("At most 12 references are supported")
     if config["mode"] == "ref2va":
-        if not vfx_edit and not media["reference_images"] and not media["reference_videos"]:
+        if not hunter and not vfx_edit and not media["reference_images"] and not media["reference_videos"]:
             raise ValueError("Reference mode needs at least one reference image or video; audio alone is unsupported")
-        if media["first_frame"] or media["last_frame"]:
+        if not hunter and (media["first_frame"] or media["last_frame"]):
             raise ValueError("First/last frames belong to first/last-frame mode")
     elif total:
         raise ValueError("Reference uploads require reference mode")
@@ -275,6 +285,12 @@ def validate_job(manifest):
         raise ValueError("First/last-frame mode requires a first frame or a last frame")
     if config["mode"] == "t2va" and (media["first_frame"] or media["last_frame"]):
         raise ValueError("Keyframes require first/last-frame mode")
+    if hunter:
+        try:
+            from scripts.h3_seed_hunter import validate_inputs
+        except ModuleNotFoundError:
+            from h3_seed_hunter import validate_inputs
+        validate_inputs(manifest, config, media, uploads)
     for values in media.values():
         for value in values if isinstance(values, list) else ([values] if values else []):
             path = Path(value)
@@ -887,6 +903,13 @@ class H3Runtime:
 def run_job(manifest, *, runtime_factory=H3Runtime, media_loader=prepare_media, muxer=mux_mp4):
     config, media = validate_job(manifest)
     os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(visible_gpu_ids(config))
+    if config.get("recipe") == "seed_hunter":
+        try:
+            from scripts.h3_seed_hunter import run
+        except ModuleNotFoundError:
+            from h3_seed_hunter import run
+        return run(manifest, config, media, runtime_factory=runtime_factory,
+                   media_loader=media_loader, muxer=muxer)
     progress = Progress(manifest["status_path"], config["steps"])
     progress("initializing_runtime")
     runtime = runtime_factory(manifest["runtime_path"])

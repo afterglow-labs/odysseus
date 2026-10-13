@@ -41,7 +41,7 @@ def add_job_edit_routes(router, manager, family, extensions, store_uploads):
             limited = _limited_request(request, limit + 160 * 1024,
                                        f'Video inputs exceed {format_byte_limit(limit)} per job',
                                        space_directory=manager.root)
-            async with limited.form(max_files=17 if family == 'h3' else 4, max_fields=4, max_part_size=65536) as form:
+            async with limited.form(max_files=25 if family == 'h3' else 4, max_fields=4, max_part_size=65536) as form:
                 if any(key not in {'config', 'revision', 'retain_inputs', 'server_inputs', *extensions} for key in form):
                     raise ValueError('Unknown video edit field')
                 for field in ('config', 'revision', 'retain_inputs'):

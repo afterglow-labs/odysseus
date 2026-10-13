@@ -182,6 +182,8 @@ def validate(raw, inventory, uploads, family):
     if family == "h3":
         from src.h3_video import validate_config
         config = validate_config(raw, inventory["components"], inventory["gpus"], uploads)
+        from src.h3_seed_hunter import preflight
+        preflight(config, inventory, uploads)
         if not inventory["runtime_ready"]:
             raise ValueError(inventory["runtime_error"])
         return config
@@ -236,6 +238,14 @@ def commit_edit(manager, job_id, owner, family, raw, expected, retain, saved, na
             from src.h3_loras import frozen_inventory
             inventory = frozen_inventory(manifest["config"], inventory)
         config = validate(raw, inventory, inputs, family)
+        if family == "h3":
+            from src.h3_seed_hunter import guard_edit, guard_saved_refinement
+            guard_edit(manifest["config"], config)
+            guard_saved_refinement(directory, manifest, config)
+            if manifest["config"].get("seed_hunter", {}).get("stage") == "final" and (
+                    any(saved.values()) or any([item["path"] for item in retained[k]] !=
+                                              [item["path"] for item in originals[k]] for k in originals)):
+                raise ValueError("Saved-latent refinement retains its original inputs")
         try:
             # Only validated local staging files can be moved into a job.
             for field, values in inputs.items():

@@ -74,6 +74,9 @@ async def _store_uploads(directory, uploads, limit):
                     await store_upload_chunk(stream, directory, chunk)
             if path.stat().st_size == 0:
                 raise HTTPException(400, "An attachment is empty")
+            if field == "reference_mods":
+                from src.video_workflow import validate_safetensors
+                validate_safetensors(path)
             if field in {"first_frame", "last_frame", "reference_images"}:
                 try:
                     from PIL import Image
@@ -181,7 +184,7 @@ def setup_h3_video_routes(manager=None):
                 if existing is not None:
                     return existing
                 limited = _limited_request(request, limit + 2 * 65536, space_directory=manager.root)
-                async with limited.form(max_files=17, max_fields=3, max_part_size=65536) as form:
+                async with limited.form(max_files=25, max_fields=3, max_part_size=65536) as form:
                     if any(key not in {"config", "auto_video_length", "server_inputs", *UPLOAD_EXTENSIONS} for key in form):
                         raise HTTPException(400, "Unknown video upload field")
                     auto_lengths = form.getlist("auto_video_length")
@@ -201,6 +204,10 @@ def setup_h3_video_routes(manager=None):
                     async with server_video_inputs(form, uploads, UPLOAD_EXTENSIONS) as uploads:
                         current = await asyncio.to_thread(manager.submission_inventory)
                         config = validate_config(raw_config, current["components"], current["gpus"], uploads)
+                        from src.h3_seed_hunter import preflight
+                        if config.get("recipe") == "seed_hunter" and config["seed_hunter"]["stage"] == "final":
+                            raise ValueError("Select a saved Seed Hunter preview to refine it")
+                        preflight(config, current, uploads)
                         from src.h3_vfx import normalize_vfx_inputs
                         uploads = normalize_vfx_inputs(config, uploads)
                         uploads.setdefault("source_video", [])
@@ -265,4 +272,6 @@ def setup_h3_video_routes(manager=None):
     add_queue_routes(router, manager, 'h3')
     from routes.h3_lora_library_routes import add_lora_library_routes
     add_lora_library_routes(router, manager, _owner)
+    from routes.h3_seed_hunter_routes import add_seed_hunter_routes
+    add_seed_hunter_routes(router, manager, _owner)
     return router

@@ -56,6 +56,9 @@ def specification(family, config):
             roles |= {f"lora_{index}" for index in range(len(strengths))}
         else:
             roles.add("lora")
+        if config.get("recipe") == "seed_hunter":
+            roles.add("latent_upscaler")
+            return H3_SETTINGS | {"recipe", "seed_hunter"}, roles, UPLOAD_EXTENSIONS
         return H3_SETTINGS, roles, UPLOAD_EXTENSIONS
     if family == "bfs":
         from src.bfs_video import BY_ID, UPLOAD_EXTENSIONS
@@ -75,6 +78,12 @@ def portable_config(raw, family):
     if raw.keys() - settings:
         raise ValueError("Unknown portable workflow setting")
     for key, value in raw.items():
+        if family == "h3" and key == "seed_hunter":
+            from scripts.h3_seed_hunter_controls import validate_options
+            options = validate_options(value)
+            if options["stage"] == "final":
+                raise ValueError("Export the source preview workflow; a refinement needs its saved preview latent")
+            continue
         if family == "h3" and key == "lora_strengths":
             continue  # Bounded and validated by specification above.
         if not isinstance(value, (str, int, float, bool)) or isinstance(value, float) and not math.isfinite(value):
@@ -206,14 +215,15 @@ def validate_document(value, family):
         if type(item["size"]) is not int or item["size"] <= 0:
             raise ValueError("Invalid attachment size")
         counts[field] = counts.get(field, 0) + 1
-        if counts[field] > {"reference_images": 9, "reference_videos": 3, "reference_audio": 3}.get(field, 1):
+        if counts[field] > {"reference_images": 9, "reference_videos": 3, "reference_audio": 3, "reference_mods": 8}.get(field, 1):
             raise ValueError("Too many workflow attachments")
         declared.add(relative)
     if family == "h3":
         mode = value["config"].get("mode", "t2va")
         refs = sum(counts.get(k, 0) for k in ("reference_images", "reference_videos", "reference_audio"))
-        if (refs > 12 or mode == "t2va" and counts
-                or mode == "ref2va" and (counts.get("first_frame") or counts.get("last_frame"))
+        hunt = value["config"].get("recipe") == "seed_hunter"
+        if (refs > 12 or mode == "t2va" and any(count for field, count in counts.items() if not (hunt and field in {"source_video", "reference_mods"}))
+                or mode == "ref2va" and not hunt and (counts.get("first_frame") or counts.get("last_frame"))
                 or mode == "fl2va" and (refs or counts.get("source_video"))):
             raise ValueError("Attachments do not match the H3 workflow mode")
     else:

@@ -177,3 +177,17 @@ handler=async()=>({jobs:[{id:'original',revision:4,status:'failed',config:{steps
 assert.deepEqual(await controls.openRerun('original',async()=>{}),{opened:true});
 assert.equal(find('apply').disabled,true);
 ''')
+
+
+def test_recipe_filter_never_patches_other_h3_jobs():
+    script = DOM.replace("family:'h3',", "family:'h3', filterJobs:job=>job.recipe==='seed_hunter', targetName:'Seed Hunter',", 1)
+    run_js(script + r'''
+handler=async(path,options)=>path.startsWith('/queue/jobs')?{jobs:[
+ {id:'preview',recipe:'seed_hunter',revision:1,status:'queued'},
+ {id:'normal',revision:2,status:'queued'}],queue}:{succeeded:1,queue};
+find('edit').onclick();await flush();
+field('steps').checked=true;field('steps').onchange();value('steps').value='6';value('steps').listeners.input();
+approval().checked=true;approval().onchange();await submit();
+assert.deepEqual(calls[1].body.jobs,[{id:'preview',revision:1}]);
+assert.deepEqual(calls[1].body.patch,{steps:6});
+''')

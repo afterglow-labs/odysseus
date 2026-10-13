@@ -57,6 +57,8 @@ def _light(directory, state, inventory, family, *, resolved_paths=None):
     if family == "h3" and isinstance(config, dict):
         from src.h3_loras import frozen_components
         result["lora_components"] = frozen_components(config, inventory)
+        if config.get("recipe"):
+            result["recipe"] = config["recipe"]
     return result
 
 
@@ -100,7 +102,7 @@ def _patched(config, patch, inventory, family, inputs, *, resolved_paths=None):
     if not isinstance(patch, dict):
         raise ValueError("Parameter changes must be a JSON object")
     settings, roles, _ = specification(family, config)
-    allowed = settings - {"mode", "workflow_id"} | {"gpu"}
+    allowed = settings - {"mode", "workflow_id", "recipe"} | {"gpu"}
     allowed |= roles | {"vae_gpu", "loras"} if family == "h3" else {"components"}
     if patch.keys() - allowed:
         raise ValueError("Cannot bulk edit setting: " + sorted(patch.keys() - allowed)[0])
@@ -110,14 +112,22 @@ def _patched(config, patch, inventory, family, inputs, *, resolved_paths=None):
         if not isinstance(changes, dict) or changes.keys() - roles:
             raise ValueError("Choose compatible BFS component roles")
         raw["components"] = {**raw["components"], **changes}
-    raw.update({key: value for key, value in patch.items() if key != "components"})
+    raw.update({key: value for key, value in patch.items() if key not in {"components", "seed_hunter"}})
+    if "seed_hunter" in patch:
+        if not isinstance(patch["seed_hunter"], dict):
+            raise ValueError("Seed Hunter changes must be a JSON object")
+        raw["seed_hunter"] = {**raw.get("seed_hunter", {}), **patch["seed_hunter"]}
     if family == "h3" and "loras" not in patch:
         if "lora" in patch:
             # Older clients replace their single adapter explicitly.
             raw.pop("loras", None)
         elif "lora_scale" in patch and raw.get("loras"):
             raw["loras"][0]["strength"] = patch["lora_scale"]
-    return validate(raw, inventory, inputs, family)
+    updated = validate(raw, inventory, inputs, family)
+    if family == "h3":
+        from src.h3_seed_hunter import guard_edit
+        guard_edit(config, updated)
+    return updated
 
 
 def _prepare_locked(manager, owner, family, chosen, patch, inventory, *, queued):
@@ -135,6 +145,9 @@ def _prepare_locked(manager, owner, family, chosen, patch, inventory, *, queued)
         _, _, extensions = specification(family, config)
         inputs = _inputs(directory, manifest, extensions)
         updated = _patched(config, patch, inventory, family, inputs, resolved_paths=resolved_paths)
+        if family == "h3":
+            from src.h3_seed_hunter import guard_saved_refinement
+            guard_saved_refinement(directory, manifest, updated)
         prepared.append({"directory": directory, "state": state, "manifest": manifest, "config": updated, "inputs": inputs})
     return sorted(prepared, key=lambda item: _order(item["state"]))
 
@@ -222,6 +235,10 @@ def _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, recei
                         _clone_file(value["path"], target)
                         paths.append(str(target.resolve()))
                     uploads[field] = paths if family == "h3" and field not in {"first_frame", "last_frame", "source_video"} else paths[0] if paths else []
+                if family == "h3" and item["config"].get("seed_hunter", {}).get("stage") == "final":
+                    from src.h3_seed_hunter import clone_snapshot
+                    uploads["seed_hunter_input"] = clone_snapshot(item["directory"], directory, item["manifest"].get("seed_hunter_input"))
+                    uploads["seed_hunter_source"] = item["manifest"].get("seed_hunter_source", {})
                 _write(directory / "submission.json", {"input_names": names, "source_name": input_source_name(item["inputs"], family),
                                                        "submission_id": key, "rerun_of": original_id})
                 entries.append({"id": identifier, "source_id": original_id, "config": item["config"], "uploads": uploads, "accepted": False})

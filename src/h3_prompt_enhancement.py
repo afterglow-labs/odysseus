@@ -235,7 +235,7 @@ def validate_request(data):
         raise ValueError("Invalid H3 mode")
     result = {"prompt": prompt.strip(), "mode": mode}
     recipe = data.get("recipe", "vfx_edit" if prompt.strip().lower().startswith("vfx_edit:") else "")
-    if not isinstance(recipe, str) or recipe not in {"", "vfx_edit"} or recipe == "vfx_edit" and mode != "ref2va":
+    if not isinstance(recipe, str) or recipe not in {"", "vfx_edit", "seed_hunter"} or recipe == "vfx_edit" and mode != "ref2va":
         raise ValueError("Invalid H3 enhancement recipe")
     if recipe:
         result["recipe"] = recipe
@@ -244,15 +244,17 @@ def validate_request(data):
         if not isinstance(value, str) or not value.strip() or len(value) > limit:
             raise ValueError("Select a prompt enhancement model")
         result[key] = value
-    for key, default, low, high in (("frames", 124, 73 if recipe else 124, 362), ("width", 960, 256, 1920),
-                                     ("height", 544, 256, 1920)):
+    hunter = recipe == "seed_hunter"
+    for key, default, low, high in (("frames", 124, 5 if hunter else 73 if recipe else 124, 362),
+                                   ("width", 960, 64 if hunter else 256, 4096 if hunter else 1920),
+                                   ("height", 544, 64 if hunter else 256, 4096 if hunter else 1920)):
         value = data.get(key, default)
         if type(value) is not int or not low <= value <= high:
             raise ValueError(f"Invalid video {key}")
         if (key == "frames" and (value - 5) % 17) or (key != "frames" and value % 32):
             raise ValueError(f"Invalid video {key}")
         result[key] = value
-    if result["width"] * result["height"] > 768 * 1344:
+    if result["width"] * result["height"] > (4194304 if hunter else 768 * 1344):
         raise ValueError("Video dimensions exceed the supported pixel count")
     counts = data.get("reference_counts", {})
     if not isinstance(counts, dict) or counts.keys() - COUNT_LIMITS.keys():
@@ -265,12 +267,12 @@ def validate_request(data):
         normalized[key] = value
     # Older clients put the source guide in their only video-reference slot.
     # An explicit source count (including zero) uses the new separate layout.
-    if recipe and "source_video" not in counts and normalized["reference_videos"] == 1:
+    if recipe == "vfx_edit" and "source_video" not in counts and normalized["reference_videos"] == 1:
         normalized["source_video"] = 1
         normalized["reference_videos"] = 0
     refs = sum(normalized[key] for key in ("reference_images", "reference_videos", "reference_audio"))
     keyframes = normalized["first_frame"] + normalized["last_frame"]
-    if refs > 12 or (mode == "t2va" and (refs or keyframes)) or (mode == "fl2va" and refs) or (mode == "ref2va" and keyframes):
+    if refs > 12 or (mode == "t2va" and (refs or keyframes)) or (mode == "fl2va" and refs) or (mode == "ref2va" and keyframes and not hunter):
         raise ValueError("Reference counts do not match the selected H3 mode")
     if normalized["source_video"] and not recipe:
         raise ValueError("A source video guide requires the VFX Edit recipe")

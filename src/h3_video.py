@@ -47,6 +47,7 @@ TERMINAL = {"completed", "failed", "stopped"}
 _GPU_TELEMETRY_LOCK = threading.Lock()
 _GPU_TELEMETRY_CACHE = {"expires": 0., "payload": None}
 UPLOAD_EXTENSIONS = {
+    "reference_mods": {".safetensors"},
     "source_video": {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"},
     "first_frame": {".jpg", ".jpeg", ".png", ".webp"},
     "last_frame": {".jpg", ".jpeg", ".png", ".webp"},
@@ -211,7 +212,9 @@ def discover_components(roots):
                     continue
                 known_ids.update([identity, *aliases])
                 lower = name.lower()
-                if adapter or "lora" in lower:
+                if "latent_upscaler" in lower:
+                    role = "latent_upscaler"
+                elif adapter or "lora" in lower:
                     role = "lora"
                 elif "vae" in lower:
                     role = "audio_vae" if "audio" in lower else "video_vae"
@@ -332,28 +335,42 @@ def validate_config(raw, components, gpus, uploads):
     if not isinstance(raw, dict):
         raise ValueError("config must be a JSON object")
     from src.h3_loras import lora_entries
-    allowed = set(DEFAULTS) | {"prompt", "model", "encoder", "video_vae", "audio_vae", "lora", "loras"}
+    allowed = set(DEFAULTS) | {"prompt", "model", "encoder", "video_vae", "audio_vae", "lora", "loras", "recipe", "seed_hunter", "latent_upscaler"}
     if set(raw) - allowed:
         raise ValueError("Unknown generation setting: " + sorted(set(raw) - allowed)[0])
     config = {**DEFAULTS, **raw}
+    from scripts.h3_seed_hunter_controls import validate_options, limits, SAMPLERS, SCHEDULERS
+    hunt = config.get("recipe") == "seed_hunter"
+    if "recipe" in raw and not hunt or not hunt and ("seed_hunter" in raw or "latent_upscaler" in raw):
+        raise ValueError("Unknown H3 recipe")
+    options = validate_options(config.get("seed_hunter", {})) if hunt else None
+    bounds = limits(options) if hunt else {"min_edge": 256, "max_edge": 1920, "max_pixels": 768 * 1344, "min_frames": 124}
+    if hunt:
+        config["seed_hunter"] = options
     by_id = {alias: item for item in components for alias in item.get("aliases", [])}
     by_id.update({item["id"]: item for item in components})
     adapters = lora_entries(config, components=by_id)
     vfx_edit = any(row["strength"] != 0 and by_id.get(row["id"], {}).get("name", "").lower() in VFX_LORAS for row in adapters)
+    if hunt and vfx_edit:
+        raise ValueError("Use the standard H3 VFX workflow for the VFX Edit adapter")
     if "loras" in raw:
         config["lora_scale"] = adapters[0]["strength"] if adapters else 1
     if not isinstance(config["mode"], str) or config["mode"] not in {"t2va", "fl2va", "ref2va"}:
         raise ValueError("Choose text, first/last frame, or reference generation")
+    if hunt and config["mode"] != "ref2va":
+        raise ValueError("Seed Hunter requires a Ref2VA base model")
     prompt = config.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 16000:
         raise ValueError("A prompt of 1–16,000 characters is required")
-    for key, low, high in (("width", 256, 1920), ("height", 256, 1920), ("frames", 73 if vfx_edit else 124, 362),
+    for key, low, high in (("width", bounds["min_edge"], bounds["max_edge"]), ("height", bounds["min_edge"], bounds["max_edge"]), ("frames", 73 if vfx_edit else bounds["min_frames"], 362),
                            ("steps", 1, 100), ("seed", 0, 2**63 - 1)):
         value = config[key]
         if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
             raise ValueError(f"{key} must be an integer from {low} to {high}")
-    if config["width"] % 32 or config["height"] % 32 or config["width"] * config["height"] > 768 * 1344:
-        raise ValueError("Dimensions must be multiples of 32, up to 1,032,192 pixels")
+    if hunt and config["seed"] + 1000 * (options["preview_count"] - 1) > 2**53 - 1:
+        raise ValueError("Seed Hunter seeds including preview offsets must fit a 53-bit integer")
+    if config["width"] % 32 or config["height"] % 32 or config["width"] * config["height"] > bounds["max_pixels"]:
+        raise ValueError(f"Dimensions must be multiples of 32, up to {bounds['max_pixels']:,} pixels")
     if (config["frames"] - 5) % 17:
         raise ValueError("H3 frame count must be 17 × n + 5 (124, 141, 158 … 362)")
     first_lora_name = by_id.get(adapters[0]["id"], {}).get("name", "") if adapters else ""
@@ -363,9 +380,9 @@ def validate_config(raw, components, gpus, uploads):
         value = config[key]
         if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value) or not low <= value <= high:
             raise ValueError(f"{key} must be a finite number from {low} to {high}")
-    if not isinstance(config["sampler"], str) or config["sampler"] not in {"euler", "res_multistep"}:
+    if not isinstance(config["sampler"], str) or config["sampler"] not in (SAMPLERS if hunt else {"euler", "res_multistep"}):
         raise ValueError("Unsupported H3 sampler")
-    if not isinstance(config["scheduler"], str) or config["scheduler"] not in {"simple", "normal"}:
+    if not isinstance(config["scheduler"], str) or config["scheduler"] not in (SCHEDULERS if hunt else {"simple", "normal"}):
         raise ValueError("Unsupported H3 scheduler")
     if not isinstance(config["reference_size"], str) or config["reference_size"] not in {"match", "max"}:
         raise ValueError("Unsupported reference size")
@@ -404,15 +421,37 @@ def validate_config(raw, components, gpus, uploads):
             lora.get("lora_profile") or {"variant": lora.get("variant", "shared")})
     config["lora"] = config["loras"][0]["path"] if config["loras"] else None
     config["lora_scale"] = config["loras"][0]["strength"] if config["loras"] else 1
+    if hunt and (config.get("latent_upscaler") or options["stage"] == "final"):
+        upscaler = by_id.get(config.get("latent_upscaler")) if isinstance(config.get("latent_upscaler"), str) else None
+        if not upscaler or upscaler["role"] != "latent_upscaler" or not Path(upscaler["path"]).is_file():
+            raise ValueError("Choose an installed H3 latent upscaler")
+        config["latent_upscaler"] = upscaler["path"]
     uploads = normalize_vfx_inputs(config, uploads)
     counts = {key: len(uploads.get(key, [])) for key in UPLOAD_EXTENSIONS}
     for key, limit in (("source_video", 1), ("first_frame", 1), ("last_frame", 1), ("reference_images", 9),
-                       ("reference_videos", 3), ("reference_audio", 3)):
+                       ("reference_videos", 3), ("reference_audio", 3), ("reference_mods", 8)):
         if counts[key] > limit:
             raise ValueError(f"At most {limit} {key.replace('_', ' ')} allowed")
     reference_count = sum(counts[key] for key in ("reference_images", "reference_videos", "reference_audio"))
     if reference_count > 12:
         raise ValueError("At most 12 reference files are allowed")
+    if not hunt and counts["reference_mods"]:
+        raise ValueError("RefMods require the Seed Hunter workflow")
+    if hunt:
+        if options["stage"] == "continuation":
+            if counts["source_video"] != 1 or config["frames"] <= options["continuation_overlap"]:
+                raise ValueError("Continuation needs one source video and a generation longer than its overlap")
+        elif counts["source_video"]:
+            raise ValueError("A source video belongs to Seed Hunter continuation mode")
+        if (options["first_frame_guide"] and not counts["first_frame"] and counts["reference_images"] < 1
+                or options["last_frame_guide"] and not counts["last_frame"] and counts["reference_images"] < 2):
+            raise ValueError("First/last reference guides require Picture 1 / Picture 2 respectively")
+        if counts["first_frame"] and not options["first_frame_guide"] or counts["last_frame"] and not options["last_frame_guide"]:
+            raise ValueError("Enable the matching first/last guide for each guide image")
+        if options["force_audio"] and not counts["reference_audio"]:
+            raise ValueError("Preserve supplied audio requires Audio 1")
+        if options["refmod_strengths"] and len(options["refmod_strengths"]) != counts["reference_mods"]:
+            raise ValueError("Set one strength per uploaded RefMod")
     if vfx_edit:
         if config["mode"] != "ref2va" or counts["source_video"] != 1 or counts["first_frame"] or counts["last_frame"]:
             raise ValueError("VFX Edit needs exactly one source video and Reference mode. Use reference images for an edited first frame.")
@@ -427,15 +466,15 @@ def validate_config(raw, components, gpus, uploads):
         config["prompt"] = "vfx_edit: " + prompt
         if len(config["prompt"]) > 16000:
             raise ValueError("The VFX Edit prompt including its prefix must be at most 16000 characters")
-    elif counts["source_video"]:
+    elif counts["source_video"] and not hunt:
         raise ValueError("A source video guide requires an active VFX Edit LoRA")
     if config["mode"] == "ref2va":
-        if not (vfx_edit or counts["reference_images"] or counts["reference_videos"]) or counts["first_frame"] or counts["last_frame"]:
+        if not (hunt or vfx_edit or counts["reference_images"] or counts["reference_videos"]) or not hunt and (counts["first_frame"] or counts["last_frame"]):
             raise ValueError("Reference mode needs an image or video reference and does not accept first/last frames")
     elif config["mode"] == "fl2va":
         if not (counts["first_frame"] or counts["last_frame"]) or reference_count:
             raise ValueError("First/last frame mode needs a first or last image and does not accept reference files")
-    elif any(counts.values()):
+    elif any(value for key, value in counts.items() if not (hunt and key in {"source_video", "reference_mods"})):
         raise ValueError("Text mode does not accept attachments; choose first/last frame or reference mode")
     return config
 
@@ -688,7 +727,9 @@ class H3JobManager:
         if gpus:
             defaults["gpu"] = next((g["id"] for g in gpus if g.get("nvfp4")), gpus[0]["id"])
         preset, preset_error = installed_h3_preset(self.preset_file, components, gpus, defaults)
+        from src.h3_seed_hunter import capabilities
         return {"components": components, "gpus": gpus, "runtime_ready": not error, "batch_jobs": True,
+                "seed_hunter": capabilities(self.project, self.runtime, components, gpus),
                 "batch_auto_video_length": True,
                 "server_video_files": True,
                 "lora_stack": True, "lora_library": True, "max_loras": MAX_LORAS, "vfx_references": True,
@@ -753,6 +794,9 @@ class H3JobManager:
                       url=f"/api/video/h3/jobs/{job_id}/video" if state["status"] == "completed" else None)
         if result.get("error"):
             result["error"] = _redact(result["error"])
+        if isinstance(config, dict) and config.get("recipe") == "seed_hunter":
+            from src.h3_seed_hunter import summary
+            result.update(recipe="seed_hunter", seed_hunter=summary(directory, config, state))
         return result
 
     def jobs(self, owner):

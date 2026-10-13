@@ -31,8 +31,9 @@ export function videoQueueField(key, label, control, numeric = false) {
   return { key, label, control, numeric };
 }
 
-export function createVideoQueueControls({ container, family, request, getFields, reload, onChange = () => {}, isClosed = () => false }) {
+export function createVideoQueueControls({ container, family, request, getFields, reload, onChange = () => {}, isClosed = () => false, filterJobs = () => true, targetName = null }) {
   const familyName = family === 'h3' ? 'H3' : 'BFS';
+  const selectedName = targetName || familyName;
   let queue = null, busy = false, blocked = false, dead = false, mode = null, targets = [], rows = [];
   let requestKey = '', requestId = '', selectionVersion = 0, retryRerun = false;
   let singleJob = null, singleSubmit = null;
@@ -178,8 +179,8 @@ export function createVideoQueueControls({ container, family, request, getFields
     const result = await request(`/queue/jobs?status=${mode === 'edit' ? 'queued' : targetScope.value}`);
     if (!alive() || version !== selectionVersion) return;
     if (!Array.isArray(result.jobs) || result.jobs.some(job => !job.id || !Number.isInteger(job.revision))) throw new Error('The server returned an invalid job selection. Refresh and retry.');
-    targets = result.jobs; updateQueue(result.queue);
-    targetStatus.textContent = `${targets.length} ${familyName} ${mode === 'edit' ? 'queued ' : ''}${targets.length === 1 ? 'job' : 'jobs'} selected.${mode === 'edit' ? ' Pause the queue first to keep waiting jobs from starting while you edit.' : ' Original jobs and results are preserved; each copy goes to the end of the queue.'}`;
+    targets = result.jobs.filter(filterJobs); updateQueue(result.queue);
+    targetStatus.textContent = `${targets.length} ${selectedName} ${mode === 'edit' ? 'queued ' : ''}${targets.length === 1 ? 'job' : 'jobs'} selected.${mode === 'edit' ? ' Pause the queue first to keep waiting jobs from starting while you edit.' : ' Original jobs and results are preserved; each copy goes to the end of the queue.'}`;
     approveText.textContent = mode === 'rerun' ? `Create ${targets.length} new jobs using these saved inputs and checked settings.` : `Change the checked parameters on these ${targets.length} queued jobs.`;
     for (const job of targets) targetList.appendChild(el('li', '', `${job.source_name || job.id} · ${job.status}`));
     render();
@@ -190,7 +191,7 @@ export function createVideoQueueControls({ container, family, request, getFields
       mode = action; editor.hidden = false; confirmation.hidden = true; notice(); targetScope.value = 'finished'; buildFields();
       approveLabel.hidden = false; refreshSelection.hidden = false; targetNames.hidden = false;
       fieldHelp.textContent = 'Check only the parameters to change. Values start from your current draft or workflow defaults. Each job keeps its other settings, workflow, and saved images, videos and audio.';
-      editorTitle.textContent = action === 'edit' ? `Edit all queued ${familyName} jobs` : `Run ${familyName} jobs again`;
+      editorTitle.textContent = action === 'edit' ? `Edit queued ${selectedName} jobs` : `Run ${selectedName} jobs again`;
       editorHelp.textContent = action === 'edit' ? 'Update waiting jobs in place while keeping their queue order. Running and finished jobs are unchanged.' : 'Reuse saved inputs without uploading again. Choose the original jobs below and adjust any parameters before adding fresh copies to the queue.';
       targetLabel.hidden = action !== 'rerun'; await loadTargets(); editor.scrollIntoView({ block: 'start', behavior: 'smooth' });
     });
@@ -201,7 +202,7 @@ export function createVideoQueueControls({ container, family, request, getFields
     return run(async () => {
       const result = await request('/queue/jobs?status=finished');
       if (!alive()) return;
-      const job = result.jobs?.find(item => item.id === id);
+      const job = result.jobs?.filter(filterJobs).find(item => item.id === id);
       if (!job || !Number.isInteger(job.revision) || !job.config || !['completed', 'failed', 'stopped'].includes(job.status)) throw new Error('This finished job is unavailable. Refresh jobs and retry.');
       singleJob = job; singleSubmit = submit; mode = 'rerun'; targets = [job]; retryRerun = false;
       editor.hidden = false; confirmation.hidden = true; notice(); updateQueue(result.queue);
@@ -209,7 +210,7 @@ export function createVideoQueueControls({ container, family, request, getFields
       editorTitle.textContent = `Edit & rerun · ${job.source_name || job.id}`;
       editorHelp.textContent = 'These are this job’s saved parameters. Edit them to queue a new copy; its existing result and your current draft stay unchanged.';
       fieldHelp.textContent = 'Change a parameter, then choose Queue edited copy. Saved images, videos and audio are reused automatically; opening this editor does not start a job.';
-      targetStatus.textContent = `One ${familyName} job selected · ${job.id}`;
+      targetStatus.textContent = `One ${selectedName} job selected · ${job.id}`;
       buildFields(job.config, job); render(); editor.scrollIntoView({ block: 'start', behavior: 'smooth' });
       editor.querySelector('textarea')?.focus({ preventScroll: true });
       return { opened: true };

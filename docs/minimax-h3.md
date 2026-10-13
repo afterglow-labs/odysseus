@@ -1,10 +1,15 @@
 # MiniMax H3 video in Odysseus
 
+The separate [H3 Seed Hunter](h3-seed-hunter.md) recipe adds staged previews,
+learned latent refinement, continuation and dialogue with pinned runtime extras.
+The regular H3 workflow below keeps its own drafts and defaults.
+
 Odysseus runs MiniMax H3 with a local Python worker for each job. The UI, job queue,
 uploads, progress, cancellation and MP4 delivery belong to Odysseus. It imports
 the open-source ComfyUI inference library internally, pinned to commit
 `5c460d8172fe30761ff67c0df3d5643bb74e0d70`; it does not start a ComfyUI server,
-open a node editor, execute workflow JSON, or load custom nodes.
+open a node editor or execute arbitrary workflow JSON. The regular H3 workflow
+does not load custom nodes; Seed Hunter loads only its pinned, reviewed modules.
 
 The dependency is intentional: the pinned core implements H3's joint audio/video
 latents, Qwen3-VL conditioning, reference modalities and separate noise shifts.

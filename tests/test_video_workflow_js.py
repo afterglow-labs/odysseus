@@ -180,3 +180,17 @@ globalThis.fetch=async(url,options)=>url.endsWith('/workflow/import')?{ok:true,j
 const result=await importVideoWorkflow(new File(['zip'],'workflow.zip'),{family:'h3',inventory:{}});
 assert.equal(result.uploads.source_video[0].name,'source.mp4');assert.equal(result.uploads.reference_videos[0].name,'reference.mp4');
 ''')
+
+
+def test_seed_hunter_portable_options_and_upscaler_remap_without_final_latent_loss():
+    run_js(r'''
+const components=[{id:'new-h3',name:'h3.safetensors',role:'model',variant:'ref2va'},
+ {id:'new-up',name:'up.safetensors',role:'latent_upscaler',variant:'shared'}];
+const doc={format:'odysseus-video-workflow',version:1,family:'h3',config:{recipe:'seed_hunter',mode:'ref2va',prompt:'Saved preview',sampler:'er_sde',scheduler:'beta',frames:73,seed_hunter:{stage:'preview',preview_count:3,denoise:.4,first_frame_guide:true,source_end_seconds:null,refmod_strengths:[.7]}},components:{model:{name:'h3.safetensors'},latent_upscaler:{name:'up.safetensors'}}};
+const resolved=resolveVideoWorkflow(doc,{family:'h3',inventory:{components}});
+assert.equal(resolved.config.recipe,'seed_hunter');assert.equal(resolved.config.model,'new-h3');assert.equal(resolved.config.latent_upscaler,'new-up');
+assert.deepEqual(resolved.config.seed_hunter,doc.config.seed_hunter);
+resolved.config.seed_hunter.refmod_strengths[0]=.1;assert.equal(doc.config.seed_hunter.refmod_strengths[0],.7);
+assert.throws(()=>resolveVideoWorkflow({...doc,config:{...doc.config,seed_hunter:{stage:'final'}}},{family:'h3',inventory:{components}}),/saved preview latent/);
+assert.throws(()=>resolveVideoWorkflow({...doc,config:{...doc.config,seed_hunter:{stage:'preview',arbitrary_path:'/secret'}}},{family:'h3',inventory:{components}}),/Invalid Seed Hunter settings/);
+''')

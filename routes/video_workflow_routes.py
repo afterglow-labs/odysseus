@@ -92,7 +92,7 @@ def add_workflow_routes(router, manager, *, family):
             limit = get_chat_upload_max_bytes()
             limited = _limited_request(request, limit + 3 * JSON_LIMIT,
                                        f'Workflow input media exceeds {format_byte_limit(limit)}')
-            async with limited.form(max_files=17, max_fields=3, max_part_size=JSON_LIMIT) as form:
+            async with limited.form(max_files=25 if family == 'h3' else 17, max_fields=3, max_part_size=JSON_LIMIT) as form:
                 config_json, options_json = form.get('config'), form.get('options', '{}')
                 if not isinstance(config_json, str) or not isinstance(options_json, str):
                     raise ValueError('Missing workflow config or export options')
