@@ -194,3 +194,9 @@
 .h3-seed-hunter-dialog .h3-video-form > .h3-video-grid { margin:14px 0; }
 
 .h3-seed-hunter-candidate audio { width:100%; max-width:100%; }
+
+/* Keep option help tappable without inheriting full-width action-button rules. */
+.h3-seed-hunter-dialog .h3-seed-hunter-help {
+  display:inline-flex; flex:0 0 28px; width:28px; height:28px;
+  min-width:28px; padding:0; margin-left:4px; vertical-align:middle;
+}

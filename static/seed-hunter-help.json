@@ -1,0 +1,479 @@
+{
+  "version": 1,
+  "fields": {
+    "stage": {
+      "title": "Generation stage",
+      "body": "Choose which part of the workflow to run. Preview selection and refinement are separate submissions.",
+      "choices": {
+        "preview": {
+          "title": "Seed previews",
+          "body": "Generate 1–3 alternatives at the preview size. Watch them, select one, then render its saved latent with separate refinement settings."
+        },
+        "single": {
+          "title": "Single pass",
+          "body": "Generate one video directly at the draft resolution. There is no separate selected-preview refinement step."
+        },
+        "continuation": {
+          "title": "Continue a video",
+          "body": "Generate a new segment guided by the end of the selected source section. Overlap frames join that segment to the source."
+        },
+        "dialogue": {
+          "title": "Dialogue / audio previews",
+          "body": "Generate voice/audio alternatives. The dialogue builder inserts your lines into the visible prompt. Downloadable FLAC is the primary result."
+        },
+        "final": {
+          "title": "Saved latent refinement",
+          "body": "Use the selected preview’s saved result and conditioning. The prompt, base model, encoder, frames and original references stay tied to that preview."
+        }
+      }
+    },
+    "model": {
+      "title": "H3 model",
+      "body": "The main video/audio generator. Seed Hunter uses Ref2VA H3 weights. A different checkpoint or quantization can change appearance, memory use and which LoRAs work."
+    },
+    "encoder": {
+      "title": "Text encoder",
+      "body": "Converts the prompt and supported reference context into conditioning for H3. This is separate from the optional chat model used by Enhance prompt. NVFP4 encoder weights need a compatible Blackwell GPU."
+    },
+    "video_vae": {
+      "title": "Video VAE",
+      "body": "Encodes input pictures/video into latents and decodes generated latents into frames. Use an H3-compatible VAE. This choice affects memory, decoding performance and reconstruction."
+    },
+    "audio_vae": {
+      "title": "Audio VAE",
+      "body": "Encodes reference audio and decodes generated audio. It must be compatible with H3; it uses the VAE GPU selection."
+    },
+    "latent_upscaler": {
+      "title": "Latent upscaler",
+      "body": "The learned model that enlarges the selected preview’s compressed video before refinement. It does not replace the video VAE or add video duration."
+    },
+    "gpu": {
+      "title": "Model / encoder GPU",
+      "body": "Runs H3 denoising and the Qwen text encoder. NVFP4 components require a compatible Blackwell GPU. Selecting a VAE GPU separately does not split H3’s denoising across both cards."
+    },
+    "vae_gpu": {
+      "title": "VAE GPU",
+      "body": "Runs video/audio encoding and decoding. A second GPU can keep those workloads off the main GPU; it does not share the denoising work. Blank uses the model GPU."
+    },
+    "prompt": {
+      "title": "Prompt",
+      "body": "Describe the intended scene, action, speech and sound. Name attached references as <Picture 1>, <Video 1> and <Audio 1> in their listed order. References guide generation; they do not guarantee an exact copy."
+    },
+    "prompt_enhancement": {
+      "title": "Enhance prompt",
+      "body": "Ask the selected language model to rewrite this visible draft for H3. Review the result before queueing. Enhancement is a separate action and does not start video generation."
+    },
+    "enhancement_model": {
+      "title": "Enhancement model",
+      "body": "The running chat/vision model that rewrites the prompt. It is not H3’s text encoder. Image context requires a vision-capable endpoint; check the context note for the inputs being sent."
+    },
+    "dialogue_text": {
+      "title": "Line of dialogue",
+      "body": "The words inserted at {{dialogue}} when you choose Build visible prompt. They are not sent until that resulting prompt is used for a job."
+    },
+    "dialogue_tone": {
+      "title": "Tone and delivery",
+      "body": "Delivery directions inserted at {{tone}}, such as calm, hurried or whispered. The model still interprets these instructions rather than playing a fixed recording."
+    },
+    "dialogue_template": {
+      "title": "Editable prompt template",
+      "body": "Controls the visible dialogue prompt. {{dialogue}} and {{tone}} are replaced by the two fields above when you build it; you can edit the resulting prompt afterward."
+    },
+    "width": {
+      "title": "Preview width",
+      "body": "Horizontal pixels generated for this stage, in multiples of 32. More pixels increase work and memory. Saved-preview refinement chooses its own final width."
+    },
+    "height": {
+      "title": "Preview height",
+      "body": "Vertical pixels generated for this stage, in multiples of 32. Width and height together determine the aspect ratio and pixel count."
+    },
+    "frames": {
+      "title": "Frames at 24 fps",
+      "body": "Sampling length: frames ÷ 24 gives seconds. H3 uses counts of 5 + 17×n. Automatic video batches select a supported count per clip. This is independent of sampling steps."
+    },
+    "steps": {
+      "title": "Sampling steps",
+      "body": "How many denoising updates refine the entire clip. 8 steps means 8 passes through noise levels, not 8 frames or seconds. More steps usually take longer; a turbo LoRA may be trained for a small specific count."
+    },
+    "seed": {
+      "title": "Base seed",
+      "body": "Controls the initial random noise. Preview alternatives use this seed, seed + 1000 and seed + 2000. Keeping seed and all settings fixed helps comparisons; device/runtime changes can still change results."
+    },
+    "preview_count": {
+      "title": "Preview count",
+      "body": "Generate 1, 2 or 3 seed alternatives within each preview job. They run sequentially. Each batch input gets this many alternatives; single pass, continuation and refinement use one."
+    },
+    "preview_megapixels": {
+      "title": "Preview megapixels",
+      "body": "A size helper: Apply preview size converts this pixel-area target and aspect ratio into width/height rounded to 32. It changes the draft only when applied. Larger sizes need more memory."
+    },
+    "preview_aspect": {
+      "title": "Preview aspect ratio",
+      "body": "The width:height proportion used by Apply preview size. 9:16 is portrait; 16:9 is landscape. It does not crop or trim an attached source file."
+    },
+    "preview_seconds": {
+      "title": "Preview seconds",
+      "body": "Apply duration converts seconds at 24 fps into the next supported H3 frame count. Automatic video batches calculate their own lengths per input."
+    },
+    "sampler": {
+      "title": "Sampler",
+      "body": "The numerical method that turns each model prediction into the next denoising update. It works with the scheduler; no sampler is always fastest or best.",
+      "choices": {
+        "euler": {
+          "title": "Euler",
+          "body": "A first-order update using the current prediction. A straightforward baseline with no history-based correction. These settings use one model evaluation per scheduled update."
+        },
+        "res_multistep": {
+          "title": "RES multistep",
+          "body": "Uses the current and previous denoising predictions for a second-order correction after its initial Euler step. Reuses history rather than adding a second model evaluation each step."
+        },
+        "er_sde": {
+          "title": "ER-SDE",
+          "body": "A stochastic solver using prediction history for higher-order corrections as steps progress. It can inject seeded noise during sampling. The supplied Seed Hunter workflow uses this for preview and refinement."
+        }
+      }
+    },
+    "scheduler": {
+      "title": "Scheduler",
+      "body": "Chooses the sequence of noise levels visited during the steps. It does not control video timing, job order or how many frames are generated.",
+      "choices": {
+        "simple": {
+          "title": "Simple",
+          "body": "Selects evenly spaced entries from the model’s stored noise-level table, then ends at zero. The word “simple” is a schedule name, not a lower-quality mode."
+        },
+        "normal": {
+          "title": "Normal",
+          "body": "Spaces points evenly along the model’s timestep range, converts them to noise levels, and ends at zero. It can be close to Simple for some models, but endpoint spacing differs."
+        },
+        "beta": {
+          "title": "Beta",
+          "body": "Uses a beta-distribution spacing that places more points near the ends of the timestep range than the middle. This is the supplied Seed Hunter preview default."
+        },
+        "linear_quadratic": {
+          "title": "Linear quadratic",
+          "body": "Combines an initially linear noise-level curve with a quadratic segment, ending at zero. Its spacing differs from the model-table schedules. The supplied workflow uses it for low-denoise refinement; that does not make it universally better."
+        }
+      }
+    },
+    "reference_size": {
+      "title": "Reference picture sizing",
+      "body": "Controls how still-image references are resized before encoding. The reference tokens are used throughout sampling.",
+      "choices": {
+        "max": {
+          "title": "Maximum",
+          "body": "Uses the reference pipeline’s larger image sizing (up to a 2048-pixel short edge in this runtime). Can preserve more source detail while adding substantial sampling work and memory."
+        },
+        "match": {
+          "title": "Match output",
+          "body": "Scales images down, preserving aspect ratio, to at most the output pixel area. This can reduce reference tokens and memory compared with Maximum."
+        }
+      }
+    },
+    "shift_enabled": {
+      "title": "Override video/audio shifts",
+      "body": "Enable to apply the two shift values. When off, the checkpoint’s model sampling defaults are used."
+    },
+    "shift_video": {
+      "title": "Video shift",
+      "body": "Reshapes the flow/noise-time mapping for video. Larger values bias the mapping toward higher noise at the same underlying timestep. It is not a frame offset, duration setting or synchronization adjustment."
+    },
+    "shift_audio": {
+      "title": "Audio shift",
+      "body": "Reshapes audio’s flow/noise-time mapping relative to video. It is not a delay in seconds and does not shift the soundtrack on the timeline. Use values appropriate for the checkpoint/LoRA."
+    },
+    "first_frame_guide": {
+      "title": "First-frame guide",
+      "body": "Condition the beginning on an image. The dedicated first-frame attachment takes priority; otherwise Picture 1 is used. This is an explicit boundary guide rather than an ordinary reference."
+    },
+    "last_frame_guide": {
+      "title": "Last-frame guide",
+      "body": "Condition the ending on an image. The dedicated last-frame attachment takes priority; otherwise Picture 2 is used. This does not change the requested duration."
+    },
+    "force_audio": {
+      "title": "Preserve supplied Audio 1 in the latent",
+      "body": "Insert the first supplied audio latent and mask it from denoising. This aims to preserve that audio through generation; VAE reconstruction and final encoding are not a bit-for-bit copy of the original file."
+    },
+    "output_fps": {
+      "title": "Output frame rate",
+      "body": "H3 generates at 24 fps. The 48 fps option interpolates additional frames with RIFE after generation; it does not double the clip’s duration.",
+      "choices": {
+        "24": {
+          "title": "24 fps",
+          "body": "Save the generated frame rate."
+        },
+        "48": {
+          "title": "48 fps",
+          "body": "Use RIFE to insert intermediate frames for smoother playback. Requires the installed RIFE model and adds processing time."
+        }
+      }
+    },
+    "attention_backend": {
+      "title": "Attention backend",
+      "body": "Selects the implementation used for dense attention. Hardware support, memory use and numerical behavior can differ.",
+      "choices": {
+        "comfy kitchen attention": {
+          "title": "Comfy Kitchen",
+          "body": "Uses the installed accelerated attention implementation when supported."
+        },
+        "pytorch": {
+          "title": "PyTorch",
+          "body": "Uses PyTorch attention. Useful as a compatibility alternative; it is not guaranteed to use less memory or run faster."
+        }
+      }
+    },
+    "sparse_method": {
+      "title": "Sparse attention",
+      "body": "Approximates parts of attention to reduce work for long sequences. It can change output and requires compatible runtime/GPU support. Off keeps dense attention.",
+      "choices": {
+        "none": {
+          "title": "Off",
+          "body": "Use the selected dense attention backend."
+        },
+        "sol_attn": {
+          "title": "Sol-Attn",
+          "body": "Chooses important blocks with an adaptive threshold. This integration uses the runtime threshold default; Kept (%) does not control this method."
+        },
+        "sla": {
+          "title": "SLA",
+          "body": "Keeps a fixed fraction of high-scoring blocks. Use settings and model/LoRA weights intended for this attention pattern."
+        },
+        "vsa": {
+          "title": "VSA",
+          "body": "Uses 3D video-cube attention and a learned coarse branch when present. Intended for compatible FastH3/VSA weights, not a general quality switch."
+        }
+      }
+    },
+    "sparse_keep_percent": {
+      "title": "Sparse attention kept (%)",
+      "body": "Fraction of attention blocks retained by SLA, or video cubes retained by VSA. Lower values approximate more work and can change fidelity. Sol-Attn uses its own adaptive threshold and ignores this field."
+    },
+    "sparse_start": {
+      "title": "Sparse attention start",
+      "body": "Fraction through the denoising schedule where sparse attention starts: 0.2 means after the first 20%. Earlier sampling stays dense. This is not a timestamp in the output video."
+    },
+    "sparse_end": {
+      "title": "Sparse attention end",
+      "body": "Fraction through the denoising schedule where sparse attention stops: 1 means through the end. Later sampling returns to dense. Must be at least the start value."
+    },
+    "sparse_min_tokens": {
+      "title": "Sparse minimum tokens",
+      "body": "Keep attention dense when the packed sequence has fewer tokens than this threshold. Sparse overhead can outweigh savings on small sequences; tokens here include video and conditioning."
+    },
+    "sparse_extra_tokens": {
+      "title": "Sparse extra tokens",
+      "body": "Additional high-scoring tokens considered beyond selected blocks. More can move the approximation closer to dense attention at added cost. Zero disables; VSA ignores this option."
+    },
+    "sparse_sink_conditioning": {
+      "title": "Sparse reference preservation",
+      "body": "Controls special treatment of conditioning during sparse attention.",
+      "choices": {
+        "exact_kv_and_rows": {
+          "title": "Preserve reference keys and rows",
+          "body": "Keeps text/audio/reference context exact and uses dense attention for protected query rows. Adds work but avoids sparsifying those paths."
+        },
+        "none": {
+          "title": "Off",
+          "body": "Disable the extra exact-conditioning treatment. This does not remove references from the prompt."
+        }
+      }
+    },
+    "ff_chunk_size": {
+      "title": "Feed-forward chunks",
+      "body": "Number of feed-forward chunks: 4 splits a large token sequence into 4 calls. 0 enables automatic bounded memory protection for INT8 layers; other weight formats keep their normal path. An explicit count overrides that protection. Splitting lowers peak activation memory with possible overhead; it does not split the video into jobs."
+    },
+    "ff_chunk_threshold": {
+      "title": "Feed-forward chunk threshold",
+      "body": "With an explicit chunk count above 1, split feed-forward work only when the packed token count exceeds this value. Automatic INT8 protection uses its own memory bound. This is a token count, not pixels or frames."
+    },
+    "low_vram_chunks": {
+      "title": "Attention chunks",
+      "body": "Split attention heads into this many groups to reduce peak temporary GPU memory. 0 disables the patch. More groups add overhead; this is separate from sparse attention and does not intentionally discard attention links."
+    },
+    "denoise": {
+      "title": "Refinement denoise",
+      "body": "How far back into noise the saved, upscaled preview starts before refinement. Lower values preserve more of the existing latent; higher values allow larger changes. 0 skips denoising; 1 uses the full noise range. This is not LoRA strength."
+    },
+    "upscaler_chunking": {
+      "title": "Temporal chunking for latent upscale",
+      "body": "Process the learned latent upscale in overlapping time chunks to reduce memory spikes on longer clips. It changes how the upscale is computed, not the final duration or number of jobs."
+    },
+    "upscaler_force_unload": {
+      "title": "Unload latent upscaler after use",
+      "body": "Move the upscaler’s weights to CPU after enlarging the latent, freeing their GPU memory before H3 refinement. Keeping it loaded can avoid a reload when reused, at the cost of VRAM."
+    },
+    "continuation_overlap": {
+      "title": "Overlap frames",
+      "body": "Number of frames shared between the source ending and the generated continuation. This guides and blends the join. Choose fewer overlap frames than the generated segment’s length."
+    },
+    "source_start_seconds": {
+      "title": "Continuation source start",
+      "body": "Start of the source section used for continuation, in original-video seconds. The end of the selected section becomes the continuation guide."
+    },
+    "source_end_seconds": {
+      "title": "Continuation source end",
+      "body": "End of the source section used for continuation, in original-video seconds. Blank uses the source end. Must be after Source start."
+    },
+    "audio_start_seconds": {
+      "title": "Audio reference start",
+      "body": "Start of the voice/audio section to read, in seconds. Used before audio conditioning; it does not delay generated audio on the output timeline."
+    },
+    "audio_end_seconds": {
+      "title": "Audio reference end",
+      "body": "End of the voice/audio section to read, in seconds. Blank uses the file end, subject to workflow limits. Must be after Audio start."
+    },
+    "reference_images": {
+      "title": "Reference pictures",
+      "body": "Up to 9 image references, numbered <Picture 1>, <Picture 2>, etc. Describe each role in the prompt. These guide appearance and context rather than becoming fixed output frames unless guide options are enabled."
+    },
+    "reference_videos": {
+      "title": "Reference videos",
+      "body": "Up to 3 video references. Each chosen section is 2–15 seconds; selected sections total at most 15 seconds. A longer file can supply a later section. Generation length can limit how much reference content is consumed."
+    },
+    "reference_audio": {
+      "title": "Reference audio",
+      "body": "Up to 3 audio references, numbered <Audio 1>, <Audio 2>, etc., for sound or voice context. Describe how to use them. Ordinary references are not guaranteed to be copied exactly."
+    },
+    "source_video": {
+      "title": "Continuation source video",
+      "body": "The video to extend. Source start/end choose the portion used; overlap frames guide the transition. This source has a different role from the optional reference videos."
+    },
+    "first_frame": {
+      "title": "Dedicated first-frame image",
+      "body": "Used when the first-frame guide option is enabled. If absent, the guide uses Picture 1 from the reference list."
+    },
+    "last_frame": {
+      "title": "Dedicated last-frame image",
+      "body": "Used when the last-frame guide option is enabled. If absent, the guide uses Picture 2 from the reference list."
+    },
+    "reference_mods": {
+      "title": "Reference mod bundles",
+      "body": "Load up to 8 compatible .safetensors reference-conditioning bundles. These are precomputed reference data, not LoRA weights. Each bundle has its own strength."
+    },
+    "refmod_strength": {
+      "title": "Reference mod strength",
+      "body": "Scale this bundle’s reference contribution from 0 to 1. 0 disables its contribution; 1 uses its full stored strength."
+    },
+    "loras": {
+      "title": "LoRA stack",
+      "body": "Adapters applied in listed order to the H3 model. Each has its own strength and compatibility requirements. Combining adapters can change the sampling settings needed. Refinement starts with the selected preview’s saved stack."
+    },
+    "lora_strength": {
+      "title": "LoRA strength",
+      "body": "Scale this adapter’s effect. 0 disables it; larger magnitude means a stronger positive or negative contribution. A custom slider can define a different range. This is not a probability or a guarantee that instructions will be obeyed."
+    },
+    "batch_job": {
+      "title": "Batch job",
+      "body": "Queue independent jobs using one input per job or repeated copies of a draft. Each submission captures the current prompt/settings. Earlier jobs keep their saved settings while you prepare another batch."
+    },
+    "batch_input": {
+      "title": "Batch input",
+      "body": "The input that changes between jobs. All other enabled references and settings are shared. Turn batch off to use several reference videos together in one job."
+    },
+    "auto_video_length": {
+      "title": "Automatically match each video’s length",
+      "body": "Choose a supported generation length per video. Short clips use their detected duration; long reference videos use up to 15 seconds unless you choose a section. Continuation, image/audio batches and draft copies retain the chosen generation length."
+    },
+    "reference_start": {
+      "title": "Reference section start",
+      "body": "Seconds from the beginning of the original file. Use the preview to find a scene, then choose its current time as the start. This does not change the original file."
+    },
+    "reference_duration": {
+      "title": "Reference section length",
+      "body": "Maximum section length, from 2 to 15 seconds. If the file ends sooner, the remaining usable section is used. Automatic batch timing needs no manual section unless you want a different part."
+    },
+    "batch_copies": {
+      "title": "Number of copies",
+      "body": "Queue this many independent copies of the draft, including shared inputs and seed. This does not automatically randomize seeds; change the seed when you want different starting noise."
+    },
+    "refine_preview": {
+      "title": "Render selected preview",
+      "body": "Create a separate job from the selected preview’s saved latent. Review final size, denoise, sampler and LoRAs before submitting. The original preview remains available for other refinements."
+    },
+    "final_width": {
+      "title": "Final width",
+      "body": "Width after learned latent upscale, in multiples of 32. It must be at least the preview width. Increasing both edges can multiply GPU memory needs even with only a few refinement steps."
+    },
+    "final_height": {
+      "title": "Final height",
+      "body": "Height after learned latent upscale, in multiples of 32. Keep the preview’s aspect ratio unless you intend to reshape it. Final dimensions are separate from the draft above."
+    },
+    "final_steps": {
+      "title": "Refinement steps",
+      "body": "Denoising updates at the enlarged resolution. 2 steps still processes the whole high-resolution video twice; it does not mean two frames. Use a step count appropriate to the model and LoRAs."
+    },
+    "final_seed": {
+      "title": "Refinement seed",
+      "body": "Noise seed for this refinement pass. It can differ from the selected preview seed. Changing it makes another refinement variation while retaining the saved preview and conditioning."
+    },
+    "final_loras": {
+      "title": "Refinement LoRA stack",
+      "body": "Applies only to the new refinement job. It initially copies the selected preview’s saved adapters; changing it does not alter the preview or the main draft."
+    },
+    "final_denoise": {
+      "title": "Refinement denoise",
+      "body": "How far back into noise the saved, upscaled preview starts before refinement. Lower values preserve more of the existing latent; higher values allow larger changes. 0 skips denoising; 1 uses the full noise range. This is not LoRA strength."
+    },
+    "final_sampler": {
+      "title": "Sampler",
+      "body": "The numerical method that turns each model prediction into the next denoising update. It works with the scheduler; no sampler is always fastest or best.",
+      "choices": {
+        "euler": {
+          "title": "Euler",
+          "body": "A first-order update using the current prediction. A straightforward baseline with no history-based correction. These settings use one model evaluation per scheduled update."
+        },
+        "res_multistep": {
+          "title": "RES multistep",
+          "body": "Uses the current and previous denoising predictions for a second-order correction after its initial Euler step. Reuses history rather than adding a second model evaluation each step."
+        },
+        "er_sde": {
+          "title": "ER-SDE",
+          "body": "A stochastic solver using prediction history for higher-order corrections as steps progress. It can inject seeded noise during sampling. The supplied Seed Hunter workflow uses this for preview and refinement."
+        }
+      }
+    },
+    "final_scheduler": {
+      "title": "Scheduler",
+      "body": "Chooses the sequence of noise levels visited during the steps. It does not control video timing, job order or how many frames are generated.",
+      "choices": {
+        "simple": {
+          "title": "Simple",
+          "body": "Selects evenly spaced entries from the model’s stored noise-level table, then ends at zero. The word “simple” is a schedule name, not a lower-quality mode."
+        },
+        "normal": {
+          "title": "Normal",
+          "body": "Spaces points evenly along the model’s timestep range, converts them to noise levels, and ends at zero. It can be close to Simple for some models, but endpoint spacing differs."
+        },
+        "beta": {
+          "title": "Beta",
+          "body": "Uses a beta-distribution spacing that places more points near the ends of the timestep range than the middle. This is the supplied Seed Hunter preview default."
+        },
+        "linear_quadratic": {
+          "title": "Linear quadratic",
+          "body": "Combines an initially linear noise-level curve with a quadratic segment, ending at zero. Its spacing differs from the model-table schedules. The supplied workflow uses it for low-denoise refinement; that does not make it universally better."
+        }
+      }
+    },
+    "final_latent_upscaler": {
+      "title": "Latent upscaler",
+      "body": "The learned model that enlarges the selected preview’s compressed video before refinement. It does not replace the video VAE or add video duration."
+    }
+  },
+  "sources": [
+    {
+      "title": "ComfyUI sampler schedules",
+      "url": "https://github.com/Comfy-Org/ComfyUI/blob/master/comfy/samplers.py"
+    },
+    {
+      "title": "ComfyUI denoising solvers",
+      "url": "https://github.com/Comfy-Org/ComfyUI/blob/master/comfy/k_diffusion/sampling.py"
+    },
+    {
+      "title": "H3 latent upscaler",
+      "url": "https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler"
+    },
+    {
+      "title": "H3 sparse attention",
+      "url": "https://github.com/Comfy-Org/ComfyUI/blob/master/comfy_extras/nodes_sparse_attention.py"
+    }
+  ]
+}

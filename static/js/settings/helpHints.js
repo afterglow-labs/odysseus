@@ -34,6 +34,7 @@ function showHint(anchor, modal) {
   popup.className = 'settings-help-tooltip';
   popup.setAttribute('role', 'tooltip');
   popup.textContent = anchor.dataset.helpHint;
+  if (anchor.dataset.helpMultiline === 'true') popup.style.whiteSpace = 'pre-line';
   popup.style.zIndex = String(Math.max(10000, (parseInt(getComputedStyle(modal).zIndex, 10) || 0) + 1));
   document.body.appendChild(popup);
   anchor.setAttribute('aria-describedby', popup.id);

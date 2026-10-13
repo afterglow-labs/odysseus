@@ -86,6 +86,16 @@ Server jobs keep rendering while more batches are added. Each batch retains
 its own prompt and settings, so editing a new draft does not alter accepted
 jobs. The server preserves submission order across H3, Seed Hunter and BFS.
 
+The question-mark controls explain each option on desktop; the native client
+uses information buttons. Sampler and scheduler help describes the selected
+choice, including Simple, Normal, Beta and Linear quadratic. Both clients use
+the same bundled catalogue in `static/seed-hunter-help.json`.
+
+Feedforward chunks set to zero use automatic temporary-memory protection for
+INT8 models. A positive count selects the explicit chunking control (one means
+no splitting). Automatic protection leaves other quantization layouts alone
+and does not reduce the requested dimensions, frames or steps.
+
 ## Private installation
 
 With the H3 inference core already installed:

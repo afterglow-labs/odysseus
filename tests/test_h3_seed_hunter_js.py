@@ -42,6 +42,19 @@ assert.equal(source.recipe,undefined);assert.equal(preview.prompt,source.prompt)
 """)
 
 
+def test_selected_preview_refinement_inherits_its_denoise_and_preserves_remembered_edits():
+    run_js("""
+const source={seed_hunter:{denoise:.65}},fallback={width:1088,height:1952,denoise:.4,steps:2};
+const selected=seedHunterRefinementDefaults(source,fallback);
+assert.equal(selected.denoise,.65);assert.equal(selected.steps,2);assert.equal(selected.width,1088);
+assert.equal(seedHunterRefinementDefaults(source,fallback,{denoise:.25}).denoise,.25);
+assert.equal(seedHunterRefinementDefaults({seed_hunter:{denoise:0}},fallback).denoise,0);
+assert.equal(seedHunterRefinementDefaults({},fallback).denoise,.4);
+assert.equal(seedHunterRefinementDefaults({},{}).denoise,.4);
+assert.equal(source.seed_hunter.denoise,.65);assert.equal(fallback.denoise,.4);
+""")
+
+
 def test_dialogue_build_is_explicit_text_substitution():
     run_js("""
 assert.equal(seedHunterDialoguePrompt('Hello','Warmly','Before {{dialogue}} / {{tone}} after'),'Before Hello / Warmly after');

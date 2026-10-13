@@ -1,4 +1,5 @@
 import { bindMenuDismiss, dismissOrRemove } from './escMenuStack.js';
+import { bindSeedHunterHelp } from './seedHunterHelp.js';
 import { topPortalZ } from './toolWindowZOrder.js';
 import { createH3LoraEditor, h3LoraStack, h3LoraComponents, h3LoraIssue, insertH3LoraTrigger } from './h3Loras.js';
 import { showH3LoraLibrary } from './h3LoraLibrary.js';
@@ -49,6 +50,9 @@ export function seedHunterResolution(megapixels, widthRatio, heightRatio, alignm
   if (values.some(value => !Number.isFinite(value) || value <= 0)) throw new Error('Choose a positive resolution and aspect ratio.');
   const scale = Math.sqrt(values[0] * 1024 * 1024 / (values[1] * values[2]));
   return { width: Math.max(alignment, Math.round(values[1] * scale / alignment) * alignment), height: Math.max(alignment, Math.round(values[2] * scale / alignment) * alignment) };
+}
+export function seedHunterRefinementDefaults(source, defaults, remembered = {}) {
+  return { ...defaults, denoise: source.seed_hunter?.denoise ?? defaults.denoise ?? .4, ...remembered };
 }
 export function seedHunterDialoguePrompt(dialogue, tone, template) {
   return String(template).replaceAll('{{dialogue}}', String(dialogue)).replaceAll('{{tone}}', String(tone));
@@ -119,6 +123,7 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
   }); form.append(loras.node);
   const prompt = field(form, 'prompt', 'Prompt', make('textarea')); prompt.rows = 5; prompt.maxLength = 16000; prompt.required = true;
   const enhancerBar = make('div', 'h3-video-actions'), enhance = button('Enhance prompt'), restorePrompt = button('Restore original prompt'), enhancerSelect = make('select', 'cookbook-field-input'), checkModels = button('Check models'); enhancerSelect.setAttribute('aria-label', 'Enhancement model');
+  enhance.dataset.seedHunterHelpAction = 'prompt_enhancement';
   enhancerBar.append(enhancerSelect, enhance, restorePrompt, checkModels); form.append(enhancerBar); const enhancerInfo=make('p','h3-video-muted');form.append(enhancerInfo); restorePrompt.hidden = true;
   const dialoguePanel = group(form, 'Dialogue prompt builder', true), dialogueText = field(dialoguePanel, 'dialogue_text', 'Line of dialogue', make('textarea'));
   const dialogueTone = field(dialoguePanel, 'dialogue_tone', 'Tone and delivery', make('textarea'));
@@ -149,7 +154,7 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
   number(advanced, 'sparse_start', 'Sparse attention start', .2, 0, 1, .05, options); number(advanced, 'sparse_end', 'Sparse attention end', 1, 0, 1, .05, options);
   number(advanced, 'sparse_min_tokens', 'Sparse minimum tokens', 12288, 0, 1000000, 1, options); number(advanced, 'sparse_extra_tokens', 'Sparse extra tokens', 256, 0, 8192, 1, options);
   select(advanced, 'sparse_sink_conditioning', 'Sparse reference preservation', [['exact_kv_and_rows','Preserve reference keys and rows'],['none','Off']], options);
-  number(advanced, 'ff_chunk_size', 'Feed-forward chunk size (0 = off)', 0, 0, 64, 1, options); number(advanced, 'ff_chunk_threshold', 'Feed-forward chunk threshold', 2048, 1, 1000000, 1, options);
+  number(advanced, 'ff_chunk_size', 'Feed-forward chunks (0 = auto for INT8)', 0, 0, 64, 1, options); number(advanced, 'ff_chunk_threshold', 'Feed-forward chunk threshold', 2048, 1, 1000000, 1, options);
   number(advanced, 'low_vram_chunks', 'Attention chunks (0 = off)', 0, 0, 64, 1, options);
   number(advanced, 'denoise', 'Default refinement denoise', .4, 0, 1, .05, options);
   check(advanced, 'upscaler_chunking', 'Temporal chunking for latent upscale', true); check(advanced, 'upscaler_force_unload', 'Unload latent upscaler after use');
@@ -184,10 +189,11 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
   number(finalGrid, 'steps', 'Refinement steps', 2, 1, 100, 1, finalFields); number(finalGrid, 'seed', 'Refinement seed', 42, 0, Number.MAX_SAFE_INTEGER, 1, finalFields); number(finalGrid, 'denoise', 'Denoise', .4, 0, 1, .05, finalFields);
   select(finalGrid, 'sampler', 'Refinement sampler', [['er_sde','ER-SDE'],['euler','Euler'],['res_multistep','RES multistep']], finalFields); select(finalGrid, 'scheduler', 'Refinement scheduler', [['linear_quadratic','Linear quadratic'],['beta','Beta'],['simple','Simple'],['normal','Normal']], finalFields);
   const finalLoras = createH3LoraEditor({ idPrefix: 'seed-hunter-final', onChange: () => { finalRequest = null; save(); } }); finalForm.append(make('p', 'h3-video-muted', 'This stack applies only to refinement. It starts with the preview’s saved LoRAs.'), finalLoras.node);
-  const finalActions = make('div', 'h3-video-actions'), finalSubmit = button('Render selected preview'), finalReroll = button('Randomize refinement seed'), cancelSelection = button('Clear selection'); finalSubmit.type = 'submit'; finalSubmit.className = 'cookbook-btn'; finalActions.append(finalSubmit, finalReroll, cancelSelection); finalForm.append(finalActions);
+  const finalActions = make('div', 'h3-video-actions'), finalSubmit = button('Render selected preview'), finalReroll = button('Randomize refinement seed'), cancelSelection = button('Clear selection'); finalSubmit.dataset.seedHunterHelpAction = 'refine_preview'; finalSubmit.type = 'submit'; finalSubmit.className = 'cookbook-btn'; finalActions.append(finalSubmit, finalReroll, cancelSelection); finalForm.append(finalActions);
   finalReroll.onclick = () => { finalFields.seed.value = randomSeed(); finalRequest = null; save(); }; cancelSelection.onclick = () => { selecting++; selection = null; finalRequest = null; finalSection.hidden = true; save(); renderJobs(); };
   finalForm.addEventListener('input', () => { finalRequest = null; save(); }); finalForm.addEventListener('change', () => { finalRequest = null; save(); });
   const jobToolbar = make('div', 'h3-video-toolbar'), refreshJobs = button('Refresh jobs'); jobToolbar.append(make('h3', '', 'Seed Hunter jobs'), refreshJobs); const jobStatus = make('p', 'h3-video-muted'), jobList = make('div', 'h3-video-jobs'); scroll.append(jobToolbar, jobStatus, jobList);
+  const disposeHelp = bindSeedHunterHelp(overlay);
   function fail(reason) { error.textContent = reason?.message || String(reason || ''); error.hidden = !error.textContent; }
   function readOptions() { return {...optionSnapshot, refmod_strengths:uploads.reference_mods?[...uploads.reference_mods.retained,...uploads.reference_mods.files].map((_,i)=>uploads.reference_mods.strengths[i]??1):[], ...Object.fromEntries(Object.keys(options).map(key => { const n = options[key]; return [key, n.type === 'checkbox' ? n.checked : n.type === 'number' || ['continuation_overlap','output_fps'].includes(key) ? (n.value === '' ? null : Number(n.value)) : n.value]; }))}; }
   function config() {
@@ -317,7 +323,7 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
       status.textContent = 'Loading saved preview settings…'; const data = await request(`/jobs/${encodeURIComponent(job.id)}/seed-hunter`); if (closed || token !== selecting) return;
       const source = data.config, size = seedHunterResolution(inventory.seed_hunter?.final_defaults?.megapixels || 2, source.width, source.height);
       selection = { job_id: job.id, index: candidate.index, seed: candidate.seed, width:source.width, height:source.height }; finalRequest = remembered ? saved.final_request || null : null;
-      const defaults = { ...size, latent_upscaler:source.latent_upscaler||finalFields.latent_upscaler.value, steps: 2, seed: randomSeed(), sampler: 'er_sde', scheduler: 'linear_quadratic', denoise: .4, ...(inventory.seed_hunter?.final_defaults || {}), ...(remembered ? saved.final_config || {} : {}) };
+      const defaults = seedHunterRefinementDefaults(source, { ...size, latent_upscaler:source.latent_upscaler||finalFields.latent_upscaler.value, steps: 2, seed: randomSeed(), sampler: 'er_sde', scheduler: 'linear_quadratic', denoise: .4, ...(inventory.seed_hunter?.final_defaults || {}) }, remembered ? saved.final_config || {} : {});
       for (const [key, n] of Object.entries(finalFields)) if (defaults[key] !== undefined) n.value = defaults[key];
       finalComponents = h3LoraComponents(inventory.components, data.lora_components); finalLoras.setInventory(finalComponents); finalLoras.setValue(remembered && saved.final_config?.loras ? saved.final_config.loras : h3LoraStack(source));
       finalTitle.textContent = `Refine preview ${candidate.index} · seed ${candidate.seed}`; finalDescription.textContent = `Saved job ${job.id}. Reuses this preview’s latent and inputs; the draft above is separate.`; finalSection.hidden = false;
@@ -384,8 +390,8 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
   enhancerSelect.onchange=()=>{update();save();};
   enhance.onclick=async()=>{const model=enhancer[Number(enhancerSelect.value)];if(!model||enhance.disabled)return;const before=prompt.value,captured=revision;enhancing=true;enhancerController=new AbortController();update();try{const payload={recipe:'seed_hunter',prompt:before,mode:'ref2va',width:Number(fields.width.value),height:Number(fields.height.value),frames:Number(fields.frames.value),endpoint_id:model.endpoint_id,model:model.model,reference_counts:seedHunterEnhancerInputs(uploads,readOptions()).counts};const body=new FormData();body.append('config',JSON.stringify(payload));for(const [key,files] of Object.entries(seedHunterEnhancerInputs(uploads,readOptions()).images))for(const file of files)body.append(key,file,file.name);const result=await request('/enhance-prompt',{method:'POST',body,signal:enhancerController.signal});if(!closed&&captured===revision&&prompt.value===before){if(!result.prompt?.trim()||result.prompt.length>16000)throw new Error('Enhancement returned no usable prompt.');previousPrompt=before;prompt.value=result.prompt;changed();status.textContent='Prompt enhanced. Review it before generating.';}}catch(e){if(e.name!=='AbortError')fail(e);}finally{enhancing=false;if(!closed)update();}};
   restorePrompt.onclick=()=>{if(previousPrompt!==null){prompt.value=previousPrompt;previousPrompt=null;changed();}};checkModels.onclick=checkEnhancer;
-  function onKey(event){if(document.querySelector('.video-server-files-overlay,.h3-lora-library-overlay,.video-workflow-export-overlay'))return;if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();}else if(event.key==='Tab'){const controls=[...dialog.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),summary,a[href]')].filter(n=>n.getClientRects().length);if(event.shiftKey&&document.activeElement===controls[0]){event.preventDefault();controls.at(-1)?.focus();}else if(!event.shiftKey&&document.activeElement===controls.at(-1)){event.preventDefault();controls[0]?.focus();}}}
-  const close=bindMenuDismiss(overlay,()=>{closed=true;clearInterval(timer);window.removeEventListener('keydown',onKey,true);enhancerController?.abort();picker?.close();library?.close();queue?.destroy();batchQueue?.destroy();Object.values(uploads).forEach(state=>state.rangeEditors.forEach(editor=>editor.destroy()));overlay.remove();if(anchor?.isConnected)anchor.focus();},()=>false);
+  function onKey(event){if(document.querySelector('.settings-help-tooltip'))return;if(document.querySelector('.video-server-files-overlay,.h3-lora-library-overlay,.video-workflow-export-overlay'))return;if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();}else if(event.key==='Tab'){const controls=[...dialog.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),summary,a[href]')].filter(n=>n.getClientRects().length);if(event.shiftKey&&document.activeElement===controls[0]){event.preventDefault();controls.at(-1)?.focus();}else if(!event.shiftKey&&document.activeElement===controls.at(-1)){event.preventDefault();controls[0]?.focus();}}}
+  const close=bindMenuDismiss(overlay,()=>{closed=true;disposeHelp();clearInterval(timer);window.removeEventListener('keydown',onKey,true);enhancerController?.abort();picker?.close();library?.close();queue?.destroy();batchQueue?.destroy();Object.values(uploads).forEach(state=>state.rangeEditors.forEach(editor=>editor.destroy()));overlay.remove();if(anchor?.isConnected)anchor.focus();},()=>false);
   closeButton.onclick=close;window.addEventListener('keydown',onKey,true);closeButton.focus();
   for(const [key,value]of Object.entries({...BASE,...(saved.config||{})}))if(fields[key])fields[key].value=value;
   for(const key of NESTED){const n=options[key],v=saved.config?.seed_hunter?.[key]??OPTIONS[key];if(n.type==='checkbox')n.checked=v;else n.value=v??'';}
