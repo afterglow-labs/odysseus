@@ -12,8 +12,6 @@ import { referenceVideoRanges, restoreReferenceVideoRanges, createReferenceVideo
 import { appendVideoInputs } from './videoInputs.js';
 import { showVideoServerFiles } from './videoServerFiles.js';
 import { showH3LoraLibrary } from './h3LoraLibrary.js';
-import { createWorkflowStudio } from './workflowStudio.js';
-import { workflowStudioInputPreview } from './workflowStudioInput.js';
 
 const API = '/api/video/h3';
 const STORAGE = 'odysseus-h3-video-settings-v1';
@@ -216,7 +214,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   let enhancerSelection = null, enhancerScope = null, selectionInitialized = false;
   let gpuPolling = false, gpuSnapshot = [], gpuUpdated = null, gpuController = null;
   let transferBusy = false, batchQueue = null, inventoryLoading = false, jobEditor = null, queueControls = null, loraTouched = false;
-  let serverPicker = null, studio = null;
+  let serverPicker = null;
   let loraLibrary = null;
   let editingLoraComponents = null;
   const loraComponents = () => h3LoraComponents(inventory?.components || [], editingLoraComponents);
@@ -249,7 +247,6 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   inventoryBar.append(inventoryStatus, refresh); scroll.appendChild(inventoryBar);
   const transferBar = el('div', 'h3-video-toolbar h3-video-transfer-toolbar');
   const transferActions = el('div', 'h3-video-job-actions'), exportWorkflow = button('Export workflow'), importWorkflow = button('Import workflow');
-  importWorkflow.title = 'Import an Odysseus archive or convert ComfyUI workflow JSON';
   exportWorkflow.disabled = importWorkflow.disabled = true;
   const importFile = el('input'); importFile.type = 'file'; importFile.accept = '.json,.zip,application/json,application/zip'; importFile.hidden = true;
   const transferStatus = el('p', 'h3-video-muted'); transferStatus.setAttribute('role', 'status'); transferStatus.hidden = true;
@@ -293,7 +290,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
       const profile = component?.lora_profile; if (!profile?.trigger_words) return;
       const next = insertH3LoraTrigger(prompt.value, profile.trigger_words, profile.trigger_position, prompt.selectionStart ?? prompt.value.length);
       if (next.length > prompt.maxLength) { setError('The trigger would exceed the prompt length limit. Shorten the prompt before inserting it.'); return; }
-      prompt.value = next; editRevision++; setError(''); updateReady(); studio?.select('prepare'); prompt.focus({ preventScroll: true });
+      prompt.value = next; editRevision++; setError(''); updateReady(); prompt.focus({ preventScroll: true });
     },
     onApplyRecommended: component => {
       const settings = component?.lora_profile?.recommended_settings || {}, changes = [];
@@ -604,7 +601,6 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
       nodes.editRerun.disabled = state.disabled || !!queueControls?.blocked || nodes.editorLoading || state.pending || !inventory || !!jobEditor?.active || !!jobEditor?.loading;
     }
     updateEnhancerControls();
-    studio?.refresh();
   }
   function updateEnhancerControls() {
     const retainedImages = Object.entries(uploads).some(([key, state]) => state.wrap.dataset.mode === fields.mode.value && ['first_frame', 'last_frame', 'reference_images'].includes(key) && state.retained.length);
@@ -1049,7 +1045,6 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
             : 'Uploading workflow…';
       } }); if (closed) return;
       if (revision !== editRevision) throw new Error('The draft changed while importing. Import again to apply this workflow.');
-      if (result.config.recipe === 'seed_hunter') throw new Error('Open H3 Seed Hunter to import this preview and refinement workflow.');
       if (result.inventory) await loadInventory(result.inventory);
       if (closed) return;
       if (revision !== editRevision) throw new Error('The draft changed while importing. Import again to apply this workflow.');
@@ -1127,7 +1122,6 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     closed = true; clearInterval(timer); window.removeEventListener('keydown', onKey, true);
     serverPicker?.close();
     loraLibrary?.close();
-    studio?.destroy();
     batchQueue?.destroy(); queueControls?.destroy(); jobPager?.destroy(); releaseVideoJobMedia(jobList);
     Object.values(uploads).forEach(state => state.rangeEditors.forEach(editor => editor.destroy()));
     enhancementController?.abort();
@@ -1165,7 +1159,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     form, request, isClosed: () => closed,
     isBusy: () => !!queueControls?.busy || !!queueControls?.editing || submitting || enhancing || transferBusy || inventoryLoading || !!batchQueue?.busy,
     getDraft: () => ({ config: { ...config(), prompt: prompt.value }, uploads: Object.fromEntries(Object.entries(uploads).map(([key, state]) => [key, [...state.files]])), originalPrompt }),
-    applyEdit: value => { editingLoraComponents = value.lora_components || null; originalPrompt = null; submissionStatus.hidden = true; applyEditorDraft(value.config, {}, value.inputs); studio?.select('prepare'); },
+    applyEdit: value => { editingLoraComponents = value.lora_components || null; originalPrompt = null; submissionStatus.hidden = true; applyEditorDraft(value.config, {}, value.inputs); },
     restoreDraft: value => { editingLoraComponents = null; originalPrompt = value.originalPrompt; applyEditorDraft(value.config, value.uploads); },
     onChange: updateReady, onError: setError,
   });
@@ -1188,49 +1182,6 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     }).concat(savedConfig?.reference_video_ranges?.length ? [referenceVideoRangesField(savedConfig.reference_video_ranges)] : []).concat([{ key: 'loras', label: 'LoRA stack (replace all)', getSavedValue: h3LoraStack, create: onChange => createH3LoraEditor({
       components: h3LoraComponents(inventory?.components || [], savedJob?.lora_components), value: loraEditor.getValue(), max: inventory?.max_loras || 8, idPrefix: 'h3-queue', onChange,
     }) }]),
-  });
-  studio = createWorkflowStudio({
-    getGraphDraft: () => {
-      if (Object.values(uploads).some(state => state.retained.length)) throw new Error('Finish the queued-job edit first. Open your regular draft as a graph using Edit workflow graph.');
-      return {config:config(), inputs:Object.fromEntries(Object.entries(uploads).filter(([,state]) => !state.wrap.hidden).map(([key,state]) => [key,[...state.files]]))};
-    },
-    container: scroll, dialog, form, family: 'h3', title: 'MiniMax H3 Video',
-    persistentNodes: [inventoryBar, error, loraCompatibilityError, gpuSelectionError, vfxInputError], actions: [actions, submissionStatus],
-    sections: [
-      { id: 'inputs', title: 'Inputs', parent: form, nodes: [fields.mode.parentElement, batchContainer, inputArea, referenceHelp] },
-      { id: 'prepare', title: 'Prepare', parent: form, nodes: [promptGroup] },
-      { id: 'setup', title: 'Model setup', parent: form, nodes: [components, loraEditor.node, componentPath.parentElement, presetBar] },
-      { id: 'generate', title: 'Generate', parent: form, nodes: [dimensions, advanced, gpuPanel] },
-      { id: 'review', title: 'Review', parent: scroll, nodes: [jobsHeader, jobStatus, queueContainer, jobPager.node, jobList] },
-      { id: 'export', title: 'Export', parent: scroll, nodes: [transferBar] },
-    ],
-    getSummary: () => ({
-      model: fields.model.options[fields.model.selectedIndex]?.text || 'Choose H3 model',
-      encoder: fields.encoder.options[fields.encoder.selectedIndex]?.text || 'Choose encoder',
-      videoVae: fields.video_vae.options[fields.video_vae.selectedIndex]?.text || 'Choose video VAE',
-      audioVae: fields.audio_vae.options[fields.audio_vae.selectedIndex]?.text || 'Choose audio VAE',
-      loras: loraEditor.getValue().map(row => ({ name: loraComponents().find(item => item.id === row.id)?.display_name || loraComponents().find(item => item.id === row.id)?.name || row.id, strength: row.strength, enabled: Number(row.strength) !== 0 })),
-      mode: fields.mode.options[fields.mode.selectedIndex]?.text || fields.mode.value,
-      width: fields.width.value, height: fields.height.value, steps: fields.steps.value, seed: fields.seed.value,
-      inputCount: Object.values(uploads).reduce((count, state) => count + state.files.length + state.retained.length, 0), jobCount: jobPager.total,
-      inputs: batchActive() ? 'Batch inputs' : `${Object.values(uploads).reduce((count, state) => count + state.files.length + state.retained.length, 0)} attached inputs`,
-      prepare: prompt.value.trim() ? 'Prompt ready' : 'Write a prompt',
-      generate: `${fields.width.value} × ${fields.height.value} · ${fields.steps.value} steps`,
-      review: `${jobPager.total} jobs`,
-    }),
-    getPreview: () => {
-      const keys = fields.mode.value === 'fl2va' ? ['first_frame', 'last_frame']
-        : fields.mode.value === 'ref2va' ? ['source_video', 'reference_videos', 'reference_images', 'reference_audio'] : [];
-      return workflowStudioInputPreview(keys.filter(key => !uploads[key].wrap.hidden)
-        .flatMap(key => [...uploads[key].retained, ...uploads[key].files]), 'h3');
-    },
-    onApplyConverted: result => {
-      if (result.family !== 'h3' || result.config?.recipe === 'seed_hunter') throw new Error('Open this converted workflow in its matching workflow panel.');
-      if (submitting || enhancing || transferBusy || inventoryLoading || jobEditor?.active || jobEditor?.loading || batchQueue?.busy || queueControls?.busy || queueControls?.editing) throw new Error('Finish the current edit or submission before applying a workflow.');
-      const next = { ...config(), ...result.config, gpu: fields.gpu.value, vae_gpu: fields.vae_gpu.value };
-      originalPrompt = null; editingLoraComponents = null; loraTouched = true;
-      applyEditorDraft(next, {}); save(); studio?.select('setup');
-    },
   });
   loadInventory(); loadJobs(); checkEnhancer(); loadGpuUsage();
   timer = setInterval(() => {

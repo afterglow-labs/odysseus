@@ -42,7 +42,10 @@ def load_source(runtime_path):
 
 
 def sample(runtime, manifest, config, model, positive, latent, vae, progress):
-    from scripts.h3_seed_hunter import _worker
+    if __package__:
+        from .h3_seed_hunter import _worker
+    else:
+        from h3_seed_hunter import _worker
     import comfy.samplers
     from comfy_extras.nodes_custom_sampler import BasicGuider, BasicScheduler
     from PIL import Image

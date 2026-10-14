@@ -103,6 +103,50 @@
       "title": "Preview count",
       "body": "Generate 1, 2 or 3 seed alternatives within each preview job. They run sequentially. Each batch input gets this many alternatives; single pass, continuation and refinement use one."
     },
+    "scout_count": {
+      "title": "Scout seed count",
+      "body": "Try 1–32 consecutive seeds, starting at the base seed and increasing by 1. Each runs through the Scout step before its preview is shown. More seeds add sampling work; interactive mode also retains their partial latents until you choose one."
+    },
+    "scout_step": {
+      "title": "Scout stopping step",
+      "body": "How many steps of the full sampling schedule to run for each seed before comparing previews. In interactive or preview-only mode, it must be before the last sampling step. A later stopping point gives more developed previews at greater cost. Interactive mode continues the selected seed’s exact partial latent through the remaining steps."
+    },
+    "scout_mode": {
+      "title": "Scout mode",
+      "body": "Choose whether to compare seeds and continue a selection, stop at partial previews, or generate one seed directly.",
+      "choices": {
+        "interactive": {
+          "title": "Choose and continue",
+          "body": "Preview each seed, then wait for your selection. The same job resumes the chosen seed’s saved partial latent through the rest of the full schedule."
+        },
+        "scout": {
+          "title": "Scout previews only",
+          "body": "Generate the partial previews and stop without waiting for a selection. The job’s output is the first seed’s partial result; it has not completed the full sampling schedule."
+        },
+        "final": {
+          "title": "Single full pass",
+          "body": "Run the full schedule once with the current base seed. This skips the seed search and selection wait and starts a new pass; it does not resume a partial latent from an earlier job."
+        }
+      }
+    },
+    "scout_timeout": {
+      "title": "Selection timeout",
+      "body": "Seconds to wait for your choice in interactive mode. 0 waits until you select a seed or cancel the job. A positive timeout stops the job with an error when it expires; it never chooses a seed automatically."
+    },
+    "scout_preview_mode": {
+      "title": "Scout preview display",
+      "body": "How to display the partially sampled video for each seed. These previews help compare candidates before completing the schedule.",
+      "choices": {
+        "vae": {
+          "title": "VAE decode",
+          "body": "Decode previews with the video VAE for a more representative image. This adds decoding work and memory use."
+        },
+        "latent2rgb": {
+          "title": "Fast latent colors",
+          "body": "Convert latent values directly into rough color previews. This avoids a VAE preview decode, but colors and detail are less representative of the completed video."
+        }
+      }
+    },
     "preview_megapixels": {
       "title": "Preview megapixels",
       "body": "A size helper: Apply preview size converts this pixel-area target and aspect ratio into width/height rounded to 32. It changes the draft only when applied. Larger sizes need more memory."

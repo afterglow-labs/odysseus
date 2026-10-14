@@ -345,7 +345,10 @@ def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
             _publish_candidates(folder / "candidates.json", candidates)
             try:
                 if options["stage"] == "scout":
-                    from scripts.h3_seed_scout import sample as scout_sample
+                    if __package__:
+                        from .h3_seed_scout import sample as scout_sample
+                    else:
+                        from h3_seed_scout import sample as scout_sample
                     output, denoised, selected_seed = scout_sample(runtime, manifest, candidate_config,
                         model, positive, latent, vae, progress)
                     row["seed"] = candidate_config["seed"] = selected_seed
