@@ -187,6 +187,11 @@ class GraphRunManager:
                 uploads = {field: [None for ref in refs for _ in (media[ref] if ref in media else [None])]
                            for field, refs in step.get("inputs", {}).items()}
                 self._validate_native(step, uploads)
+            elif step["operation"] == "refine":
+                source = by_id[step["depends_on"]]
+                uploads = {field: [None for ref in refs for _ in (media[ref] if ref in media else [None])]
+                           for field, refs in source.get("inputs", {}).items()}
+                self._validate_refinement(step, source, uploads)
         return referenced
 
     def accept(self, owner, document, compiled, media, request_id):
@@ -483,11 +488,16 @@ class GraphRunManager:
         if not result.get("valid"):
             return result
         for step in result.get("plan", []):
-            if step.get("operation") != "submit" or step.get("family") not in {"h3", "bfs"}:
+            if step.get("operation") not in {"submit", "refine"} or step.get("family") not in {"h3", "bfs"}:
                 continue
-            uploads = {field: [None] * len(refs) for field, refs in step.get("inputs", {}).items()}
             try:
-                self._validate_native(step, uploads, inventory=inventories[step["family"]])
+                if step["operation"] == "refine":
+                    source = next(row for row in result["plan"] if row["id"] == step["depends_on"])
+                    uploads = {field: [None] * len(refs) for field, refs in source.get("inputs", {}).items()}
+                    self._validate_refinement(step, source, uploads, inventory=inventories["h3"])
+                else:
+                    uploads = {field: [None] * len(refs) for field, refs in step.get("inputs", {}).items()}
+                    self._validate_native(step, uploads, inventory=inventories[step["family"]])
             except ValueError as exc:
                 result.setdefault("issues", []).append({
                     "severity": "error", "code": "generation_settings", "message": str(exc),
@@ -495,6 +505,30 @@ class GraphRunManager:
                 })
                 result["valid"] = False
         return result
+
+    def _validate_refinement(self, step, source, uploads, *, inventory=None):
+        """Check the final stage before spending compute on its source job."""
+        from scripts.h3_seed_hunter_controls import can_refine_candidate
+        from src.h3_video import validate_config
+        from src.h3_seed_hunter import preflight
+        original = source.get("config", {})
+        if (source.get("family") != "h3" or source.get("operation") != "submit"
+                or original.get("recipe") != "seed_hunter"
+                or not can_refine_candidate(original.get("seed_hunter", {}), step["candidate"])):
+            raise ValueError("Refinement needs a completed preview or the completed selected Scout latent")
+        patch = step.get("config", {})
+        config = {**original, **patch}
+        config["seed_hunter"] = {**original.get("seed_hunter", {}), **patch.get("seed_hunter", {}),
+                                 "stage": "final", "preview_count": 1}
+        if "denoise" in config:
+            config["seed_hunter"]["denoise"] = config.pop("denoise")
+        if inventory is None:
+            inventory = self.managers["h3"].submission_inventory()
+        resolved = validate_config(config, inventory["components"], inventory["gpus"], uploads)
+        if any(resolved[key] < original[key] for key in ("width", "height")):
+            raise ValueError("Refinement dimensions must be at least the original dimensions")
+        preflight(resolved, inventory, uploads)
+        return resolved
 
     def _validate_native(self, step, uploads, *, inventory=None):
         family = step["family"]

@@ -43,6 +43,25 @@ def test_saved_graph_ownership_revision_and_catalog(graph_api):
     assert len([n for n in graph['nodes'] if n['type']=='input.video']) == 2
 
 
+def test_configure_repairs_stale_gpu_without_losing_reference_nodes_or_settings(graph_api):
+    client, runs, backend = graph_api
+    doc = from_native_config({**backend.configs['h3'], 'gpu': 'stale-gpu'}, input_counts={'reference_videos': 2})
+    response = client.post('/api/workflow-graphs/configure', json={'document': doc})
+    assert response.status_code == 200, response.text
+    configured = response.json()['document']
+    assert configured['edges'] == doc['edges']
+    assert [node['id'] for node in configured['nodes']] == [node['id'] for node in doc['nodes']]
+    for before, after in zip(doc['nodes'], configured['nodes']):
+        if before['id'] == 'generate':
+            assert after['params']['gpu'] == backend.inventories['h3']['gpus'][0]['id']
+            assert {k: v for k, v in before['params'].items() if k != 'gpu'} == {k: v for k, v in after['params'].items() if k != 'gpu'}
+        else:
+            assert after == before
+    assert response.json()['setup_notes']
+    assert client.post('/api/workflow-graphs/configure', json={'document': doc}, headers={'x-user': 'reader'}).status_code == 403
+    assert not backend.calls and not list(runs.root.glob('*/manifest.json'))
+
+
 def test_submission_retries_retain_one_snapshot_and_reject_untrusted_media(graph_api):
     client, runs, backend = graph_api
     prefix = '/api/workflow-graphs'
@@ -163,6 +182,19 @@ def test_seed_scout_frame_guides_can_be_configured_before_submission(graph_api):
     assert result.status_code == 200, result.text
     assert result.json()['valid'], result.text
     assert result.json()['plan'][0]['config']['seed_hunter']['first_frame_guide'] is True
+
+
+def test_seed_scout_preserved_audio_accepts_video_without_a_separate_audio_file(graph_api):
+    client, _, backend = graph_api
+    backend.inventories['h3']['seed_hunter'] = {'features': {'seed_scout': True}}
+    doc = from_native_config({**backend.configs['h3'], 'recipe': 'seed_hunter',
+                             'seed_hunter': {'stage': 'scout', 'force_audio': True}},
+                            input_counts={'reference_videos': 1})
+    result = client.post('/api/workflow-graphs/validate', json={'document': doc})
+    assert result.status_code == 200, result.text
+    assert result.json()['valid'], result.text
+    assert result.json()['plan'][0]['inputs'] == {'reference_videos': ['reference_videos__0']}
+    assert result.json()['plan'][0]['config']['seed_hunter']['force_audio'] is True
 
 
 def test_media_workflow_rejects_multiple_files_in_single_video_input(graph_api):

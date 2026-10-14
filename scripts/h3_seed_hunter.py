@@ -43,8 +43,8 @@ def validate_inputs(manifest, config, media, uploads):
                                           ("last_frame_guide", "last_frame", "reference_images", 1)):
         if options[flag] and not media[key] and len(media[collection]) <= index:
             raise ValueError(f"{flag.replace('_', ' ')} needs an image")
-    if options["force_audio"] and not media["reference_audio"]:
-        raise ValueError("Forced audio needs the first audio attachment")
+    if options["force_audio"] and not (media["reference_audio"] or media["reference_videos"]):
+        raise ValueError("Preserve supplied audio needs an audio attachment or a reference video with a soundtrack")
     if options["stage"] == "continuation":
         if not media["source_video"]:
             raise ValueError("Continuation needs a source video")
@@ -122,6 +122,10 @@ def save_snapshot(path, *, latent, positive, config, seed):
 
 def load_snapshot(spec, config, *, nested_factory=None):
     from safetensors.torch import load_file
+    try:
+        from scripts.h3_seed_hunter_controls import can_refine_candidate
+    except ModuleNotFoundError:
+        from h3_seed_hunter_controls import can_refine_candidate
     metadata = Path(spec["metadata"])
     if metadata.stat().st_size > 16 * 1024 * 1024:
         raise ValueError("Candidate metadata exceeds the safe size limit")
@@ -129,8 +133,9 @@ def load_snapshot(spec, config, *, nested_factory=None):
     if document.get("version") != 1 or document.get("recipe") != "seed_hunter":
         raise ValueError("Unsupported candidate snapshot")
     original = document.get("config", {})
-    if config["seed_hunter"]["stage"] == "final" and original.get("seed_hunter", {}).get("stage") != "preview":
-        raise ValueError("Only preview candidates can be refined")
+    if (config["seed_hunter"]["stage"] == "final"
+            and not can_refine_candidate(original.get("seed_hunter", {}), spec.get("candidate", 1))):
+        raise ValueError("Refinement needs a completed preview or the completed selected Scout latent")
     # LoRAs, seed and final sampling controls may change; text, reference
     # conditioning, transformer and codecs remain those of the selected result.
     for key in ("model", "encoder", "video_vae", "audio_vae", "prompt", "frames"):
@@ -288,7 +293,7 @@ def condition(runtime, config, prepared, clip, vae, audio_vae):
     if options["force_audio"]:
         import torch
         from comfy_extras.nodes_lt import LTXVConcatAVLatent
-        audio = runtime.audio.VAEEncodeAudio.execute(audio_vae, prepared["ref_audios"]["ref_audio_1"])[0]
+        audio = runtime.audio.VAEEncodeAudio.execute(audio_vae, preserved_audio(prepared))[0]
         audio = {**audio, "noise_mask": torch.zeros_like(audio["samples"])}
         latent = LTXVConcatAVLatent.execute(latent, audio)[0]
     return positive, latent, base_positive
@@ -345,7 +350,10 @@ def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
             _publish_candidates(folder / "candidates.json", candidates)
             try:
                 if options["stage"] == "scout":
-                    from scripts.h3_seed_scout import sample as scout_sample
+                    if __package__:
+                        from .h3_seed_scout import sample as scout_sample
+                    else:
+                        from h3_seed_scout import sample as scout_sample
                     output, denoised, selected_seed = scout_sample(runtime, manifest, candidate_config,
                         model, positive, latent, vae, progress)
                     row["seed"] = candidate_config["seed"] = selected_seed
@@ -431,11 +439,48 @@ def prepare_media(manifest, config, media, media_loader, folder):
         if options["stage"] != "dialogue":
             for index, path in enumerate(media["reference_audio"][1:], 2):
                 prepared["ref_audios"][f"ref_audio_{index}"] = _worker().read_audio(path)[0]
+    elif options["stage"] == "dialogue" and options["force_audio"] and media["reference_videos"]:
+        # Dialogue consumes a voice reference without conditioning on the
+        # video's images. Decode only the selected soundtrack interval.
+        selection = (config.get("reference_video_ranges") or [{}])[0]
+        start = selection.get("start_seconds", 0) + options["audio_start_seconds"]
+        available = selection.get("duration_seconds", 15) - options["audio_start_seconds"]
+        end = options["audio_end_seconds"]
+        duration = available if end is None else min(available, end - options["audio_start_seconds"])
+        if duration <= 0:
+            raise ValueError("The selected video soundtrack range contains no audio")
+        prepared["ref_audios"] = {"ref_audio_1": read_trimmed_audio(media["reference_videos"][0], start, duration)}
+    elif options["force_audio"] and custom_audio:
+        # Video decoding already applied its clip range. Audio trim controls
+        # are relative to that selected interval, so avoid decoding it twice.
+        track = preserved_audio(prepared)
+        start = round(options["audio_start_seconds"] * track["sample_rate"])
+        end = options["audio_end_seconds"]
+        waveform = track["waveform"][..., start:None if end is None else round(end * track["sample_rate"])]
+        if waveform.shape[-1] == 0:
+            raise ValueError("The selected video soundtrack range contains no audio")
+        prepared["preserved_audio"] = {**track, "waveform": waveform}
     if options["stage"] == "continuation":
         prepared.update(prepare_continuation(media["source_video"], config, folder))
     if media["reference_mods"]:
         prepared["refmod_blocks"] = load_refmods(manifest["runtime_path"], media["reference_mods"], options["refmod_strengths"])
+    if options["force_audio"]:
+        # Fail before loading model weights if the supplied videos are silent.
+        preserved_audio(prepared)
     return prepared
+
+
+def preserved_audio(prepared):
+    """An explicit Audio 1 wins; otherwise preserve a supplied video track."""
+    explicit = prepared.get("ref_audios", {}).get("ref_audio_1")
+    if explicit is not None:
+        return explicit
+    if prepared.get("preserved_audio") is not None:
+        return prepared["preserved_audio"]
+    for track in prepared.get("ref_video_audios", {}).values():
+        if track is not None:
+            return track
+    raise ValueError("Preserve supplied audio found no soundtrack in the attached videos. Choose a video with audio or attach an audio file.")
 
 
 def load_refmods(runtime_path, paths, strengths):

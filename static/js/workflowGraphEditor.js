@@ -41,6 +41,7 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
   toolbar.append(tabs,addBtn,packagesBtn,undoBtn,redoBtn,validateBtn,runBtn);
   const notice = make('p','wg-notice'); notice.setAttribute('role','status'); notice.setAttribute('aria-live','polite'); notice.hidden = true;
   const setupNotes = make('details','wg-setup-notes'); setupNotes.hidden = true;
+  const hardware = make('details','wg-hardware'), hardwareTitle=make('summary','','Hardware'), hardwareBody=make('div','wg-hardware-body'); hardware.append(hardwareTitle,hardwareBody); hardware.hidden=true;
   const workspace = make('div','wg-workspace'), main = make('div','wg-main'), inspector = make('aside','wg-inspector'); inspector.setAttribute('aria-label','Operation settings');
   const pipeline = make('div','wg-pipeline'); pipeline.setAttribute('aria-label','Workflow operations');
   const canvas = make('div','wg-canvas'), canvasTools = make('div','wg-canvas-tools');
@@ -50,15 +51,20 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
   canvasTools.append(foldBtn,button('Arrange',() => store.layout()),zoomOut,zoomLabel,zoomIn,button('Fit',fit));
   const wireHint = make('span','wg-wire-hint','Drag the background to pan. Drag a block to move it. Connect an output to an input.');
   canvasTools.append(wireHint);
+  const monitoredLabel=make('span','wg-monitored-run'); monitoredLabel.hidden=true; canvasTools.append(monitoredLabel);
   const viewport = make('div','wg-viewport'); viewport.tabIndex = 0; viewport.setAttribute('aria-label','Editable workflow canvas');
   const space = make('div','wg-space'), scene = make('div','wg-scene'); space.append(scene); viewport.append(space); canvas.append(canvasTools,viewport); main.append(pipeline,canvas); workspace.append(main,inspector);
   const footer = make('section','wg-footer'), validation = make('details','wg-validation'), validationTitle = make('summary','','Execution plan'); validation.append(validationTitle);
   const validationBody = make('div','wg-validation-body'); validation.append(validationBody);
   const runs = make('details','wg-runs'), runsTitle = make('summary','','Recent workflow runs'), runsBody = make('div','wg-runs-body'); runs.append(runsTitle,runsBody); runs.ontoggle = () => { if (runs.open) refreshRuns(); };
-  footer.append(validation,runs); root.append(header,toolbar,notice,setupNotes,workspace,footer);
+  footer.append(validation,runs); root.append(header,toolbar,hardware,notice,setupNotes,workspace,footer);
   const importPicker = make('input'); importPicker.type = 'file'; importPicker.accept = '.json,application/json'; importPicker.hidden = true; root.append(importPicker);
   let catalog = {}, inventory = {}, store, selected = null, view = 'pipeline', dirty = false, savedId = null, revision = null, lastSaved = '', bindings = {}, zoom = 1, collapsed = true, wireStart = null, edgeSelected = null, closed = false, validationController = null, generation = 0, validationTimer, runsTimer, libraryPanel = null, validated = null, queueing = false, importing = false, saving = false, loadToken = 0, frame, drag = null, requestId = null, pan = {x:0,y:0}, panGesture = null;
   const mediaUrls = new Set(), runCards = new Map();
+  let hardwareNode=null, hardwareInvalid=false;
+  let monitoredRun=null, monitoredRunId=null, monitoredGraph=null, monitorTimer=null, monitorToken=0;
+  const nodePreviewViews=new Map();
+  const graphShape = document => JSON.stringify({nodes:(document?.nodes || []).map(n=>[n.id,n.type]).sort(),edges:(document?.edges || []).map(e=>[e.source.node,e.source.port,e.target.node,e.target.port]).sort()});
   const tell = (text,error = false) => { notice.hidden = !text; notice.textContent = text; notice.classList.toggle('wg-error',error); };
   function renderSetupNotes(notes) {
     const values = Array.isArray(notes) ? notes.filter(note => typeof note === 'string' || typeof note?.message === 'string') : [];
@@ -68,10 +74,38 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
     setupNotes.append(body);
   }
   const currentDocument = () => clone(store?.document || blankWorkflowGraph());
+  const isGPUField = f => ['gpu','vae_gpu'].includes(f.id) || f.editor === 'gpu';
+  const hardwareNodes = () => (store?.document.nodes || []).filter(n => graphFields(store.types.get(n.type)).some(isGPUField));
+  function gpuLabel(value) { return (inventory.gpus || []).find(g=>String(g.id)===String(value))?.name || (value === 'cpu' ? 'CPU' : value ? `Unavailable saved device: ${value}` : 'Server default'); }
+  function renderHardware() {
+    const nodes=hardwareNodes(); hardware.hidden=!nodes.length; if (!nodes.length) return;
+    const invalid=nodes.some(n=>graphFields(store.types.get(n.type)).filter(isGPUField).some(f=>{ const value=n.params?.[f.id] ?? f.default; return value && value!=='cpu' && !(inventory.gpus || []).some(g=>String(g.id)===String(value)); }));
+    if (invalid && !hardwareInvalid) hardware.open=true; hardwareInvalid=invalid;
+    if (!nodes.some(n=>n.id===hardwareNode)) hardwareNode=nodes[0].id;
+    const node=nodes.find(n=>n.id===hardwareNode), fields=graphFields(store.types.get(node.type)).filter(isGPUField);
+    const gpu=fields.find(f=>f.id==='gpu' || f.id==='__odysseus_device'),vae=fields.find(f=>f.id==='vae_gpu'); hardwareTitle.textContent=`Hardware · ${invalid ? 'Choose available devices' : gpuLabel(node.params?.[gpu?.id] ?? gpu?.default)}${vae && !invalid ? ` · VAEs: ${node.params?.vae_gpu ? gpuLabel(node.params.vae_gpu) : 'same GPU'}` : ''}`;
+    hardwareBody.replaceChildren();
+    if (nodes.length>1) { const stages=make('select','wg-input'); stages.setAttribute('aria-label','Hardware operation'); for(const n of nodes) stages.add(new Option(`${nameOf(n,store.types)}${n.state && n.state!=='active' ? ` · ${n.state}` : ''}`,n.id)); stages.value=node.id; stages.onchange=()=>{hardwareNode=stages.value;renderHardware();}; hardwareBody.append(fieldLabel('Operation',stages)); }
+    for(const field of fields) { const control=parameterControl(node,field), input=control.querySelector('select'); const update=input.onchange; input.onchange=()=>{update();renderInspector();}; hardwareBody.append(control); }
+    const actions=make('div','wg-toolbar');
+    actions.append(button('Refresh devices',async event=>{event.currentTarget.disabled=true;try{await refreshCatalog();tell('Detected devices refreshed.');}catch(error){tell(error.message,true);event.currentTarget.disabled=false;}}),button('Repair setup',async event=>{
+      const target=event.currentTarget; target.disabled=true; const snapshot=currentDocument(), token=generation;
+      try { const result=await post('/configure',{document:snapshot}); if(closed)return; if(token!==generation) {tell('The draft changed while checking setup. Click Repair setup again.');return;} if(!result.document?.nodes)throw new Error('Setup returned an invalid workflow.'); store.replace(result.document); renderSetupNotes(result.setup_notes || result.document.metadata?.setup_notes); tell('Setup checked against installed components and detected GPUs. Other draft settings and attachments were kept.'); }
+      catch(error){tell(error.message,true);}finally{target.disabled=false;}
+    })); hardwareBody.append(actions);
+    if(invalid)hardwareBody.append(make('p','wg-error','A saved GPU is no longer available. Choose the named device above or repair setup using the detected hardware.'));
+  }
+  function inspectIssue(issue) {
+    const nodeId=issue.node_id || issue.node; if(!nodeId)return; select(nodeId);
+    const field=issue.field || (/\bVAE\b.*\bGPU\b|\bvae_gpu\b/i.test(issue.message || '') ? 'vae_gpu' : /\bGPU\b/i.test(issue.message || '') ? 'gpu' : null);
+    if(field && graphFields(store.types.get(store.document.nodes.find(n=>n.id===nodeId)?.type)).some(f=>f.id===field && isGPUField(f))) {
+      hardwareNode=nodeId;renderHardware();hardware.open=true;requestAnimationFrame(()=>{hardware.querySelector(`[data-graph-param="${CSS.escape(field)}"]`)?.focus();});
+    } else if(field) requestAnimationFrame(()=>{const control=inspector.querySelector(`[data-graph-param="${CSS.escape(field)}"]`);control?.scrollIntoView({block:'nearest'});control?.focus();});
+  }
   const persist = () => {
     if (!store) return;
     const serializable = Object.fromEntries(Object.entries(bindings).map(([id,items]) => [id,items.filter(f => f.serverFile).map(f => ({name:f.name,serverFile:f.serverFile}))]).filter(([,v]) => v.length));
-    try { const serialized = JSON.stringify({document:store.document,savedId,revision,serverBindings:serializable,view,selected}); localStorage.setItem(DRAFT,serialized); retainedDraft = {serialized,bindings:copyBindings(bindings)}; } catch {}
+    try { const serialized = JSON.stringify({document:store.document,savedId,revision,serverBindings:serializable,view,selected,monitoredRunId,monitoredGraph}); localStorage.setItem(DRAFT,serialized); retainedDraft = {serialized,bindings:copyBindings(bindings)}; } catch {}
   };
   const updateDirty = () => { dirty = JSON.stringify(store?.document) !== lastSaved; saved.textContent = `${savedId ? `Revision ${revision}` : 'Local draft'}${dirty ? ' · Unsaved changes' : ' · Saved'} · ${store?.document.nodes.length || 0} operations`; saveBtn.disabled = saving || !store; undoBtn.disabled = !store?.canUndo; redoBtn.disabled = !store?.canRedo; };
   function select(id) {
@@ -81,7 +115,7 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
       requestAnimationFrame(() => { workspace.scrollTop = inspector.offsetTop - workspace.offsetTop; });
     }
   }
-  function setView(next) { workspace.scrollTop = 0; view = next; root.dataset.view = next; pipeline.hidden = next !== 'pipeline'; canvas.hidden = next !== 'nodes'; pipelineTab.setAttribute('aria-pressed',String(next === 'pipeline')); nodesTab.setAttribute('aria-pressed',String(next === 'nodes')); persist(); if (next === 'nodes') renderCanvas(); }
+  function setView(next) { workspace.scrollTop = 0; view = next; root.dataset.view = next; pipeline.hidden = next !== 'pipeline'; canvas.hidden = next !== 'nodes'; pipelineTab.setAttribute('aria-pressed',String(next === 'pipeline')); nodesTab.setAttribute('aria-pressed',String(next === 'nodes')); if(next==='nodes'){validation.open=false;runs.open=false;} persist(); if (next === 'nodes') renderCanvas(); }
   function setZoom(next) { zoom = Math.max(.35,Math.min(1.75,next)); scene.style.transform = `translate(${pan.x}px,${pan.y}px) scale(${zoom})`; space.style.width = `${Math.max(viewport.clientWidth,Number(scene.dataset.width || 1000)*zoom+Math.max(0,pan.x))}px`; space.style.height = `${Math.max(viewport.clientHeight,Number(scene.dataset.height || 500)*zoom+Math.max(0,pan.y))}px`; zoomLabel.textContent = `${Math.round(zoom*100)}%`; }
   function fit() { if (!store?.document.nodes.length) return; pan = {x:0,y:0}; setZoom(Math.min(1,(viewport.clientWidth-24)/Number(scene.dataset.width || 1000),(viewport.clientHeight-24)/Number(scene.dataset.height || 500))); viewport.scrollLeft = 0; viewport.scrollTop = 0; }
   viewport.onpointerdown = event => {
@@ -95,11 +129,12 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
   function handleChange(document,reason) {
     if (selected && !document.nodes.some(n => n.id === selected)) selected = document.nodes[0]?.id || null;
     requestId = null; validated = null; runBtn.disabled = queueing || !document.nodes.length; generation++; validationController?.abort(); clearTimeout(validationTimer);
-    title.value = document.title || 'Untitled workflow'; updateDirty(); persist(); renderPipeline(); renderCanvas();
+    title.value = document.title || 'Untitled workflow'; updateDirty(); persist(); renderHardware(); renderPipeline(); renderCanvas();
     if (!['parameter','title','move'].includes(reason)) renderInspector();
     validationTitle.textContent = 'Execution plan · Checking changes…'; validationTimer = setTimeout(() => validate(false),450);
   }
   function replace(document,{id = null,rev = null,media = {}} = {}) {
+    clearMonitor();
     loadToken++; savedId = id; revision = rev; bindings = media; selected = document.nodes?.[0]?.id || null; wireStart = null; edgeSelected = null;
     lastSaved = id ? JSON.stringify(document) : ''; store.replace(document); closePanel();
     renderSetupNotes(document.metadata?.setup_notes);
@@ -197,7 +232,14 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
     for (const [index,n] of order.entries()) {
       const spec = store.types.get(n.type), card = button('',() => select(n.id),'wg-stage'); card.dataset.graphNode = n.id; card.setAttribute('aria-pressed',String(n.id === selected));
       const copy = make('span','wg-stage-copy'), sources = store.document.edges.filter(e => e.target.node === n.id).map(e => nameOf(store.document.nodes.find(x => x.id === e.source.node),store.types));
-      copy.append(make('strong','',nameOf(n,store.types)),make('small','wg-muted',sources.length ? `From ${[...new Set(sources)].join(' + ')}` : spec?.description || 'No connected inputs'));
+      let summary;
+      if(n.type.startsWith('component.')) summary=componentName(n.params?.component,n.params?.name) || 'Choose an installed component';
+      else if(n.type==='input.prompt')summary=n.params?.text ? 'Prompt provided' : 'Add a prompt';
+      else if(['input.image','input.video','input.audio','input.refmod'].includes(n.type))summary=bindings[n.id]?.length ? bindings[n.id].map(file=>file.name).join(', ') : n.params?.name ? `${n.params.name} · Attach again` : `Choose ${n.type.slice(6)}`;
+      else if(n.type==='input.references') {const counts=new Map();for(const e of store.document.edges.filter(e=>e.target.node===n.id))counts.set(e.target.port,(counts.get(e.target.port)||0)+1);summary=counts.size ? [...counts].map(([port,count])=>`${friendly(port)}: ${count}`).join(' · ') : 'Add reference videos, images or audio';}
+      else if(sources.length)summary=`From ${[...new Set(sources)].join(' + ')}`;
+      else { const missing=portList(n,'inputs').filter(p=>p.required).map(p=>p.label || friendly(p.id));summary=missing.length ? `Connect ${missing.join(', ')}` : spec?.description || 'Configure this operation'; }
+      copy.append(make('strong','',nameOf(n,store.types)),make('small','wg-muted',summary));
       if (n.state && n.state !== 'active') copy.append(make('span','wg-state',n.state));
       if (!spec) copy.append(make('span','wg-error','Unsupported operation · preserved'));
       if (n.type === 'input.prompt' && n.params?.text) copy.append(make('small','wg-stage-preview',n.params.text));
@@ -223,17 +265,75 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
       } }
     } return hidden;
   }
+  function clearMonitor() { monitorToken++;clearTimeout(monitorTimer);monitoredRun=null;monitoredRunId=null;monitoredGraph=null;nodePreviewViews.clear();monitoredLabel.hidden=true; }
+  async function monitorRun(run,document) {
+    const value=run.document ? run : document ? {...run,document} : await request(`/runs/${encodeURIComponent(run.id)}`);
+    if(closed)return;
+    if(graphShape(value.document)!==graphShape(store.document)) {tell('This run belongs to a different graph. Choose Edit as new draft on that run to open its nodes.',true);return;}
+    clearMonitor();monitoredRunId=value.id;monitoredGraph=graphShape(value.document);monitoredRun=value;persist();renderCanvas();await pollMonitoredRun();
+  }
+  async function pollMonitoredRun() {
+    clearTimeout(monitorTimer);if(closed || !monitoredRunId)return;const token=monitorToken, id=monitoredRunId;
+    try { const run=await request(`/runs/${encodeURIComponent(id)}`);if(closed || token!==monitorToken || id!==monitoredRunId)return;
+      if(run.document && graphShape(run.document)!==monitoredGraph)throw new Error('The monitored run graph does not match this canvas.');
+      const priorHeights=store.document.nodes.map(node=>previewAreaHeight(node));monitoredRun=run;monitoredLabel.hidden=false;monitoredLabel.textContent=`Run ${id.slice(0,8)} · ${run.status} · queued settings`;
+      if(store.document.nodes.some((node,index)=>previewAreaHeight(node)!==priorHeights[index]))renderCanvas();
+      else for(const node of store.document.nodes)if(node.type==='h3.seed_scout' || node.type.startsWith('hunter.'))updateNodePreview(node);
+      if(['queued','running','pending','waiting_for_selection','cancelling'].includes(run.status))monitorTimer=setTimeout(pollMonitoredRun,4000);
+    }catch(error){if(!closed && token===monitorToken){tell(`Could not refresh node previews: ${error.message}`,true);monitorTimer=setTimeout(pollMonitoredRun,8000);}}
+  }
+  function previewStep(node) { if(!monitoredRun || graphShape(store.document)!==monitoredGraph)return null;return (monitoredRun.steps || []).find(step=>(step.node_id || step.id)===node.id && (!step.node_type || step.node_type===node.type)); }
+  function nodePreviewRows(node,step=previewStep(node)) {
+    if(node.type==='h3.seed_scout') { const scout=step?.job?.scout || step?.scout, count=Math.max(1,Math.min(32,Number(node.params?.scout_count ?? 3))); return Array.from({length:Math.max(count,scout?.previews?.length || 0)},(_,index)=>({...scout?.previews?.[index],index:index+1,image:true})); }
+    return (step?.job?.seed_hunter?.candidates || []).map(row=>({...row,image:false}));
+  }
+  function previewAreaHeight(node) {const rows=nodePreviewRows(node);return rows.length ? 65+rows.length*176 : 0;}
+  async function chooseScoutSeed(step,seed,use) {
+    use.disabled=true;
+    try { const job=step.job_id || step.job?.id;if(!job)throw new Error('This step has no source job.');
+      const response=await fetch(`/api/video/h3/jobs/${encodeURIComponent(job)}/scout/select`,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({seed})});let value={};try{value=await response.json();}catch{}
+      if(!response.ok)throw new Error(typeof value.detail==='string' ? value.detail : `Could not select seed (${response.status}).`);
+      tell(`Continuing the saved Seed Scout render with seed ${seed}.`);await pollMonitoredRun();if(runs.open)await refreshRuns();
+    }catch(error){tell(error.message,true);use.disabled=false;}
+  }
+  function updateNodePreview(node) {
+    const step=previewStep(node), rows=nodePreviewRows(node,step);if(!rows.length)return null;
+    let ui=nodePreviewViews.get(node.id);
+    if(!ui) {const element=make('section','wg-node-previews'), status=make('p','wg-node-preview-status'), slots=make('div','wg-node-preview-slots');element.append(status,slots);ui={element,status,slots,items:new Map()};nodePreviewViews.set(node.id,ui);}
+    const scout=step?.job?.scout || step?.scout;
+    ui.status.textContent=monitoredRunId ? `Run ${monitoredRunId.slice(0,8)} · ${scout?.status || step?.status || 'Waiting for this step'}` : 'Queue this workflow to create previews, then choose one here.';
+    const visible=new Set();
+    for(const row of rows) {
+      const key=String(row.index);visible.add(key);let item=ui.items.get(key);
+      if(!item) {const card=make('article','wg-node-preview'), title=make('strong'), frame=make('div','wg-node-preview-frame'), controls=make('div','wg-node-preview-actions');card.dataset.previewSlot=key;card.append(title,frame,controls);ui.slots.append(card);item={card,title,frame,controls,url:null,signature:null};ui.items.set(key,item);}
+      item.title.textContent=`Preview ${row.index}${row.seed!=null ? ` · seed ${row.seed}` : ''}`;
+      const url=safeMediaUrl(row.url);
+      if(url!==item.url) {item.url=url;item.frame.replaceChildren();if(url){const media=make(row.image?'img':'video');media.src=url;if(row.image)media.alt=`Animated preview ${row.index}, seed ${row.seed}`;else{media.controls=true;media.preload='metadata';media.playsInline=true;}item.frame.append(media);}else item.frame.append(make('span','',step ? 'Waiting for preview…' : 'Not started'));}
+      if(!url && !item.frame.childElementCount)item.frame.append(make('span','',step ? 'Waiting for preview…' : 'Not started'));
+      const signature=JSON.stringify([url,scout?.status,scout?.selected_seed,step?.job_id]);
+      if(signature!==item.signature){item.signature=signature;item.controls.replaceChildren();
+        if(url)item.controls.append(button('Enlarge',()=>{const panel=openPanel(`Preview ${row.index} · ${monitoredRunId?.slice(0,8) || ''}`),media=make(row.image?'img':'video','wg-enlarged-preview');media.src=url;if(row.image)media.alt=`Animated preview for seed ${row.seed}`;else{media.controls=true;media.autoplay=true;media.playsInline=true;}panel.append(media);}));
+        if(url && scout?.status==='waiting_for_selection')item.controls.append(button('Continue with this seed',event=>chooseScoutSeed(step,row.seed,event.currentTarget),'wg-primary'));
+        else if(row.seed!=null && scout?.selected_seed===row.seed)item.controls.append(make('span','wg-muted','Selected · continuing saved latent'));
+      }
+    }
+    for(const [key,item]of ui.items)if(!visible.has(key)){item.card.remove();ui.items.delete(key);}
+    return ui.element;
+  }
   function renderCanvas() {
     if (!store) return; scene.replaceChildren(); const hidden = foldedNodes(), nodes = store.document.nodes.filter(n => !hidden.has(n.id));
     foldBtn.textContent = collapsed ? 'Expand setup hubs' : 'Collapse setup hubs';
-    const box = new Map(nodes.map((n,i) => [n.id,{x:Math.max(16,Number(n.position?.x) || 48+i%3*288),y:Math.max(16,Number(n.position?.y) || 64+Math.floor(i/3)*256),h:Math.max(112,73+Math.max(portList(n,'inputs').length,portList(n,'outputs').length)*23)}]));
-    const width = Math.max(680,...[...box.values()].map(b => b.x+260)), height = Math.max(480,...[...box.values()].map(b => b.y+b.h+48)); scene.dataset.width = width; scene.dataset.height = height; scene.style.width = `${width}px`; scene.style.height = `${height}px`;
+    const box = new Map(nodes.map((n,i) => {const base=Math.max(112,73+Math.max(portList(n,'inputs').length,portList(n,'outputs').length)*23),extra=previewAreaHeight(n);return[n.id,{x:Math.max(16,Number(n.position?.x) || 48+i%3*288),y:Math.max(16,Number(n.position?.y) || 64+Math.floor(i/3)*256),base,h:base+extra,w:extra?280:220}];}));
+    // Media expands a node downward. Keep later cards out of that preview area
+    // without overwriting the author's saved positions or moving unrelated rows.
+    const placed=[];for(const value of [...box.values()].sort((a,b)=>a.y-b.y)){for(const prior of placed)if(prior.h>prior.base && value.x<prior.x+prior.w && value.x+value.w>prior.x && value.y<prior.y+prior.h+24)value.y=prior.y+prior.h+24;placed.push(value);}
+    const width = Math.max(680,...[...box.values()].map(b => b.x+b.w+40)), height = Math.max(480,...[...box.values()].map(b => b.y+b.h+48)); scene.dataset.width = width; scene.dataset.height = height; scene.style.width = `${width}px`; scene.style.height = `${height}px`;
     const wires = svgEl('svg',{width,height,'class':'wg-wires','aria-label':'Workflow connections'}); scene.append(wires);
     for (const e of store.document.edges) {
       if (hidden.has(e.source.node) || hidden.has(e.target.node)) continue;
       const from = nodes.find(n => n.id === e.source.node), to = nodes.find(n => n.id === e.target.node); if (!from || !to) continue;
       const a = box.get(from.id), b = box.get(to.id), out = portList(from,'outputs'), input = portList(to,'inputs'), oi = out.findIndex(p => p.id === e.source.port), ti = input.findIndex(p => p.id === e.target.port);
-      const x1 = a.x+220,y1 = a.y+73+Math.max(0,oi)*23,x2 = b.x,y2 = b.y+73+Math.max(0,ti)*23;
+      const x1 = a.x+a.w,y1 = a.y+73+Math.max(0,oi)*23,x2 = b.x,y2 = b.y+73+Math.max(0,ti)*23;
       // Elbow routing: backward links travel around the top of both blocks.
       const mx = x2 >= x1+40 ? Math.round((x1+x2)/32)*16 : x1+24, top = Math.min(a.y,b.y)-20;
       const path = x2 >= x1+40 ? `M${x1},${y1} H${mx} V${y2} H${x2}` : `M${x1},${y1} H${mx} V${top} H${x2-24} V${y2} H${x2}`;
@@ -243,8 +343,8 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
       wires.append(line,hit);
     }
     for (const n of nodes) {
-      const b = box.get(n.id), card = make('article',`wg-node${n.id === selected && !edgeSelected ? ' selected' : ''}${!store.types.has(n.type) ? ' unsupported' : ''}`); card.dataset.graphNode = n.id; card.style.left = `${b.x}px`; card.style.top = `${b.y}px`; card.style.height = `${b.h}px`; card.style.width = '220px';
-      card.onpointerdown = event => { if (!event.target.closest('button,input,select,textarea,a')) startDrag(event,n,card); };
+      const b = box.get(n.id), card = make('article',`wg-node${n.id === selected && !edgeSelected ? ' selected' : ''}${!store.types.has(n.type) ? ' unsupported' : ''}`); card.dataset.graphNode = n.id; card.style.left = `${b.x}px`; card.style.top = `${b.y}px`; card.style.height = `${b.h}px`; card.style.width = `${b.w}px`;
+      card.onpointerdown = event => { if (!event.target.closest('button,input,select,textarea,a,video,.wg-node-previews')) startDrag(event,n,card); };
       const head = button(nameOf(n,store.types),() => select(n.id),'wg-node-head'); head.title = 'Select to inspect. Drag to move.'; head.onpointerdown = event => startDrag(event,n,card); card.append(head);
       const category = store.types.get(n.type)?.category || n.type;
       card.append(make('small','wg-node-type',n.state && n.state !== 'active' ? `${category} · ${n.state}` : n.type === 'hub.setup' ? 'Model · applied LoRAs · encoder · VAEs' : category));
@@ -261,7 +361,7 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
           list.append(port);
         } card.append(list);
       }
-      scene.append(card);
+      const previews=updateNodePreview(n);if(previews){previews.style.top=`${b.base}px`;card.append(previews);}scene.append(card);
     }
     setZoom(zoom);
     if (!nodes.length) { const empty = make('div','wg-canvas-empty'); empty.append(make('h3','','A blank canvas, ready to connect'),button('Add an operation',openCatalog,'wg-primary')); scene.append(empty); }
@@ -325,6 +425,12 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
       inspector.append(parameterControl(n,f));
     }
     if (n.type === 'hub.setup') {
+      const connected=store.document.edges.find(e=>e.target.node===n.id && e.target.port==='latent_upscaler'), source=store.document.nodes.find(x=>x.id===connected?.source.node), picker=make('select','wg-input');
+      picker.setAttribute('aria-label','Latent upscaler'); picker.add(new Option('None',''));
+      for(const component of inventory.components || []) if(component.role==='latent_upscaler') picker.add(new Option(component.name || component.id,component.id));
+      const value=source?.params?.component || ''; if(value && ![...picker.options].some(o=>o.value===value)) picker.add(new Option(`Unavailable: ${source.params.name || value}`,value)); picker.value=value;
+      picker.onchange=()=>{try{const component=(inventory.components || []).find(c=>c.id===picker.value);store.setComponent({node:n.id,port:'latent_upscaler'},'latent_upscaler',picker.value,component?.name || '');}catch(error){tell(error.message,true);}};
+      inspector.append(fieldLabel('Latent upscaler',picker,'Used by a connected refinement stage. Selecting an upscaler connects its component to this setup hub.'));
       const explanation = make('p','wg-muted','One setup connection carries the model after its LoRAs, encoder and VAEs. The bundle retains each component’s identity.'); inspector.append(explanation);
       for (const edge of store.document.edges.filter(e => e.target.node === n.id)) { const source = store.document.nodes.find(x => x.id === edge.source.node); if (source) inspector.append(button(`${friendly(edge.target.port)}: ${nameOf(source,store.types)}`,() => select(source.id),'wg-upstream-link')); }
     }
@@ -341,7 +447,7 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
   }
   function fieldLabel(text,input,help) { const label = make('label','wg-field'); label.append(make('span','',text),input); if (help) label.append(make('small','wg-muted',help)); return label; }
   function parameterControl(n,f) {
-    const value = n.params?.[f.id] ?? f.default, label = f.label || friendly(f.id); let input, transform = v => v;
+    const value = n.params?.[f.id] ?? f.default, label = f.id==='gpu' ? 'Model GPU' : f.label || friendly(f.id); let input, transform = v => v;
     const options = f.choices || f.options || f.enum;
     if (f.editor === 'media') { const wrap = make('div','wg-field'); wrap.append(make('span','',label),renderMediaInput(n,{kind:f.media_kind || 'image',parameter:f.id})); return wrap; }
     if (f.editor === 'component' || f.id === 'component') {
@@ -360,8 +466,8 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
       input = make('select','wg-input');
       if (f.id === '__odysseus_device') input.add(new Option('CPU','cpu'));
       else input.add(new Option(f.id === 'gpu' ? 'Server default' : 'Same as transformer',''));
-      for (const gpu of inventory.gpus || []) input.add(new Option(gpu.name || `GPU ${gpu.id}`,String(gpu.id)));
-      if (value !== undefined && value !== null && ![...input.options].some(o => o.value === String(value))) input.add(new Option(String(value),String(value)));
+      for (const gpu of inventory.gpus || []) input.add(new Option(gpu.name?.replace(/^NVIDIA\s+(GeForce\s+)?/i,'') || `GPU ${gpu.id}`,String(gpu.id)));
+      if (value !== undefined && value !== null && ![...input.options].some(o => o.value === String(value))) input.add(new Option(`Unavailable saved device: ${value} — choose a detected GPU`,String(value)));
       input.value = value ?? '';
     } else if (options) {
       input = make('select','wg-input');
@@ -503,7 +609,7 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
     const issues = result.issues || [], steps = Array.isArray(result.plan) ? result.plan : result.plan?.steps || [];
     validationTitle.textContent = result.valid ? `Execution plan · Ready · ${steps.length} step${steps.length === 1 ? '' : 's'}` : `Execution plan · ${issues.filter(i => i.severity === 'error').length || 'Some'} issue${issues.length === 1 ? '' : 's'} to resolve`;
     validationBody.replaceChildren();
-    for (const issue of issues) { const row = make('p',issue.severity === 'error' ? 'wg-error' : 'wg-muted',issue.message || String(issue)); if (issue.node_id || issue.node) row.append(button('Inspect',() => select(issue.node_id || issue.node))); validationBody.append(row); }
+    for (const issue of issues) { const row = make('p',issue.severity === 'error' ? 'wg-error' : 'wg-muted',issue.message || String(issue)); if (issue.node_id || issue.node) row.append(button('Inspect',() => inspectIssue(issue))); validationBody.append(row); }
     const list = make('ol','wg-plan'); for (const step of steps) { const nodeId = step.node_id || step.node || step.id; const n = store.document.nodes.find(n => n.id === nodeId); list.append(make('li','',`${n ? nameOf(n,store.types) : step.label || step.type || step.id}${step.dependencies?.length ? ` · after ${step.dependencies.length} upstream operation(s)` : ''}`)); }
     if (!steps.length && result.valid) list.append(make('li','','Validated outputs are ready to queue.')); validationBody.append(list);
   }
@@ -537,7 +643,7 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
       if (file.serverFile) return {server:clone(file.serverFile)}; const key = graphId('input'); body.append(key,file,file.name); return {upload:key};
     }); }
     body.append('bindings',JSON.stringify(runtimeBindings));
-    try { const result = await request('/runs',{method:'POST',headers:{'X-Odysseus-Submission-Id':requestId},body}); if (closed) return; requestId = null; tell(`Workflow queued · ${result.id}. You can keep editing and queue another run.`); runs.open = true; await refreshRuns(); }
+    try { const result = await request('/runs',{method:'POST',headers:{'X-Odysseus-Submission-Id':requestId},body}); if (closed) return; requestId = null; tell(`Workflow queued · ${result.id}. You can keep editing and queue another run.`); runs.open = view!=='nodes'; if(view==='nodes'){validation.open=false;hardware.open=false;setupNotes.open=false;} if(snapshot.nodes.some(n=>n.type==='h3.seed_scout' || n.type.startsWith('hunter.')))await monitorRun(result,snapshot); await refreshRuns(); }
     catch(e) { tell(e.message,true); if (e.details?.issues) { validation.open = true; renderValidation({valid:false,issues:e.details.issues}); } }
     finally { queueing = false; if (!closed) { runBtn.textContent = 'Queue workflow'; runBtn.disabled = !store.document.nodes.length; } }
   }
@@ -558,7 +664,7 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
             try { const value = await request(`/runs/${encodeURIComponent(r.id)}`); if (!closed) { ui.expanded = true; ui.latest = value; renderRunDetails(card,value); } } catch(e) { tell(e.message,true); }
           });
           const cancel = button('Cancel run',async() => { try { await post(`/runs/${encodeURIComponent(r.id)}/cancel`,{}); await refreshRuns(); } catch(e) { tell(e.message,true); } });
-          actions.append(detail,cancel,button('Edit as new draft',async() => { try { const value = ui.latest.document ? ui.latest : await request(`/runs/${encodeURIComponent(r.id)}`); replace(value.document); tell('Loaded this run’s settings as a draft. Review source attachments, edit, then queue when ready.'); } catch(e) { tell(e.message,true); } }));
+          actions.append(detail,cancel,button('Show in nodes',async()=>{try{await monitorRun(ui.latest);if(monitoredRunId===r.id){setView('nodes');runs.open=false;}}catch(error){tell(error.message,true);}}),button('Edit as new draft',async() => { try { const value = ui.latest.document ? ui.latest : await request(`/runs/${encodeURIComponent(r.id)}`); replace(value.document); await monitorRun(value); tell('Loaded this run’s settings as a draft. Review source attachments, edit, then queue when ready.'); } catch(e) { tell(e.message,true); } }));
           card.append(actions); ui = {card,title,status,cancel,latest:r,expanded:false,signature:''}; runCards.set(r.id,ui); runsBody.append(card);
         }
         ui.latest = r; ui.title.textContent = r.document?.title || r.title || r.id; ui.status.textContent = r.status || 'queued';
@@ -640,7 +746,7 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
   }
   // The workspace only closes with Close. Selection drags and backdrop clicks
   // cannot discard a draft, including while it is still being loaded.
-  function close() { if (closed) return; closed = true; persist(); loadToken++; validationController?.abort(); clearTimeout(validationTimer); clearTimeout(runsTimer); cancelAnimationFrame(frame); if (drag) drag.up(); for (const url of mediaUrls) URL.revokeObjectURL(url); window.removeEventListener('keydown',keydown,true); overlay.remove(); if (anchor?.isConnected) anchor.focus(); }
+  function close() { if (closed) return; closed = true; persist(); loadToken++; validationController?.abort(); clearTimeout(validationTimer); clearTimeout(runsTimer); clearTimeout(monitorTimer); cancelAnimationFrame(frame); if (drag) drag.up(); for (const url of mediaUrls) URL.revokeObjectURL(url); window.removeEventListener('keydown',keydown,true); overlay.remove(); if (anchor?.isConnected) anchor.focus(); }
   window.addEventListener('keydown',keydown,true);
   async function init() {
     for (const b of [newBtn,libraryBtn,saveBtn,importBtn,exportBtn,addBtn,packagesBtn,validateBtn,runBtn,undoBtn,redoBtn]) b.disabled = true;
@@ -648,6 +754,7 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
       catalog = await request('/catalog'); if (closed) return; inventory = catalog.inventory?.h3 || {};
       let draft, serialized; try { serialized = localStorage.getItem(DRAFT); draft = JSON.parse(serialized || 'null'); } catch {}
       const restored = initial.document || draft?.document || blankWorkflowGraph(); store = createWorkflowGraphStore(restored,catalog);
+      if(!initial.document && draft?.monitoredRunId && draft.monitoredGraph===graphShape(restored)){monitoredRunId=draft.monitoredRunId;monitoredGraph=draft.monitoredGraph;}
       savedId = initial.document ? null : draft?.savedId || null; revision = initial.document ? null : draft?.revision || null; bindings = initial.document ? initial.bindings || {} : retainedDraft && retainedDraft.serialized === serialized ? copyBindings(retainedDraft.bindings) : draft?.serverBindings || {}; selected = draft?.selected || restored.nodes[0]?.id || null;
       view = draft?.view === 'nodes' ? 'nodes' : 'pipeline'; lastSaved = ''; store.subscribe(handleChange);
       for (const b of [newBtn,libraryBtn,saveBtn,importBtn,exportBtn,addBtn,packagesBtn,validateBtn]) b.disabled = false;
@@ -656,6 +763,7 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
       const missing = restored.nodes.filter(n => ['input.image','input.video','input.audio','input.refmod'].includes(n.type) && n.params?.name && !bindings[n.id]?.length);
       if (missing.length) tell(`${missing.length} saved media input${missing.length === 1 ? '' : 's'} need files attached again. Open the input or reference bundle and choose Attach again.`,true);
       if (!restored.nodes.length && !initial.document) openLibrary(true);
+      if(monitoredRunId)pollMonitoredRun();
     } catch(e) { tell(`Could not open the workflow builder: ${e.message}`,true); saved.textContent = 'Server unavailable'; }
   }
   init();

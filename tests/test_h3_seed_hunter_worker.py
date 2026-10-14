@@ -71,6 +71,60 @@ def test_missing_required_recipe_inputs_fail_before_runtime(manifest, option, ma
         worker.run_job(manifest, runtime_factory=lambda *_: pytest.fail("GPU must not initialize"))
 
 
+def test_preserve_audio_uses_real_video_soundtrack_without_an_audio_upload(manifest, tmp_path):
+    pytest.importorskip("av")
+    source = tmp_path / "reference.mp4"
+    waveform = torch.sin(torch.arange(96000).float() * .08).reshape(1, 1, -1).expand(1, 2, -1) * .1
+    worker.mux_mp4(source, torch.zeros((72, 32, 64, 3)), {"waveform": waveform, "sample_rate": 32000})
+    manifest["config"]["seed_hunter"] = {"force_audio": True}
+    manifest["config"]["reference_video_ranges"] = [{"start_seconds": .5, "duration_seconds": 2}]
+    manifest["uploads"] = {"reference_videos": [str(source)]}
+    config, media = worker.validate_job(manifest)
+    prepared = hunter.prepare_media(manifest, config, media, worker.prepare_media, tmp_path)
+    soundtrack = prepared["ref_video_audios"]["ref_video_audio_1"]
+    assert hunter.preserved_audio(prepared) is soundtrack
+    assert prepared["ref_audios"] == {}
+    assert torch.count_nonzero(soundtrack["waveform"]) > 0
+    assert soundtrack["waveform"].shape[-1] == round(len(prepared["ref_videos"]["ref_video_1"]) / 24 * 32000)
+
+
+def test_preserve_audio_prefers_explicit_audio_and_rejects_silent_video():
+    explicit, soundtrack = object(), object()
+    assert hunter.preserved_audio({"ref_audios": {"ref_audio_1": explicit},
+                                  "ref_video_audios": {"ref_video_audio_1": soundtrack}}) is explicit
+    assert hunter.preserved_audio({"ref_video_audios": {"ref_video_audio_2": soundtrack}}) is soundtrack
+    with pytest.raises(ValueError, match="no soundtrack"):
+        hunter.preserved_audio({"ref_audios": {}, "ref_video_audios": {}})
+
+
+def test_preserved_video_audio_is_encoded_with_a_zero_noise_mask(monkeypatch):
+    concatenated, encoded = [], []
+    module = ModuleType("comfy_extras.nodes_lt")
+    module.LTXVConcatAVLatent = SimpleNamespace(execute=lambda video, audio: (concatenated.append(audio) or video,))
+    monkeypatch.setitem(sys.modules, "comfy_extras.nodes_lt", module)
+    track = {"waveform": torch.ones((1, 2, 100)), "sample_rate": 32000}
+    runtime = SimpleNamespace(
+        h3=SimpleNamespace(MiniMaxH3ReferenceToVideo=SimpleNamespace(execute=lambda **_: ([], {"samples": torch.ones(1)}))),
+        audio=SimpleNamespace(VAEEncodeAudio=SimpleNamespace(execute=lambda vae, audio: (encoded.append(audio) or {"samples": torch.ones((1, 2, 10))},))),
+    )
+    config = {"seed_hunter": validate_options({"force_audio": True}), "mode": "ref2va", "prompt": "Same scene.",
+              "width": 480, "height": 864, "frames": 73, "reference_size": "match"}
+    hunter.condition(runtime, config, {"ref_video_audios": {"ref_video_audio_1": track}}, None, None, None)
+    assert encoded == [track]
+    assert torch.count_nonzero(concatenated[0]["noise_mask"]) == 0
+
+
+def test_video_audio_trim_is_relative_to_the_selected_video_interval(manifest, tmp_path):
+    manifest["config"]["seed_hunter"] = {"force_audio": True, "audio_start_seconds": .5, "audio_end_seconds": 1}
+    config, media = worker.validate_job({**manifest, "config": {**manifest["config"], "seed_hunter": {}}})
+    config["seed_hunter"] = validate_options(manifest["config"]["seed_hunter"])
+    media["reference_videos"] = ["synthetic.mp4"]
+    track = {"waveform": torch.arange(200).reshape(1, 1, -1), "sample_rate": 100}
+    prepared = hunter.prepare_media(manifest, config, media,
+        lambda *_: {"ref_video_audios": {"ref_video_audio_1": track}}, tmp_path)
+    assert torch.equal(hunter.preserved_audio(prepared)["waveform"], track["waveform"][..., 50:100])
+
+
 def test_preview_seed_offsets_remain_exact_on_mobile(manifest):
     manifest["config"]["seed"] = 2**53 - 2000
     with pytest.raises(ValueError, match="53-bit"):
@@ -147,7 +201,10 @@ def test_three_previews_load_once_and_persist_x0_instead_of_decoded_output(manif
     assert json.loads(Path(manifest["status_path"]).read_text())["phase"] == "completed"
 
 
-def test_final_uses_saved_conditioning_without_reencoding_or_reloading_media(manifest, monkeypatch, tmp_path):
+@pytest.mark.parametrize("source_options", [{"stage": "preview"},
+    {"stage": "scout", "scout_mode": "interactive"}, {"stage": "scout", "scout_mode": "final"}])
+def test_final_uses_saved_conditioning_without_reencoding_or_reloading_media(manifest, monkeypatch, tmp_path, source_options):
+    manifest["config"]["seed_hunter"] = source_options
     config, _ = worker.validate_job(manifest)
     candidate = tmp_path / "original.safetensors"
     hunter.save_snapshot(candidate, latent={"samples": torch.tensor(11.)}, positive=[[torch.tensor(7.), {}]], config=config, seed=42)

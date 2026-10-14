@@ -453,8 +453,8 @@ def validate_config(raw, components, gpus, uploads):
             raise ValueError("First/last reference guides require Picture 1 / Picture 2 respectively")
         if counts["first_frame"] and not options["first_frame_guide"] or counts["last_frame"] and not options["last_frame_guide"]:
             raise ValueError("Enable the matching first/last guide for each guide image")
-        if options["force_audio"] and not counts["reference_audio"]:
-            raise ValueError("Preserve supplied audio requires Audio 1")
+        if options["force_audio"] and not (counts["reference_audio"] or counts["reference_videos"]):
+            raise ValueError("Preserve supplied audio needs an audio attachment or a reference video with a soundtrack")
         if options["refmod_strengths"] and len(options["refmod_strengths"]) != counts["reference_mods"]:
             raise ValueError("Set one strength per uploaded RefMod")
     if vfx_edit:

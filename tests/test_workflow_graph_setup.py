@@ -45,7 +45,7 @@ def test_templates_resolve_full_setup_without_injecting_unrelated_loras(template
     assert doc["metadata"]["setup_notes"] == notes
     node(doc, "prompt")["params"]["text"] = "Synthetic setup check."
     assert compile_graph(doc, inventory=inventory())["valid"]
-    if template == "seed_hunter":
+    if template in {"seed_hunter", "seed_scout"}:
         assert node(doc, "latent_upscaler")["params"]["component"] == "upscale"
         assert node(doc, "refine")["state"] == "bypassed"
 
@@ -59,6 +59,35 @@ def test_imported_exact_names_aliases_settings_and_adapter_strength_survive():
     assert node(doc, "lora_0")["params"]["strength"] == -0.6
     assert node(doc, "generate")["params"] == node(source, "generate")["params"]
     assert node(doc, "prompt")["params"] == node(source, "prompt")["params"]
+
+
+def test_explicit_setup_repair_adds_bypassed_refinement_to_legacy_scout_and_preserves_media():
+    source = from_native_config({"mode": "ref2va", "model": "ref", "encoder": "encoder", "video_vae": "video", "audio_vae": "audio",
+                                 "gpu": "blackwell", "width": 960, "height": 544, "seed": 987, "prompt": "Authored prompt.",
+                                 "recipe": "seed_hunter", "seed_hunter": {"stage": "scout", "scout_count": 7}},
+                                input_counts={"reference_videos": 2})
+    before = copy.deepcopy(source)
+    doc, notes = configure_workflow(source, inventory(), add_scout_refinement=True)
+    assert source == before
+    assert all(node(doc, row["id"]) == row for row in before["nodes"])
+    assert node(doc, "generate")["params"]["scout_count"] == 7
+    assert node(doc, "generate_refine")["state"] == "bypassed"
+    assert node(doc, "latent_upscaler")["params"]["component"] == "upscale"
+    assert any(row["code"] == "optional_refinement_added" for row in notes)
+    assert compile_graph(doc)["plan"][0]["config"]["seed_hunter"]["scout_count"] == 7
+    node(doc, "generate_refine")["state"] = "active"
+    assert len(compile_graph(doc)["plan"]) == 2
+    again, _ = configure_workflow(doc, inventory(), add_scout_refinement=True)
+    assert again == doc
+
+
+def test_uninstalled_optional_upscaler_does_not_block_bypassed_scout_template():
+    available = inventory()
+    available['h3']['components'] = [row for row in available['h3']['components'] if row['role'] != 'latent_upscaler']
+    doc, notes = configure_workflow(new_document(template='seed_scout'), available, template=True)
+    node(doc, 'prompt')['params']['text'] = 'A neutral sphere rolls.'
+    assert compile_graph(doc, inventory=available)['valid']
+    assert any(row['field'] == 'latent_upscaler' and row['code'] == 'component_unavailable' for row in notes)
 
 
 def test_named_singularity_is_kept_and_missing_authored_adapter_is_not_replaced():

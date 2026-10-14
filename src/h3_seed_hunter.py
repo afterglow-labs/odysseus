@@ -2,7 +2,7 @@
 import uuid
 from pathlib import Path
 
-from scripts.h3_seed_hunter_controls import DEFAULTS, SAMPLERS, SCHEDULERS
+from scripts.h3_seed_hunter_controls import DEFAULTS, SAMPLERS, SCHEDULERS, can_refine_candidate
 from src.h3_video import ACTIVE, _read, _write, _locked
 
 
@@ -88,7 +88,8 @@ def summary(directory, config, state):
             artifact(directory, index, "video")
         except (ValueError, FileNotFoundError):
             continue
-        can_refine = result["stage"] == "preview" and state.get("status") == "completed"
+        can_refine = (can_refine_candidate(options, index) and state.get("status") == "completed"
+                      and config.get("mode") == "ref2va")
         if can_refine:
             try:
                 artifact(directory, index, "latent")

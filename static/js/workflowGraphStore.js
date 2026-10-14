@@ -102,6 +102,19 @@ export function createWorkflowGraphStore(initial = blankWorkflowGraph(), catalog
         if (!d.edges.some(e => e.source.node === edge.source.node)) d.nodes = d.nodes.filter(n => n.id !== edge.source.node || !['input.image','input.video','input.audio','input.refmod'].includes(n.type));
       });
     },
+    setComponent(target,role,component,name = '') {
+      const owner = document.nodes.find(n => n.id === target.node), type = `component.${role}`;
+      if (!owner || !graphPorts(types.get(owner.type),'inputs').some(p => p.id === target.port)) throw new Error('This component input is unavailable.');
+      const node = component ? {id:graphId('node'),type,params:{component,name},state:'active',position:{x:Math.max(16,(owner.position?.x || 320)-288),y:(owner.position?.y || 56)+432}} : null;
+      if (node) { const next=copy(document); next.nodes.push(node); const problem=connectionIssue(next,types,{node:node.id,port:role},target); if (problem) throw new Error(problem); }
+      change(d => {
+        const replaced=d.edges.filter(e=>e.target.node===target.node && e.target.port===target.port);
+        d.edges=d.edges.filter(e=>!replaced.some(old=>old.id===e.id));
+        for (const edge of replaced) if (!d.edges.some(e=>e.source.node===edge.source.node)) d.nodes=d.nodes.filter(n=>n.id!==edge.source.node || n.type!==type);
+        if (node) { d.nodes.push(node); d.edges.push({id:graphId('edge'),source:{node:node.id,port:role},target:{...target}}); }
+      });
+      return node?.id || null;
+    },
     patch(id,patch,reason = 'edit') { change(d => { const n = d.nodes.find(n => n.id === id); if (n) Object.assign(n,copy(patch),{id:n.id,type:n.type}); },reason); },
     parameter(id,key,value) { change(d => { const n = d.nodes.find(n => n.id === id); if (n) { n.params ||= {}; n.params[key] = copy(value); } },'parameter'); },
     remove(id) { change(d => { d.nodes = d.nodes.filter(n => n.id !== id); d.edges = d.edges.filter(e => e.source.node !== id && e.target.node !== id); }); },

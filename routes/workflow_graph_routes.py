@@ -221,6 +221,20 @@ def setup_workflow_graph_routes(store=None, runs=None, managers=None):
         except (ValueError, TypeError, RecursionError) as exc:
             raise failure(exc) from exc
 
+    @router.post("/configure")
+    async def configure(request: Request):
+        _owner(request)
+        try:
+            body = await json_body(request)
+            if set(body) != {"document"}:
+                raise ValueError("Supply a workflow document")
+            validate_document(body["document"])
+            available = await inventories()
+            document, notes = await asyncio.to_thread(configure_workflow, body["document"], available, add_scout_refinement=True)
+            return {"document": document, "setup_notes": notes}
+        except (ValueError, TypeError, RecursionError) as exc:
+            raise failure(exc) from exc
+
     @router.post("/import")
     async def import_document(request: Request):
         _owner(request)

@@ -210,14 +210,20 @@ def test_concurrent_accept_deduplicates_run_and_native_submission(backend, tmp_p
         manager.close()
 
 
-def test_refinement_clones_selected_candidate_with_native_idempotent_api(hunter, tmp_path):
+@pytest.mark.parametrize("scout", [False, True])
+def test_refinement_clones_selected_candidate_with_native_idempotent_api(hunter, tmp_path, scout):
+    candidate = 1 if scout else 2
+    source_type = "h3.seed_scout" if scout else "hunter.preview"
+    if scout:
+        hunter.configs["h3"]["seed_hunter"] = {"stage": "scout", "scout_mode": "interactive"}
+        hunter.inventories["h3"]["seed_hunter"]["features"]["seed_scout"] = True
     manager = GraphRunManager(tmp_path / "runs", hunter.managers, poll_interval=.02)
     plan = {"valid": True, "plan": [
-        {"id": "preview", "node_type": "hunter.preview", "family": "h3", "operation": "submit",
+        {"id": "preview", "node_type": source_type, "family": "h3", "operation": "submit",
          "config": hunter.configs["h3"], "inputs": {}, "dependencies": []},
         {"id": "refine", "node_type": "hunter.refine", "family": "h3", "operation": "refine",
          "config": final_body(hunter)["config"], "inputs": {}, "depends_on": "preview",
-         "candidate": 2, "dependencies": ["preview"]}], "outputs": [{"id": "final", "source": "refine"}]}
+         "candidate": candidate, "dependencies": ["preview"]}], "outputs": [{"id": "final", "source": "refine"}]}
     try:
         run = manager.accept("corey", {}, plan, {}, str(uuid.uuid4()))
         run = wait_for(manager, run["id"], lambda value: step(value, "preview").get("submission_confirmed"))
@@ -235,8 +241,8 @@ def test_refinement_clones_selected_candidate_with_native_idempotent_api(hunter,
         final_id = step(run, "refine")["job_id"]
         final = hunter.managers["h3"].directory(final_id)
         saved = h3._read(final / "manifest.json")
-        assert saved["seed_hunter_source"] == {"source_job_id": source_id, "source_candidate": 2}
-        assert h3._read(final / "source-latent.json")["chosen"] == 2
+        assert saved["seed_hunter_source"] == {"source_job_id": source_id, "source_candidate": candidate}
+        assert h3._read(final / "source-latent.json")["chosen"] == candidate
         assert saved["config"]["prompt"] == config["prompt"]
         assert saved["config"]["seed_hunter"]["stage"] == "final"
         assert len(hunter.calls) == 2

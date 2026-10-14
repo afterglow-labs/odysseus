@@ -19,7 +19,7 @@ def _identity(row, value):
                             or value == row.get("path"))
 
 
-def configure_workflow(document, inventory, *, template=False):
+def configure_workflow(document, inventory, *, template=False, add_scout_refinement=False):
     """Return ``(configured copy, setup notes)``; never mutate a saved document.
 
     Imported compatible GPU/component selections win over installation
@@ -40,12 +40,51 @@ def configure_workflow(document, inventory, *, template=False):
     if not isinstance(notes, list):
         notes = []
 
-    if template and any(node["type"] == "hunter.refine" for node in nodes.values()):
+    def note(node, field, code, message, *, severity="info", **details):
+        row = {"node_id": node["id"], "field": field, "code": code,
+               "severity": severity, "message": message, **details}
+        if row not in notes:
+            notes.append(row)
+
+    if add_scout_refinement:
+        from src.workflow_graph import make_edge, make_node
+        for scout in list(nodes.values()):
+            if scout["type"] != "h3.seed_scout" or scout.get("params", {}).get("mode", "t2va") != "ref2va":
+                continue
+            outgoing = [edge for edge in edges if edge["source"] == {"node": scout["id"], "port": "result"}]
+            # Upgrade only the old, direct Scout-to-output template. Authored
+            # branching, result selection, and existing refinement stay intact.
+            if len(outgoing) != 1 or nodes[outgoing[0]["target"]["node"]]["type"] != "output.video":
+                continue
+            setup = next((edge["source"] for edge in edges if edge["target"] == {"node": scout["id"], "port": "setup"}
+                          and nodes[edge["source"]["node"]]["type"] == "hub.setup"), None)
+            if setup is None:
+                continue
+            identifier = scout["id"] + "_refine"
+            while identifier in nodes:
+                identifier += "_optional"
+            params = scout.get("params", {})
+            refine = make_node(identifier, "hunter.refine", x=scout.get("position", {}).get("x", 660) + 300,
+                               y=scout.get("position", {}).get("y", 280), state="bypassed",
+                               params={"width": params.get("width", 960), "height": params.get("height", 544)})
+            # A default 2x target fits the native final-stage pixel limit.
+            if refine["params"]["width"] * refine["params"]["height"] * 4 <= 4194304:
+                refine["params"]["width"] *= 2; refine["params"]["height"] *= 2
+            nodes[identifier] = refine; doc["nodes"].append(refine)
+            outgoing[0]["source"] = {"node": identifier, "port": "result"}
+            edges.extend([make_edge(scout["id"], "result", identifier, "preview"),
+                          make_edge(setup["node"], setup["port"], identifier, "setup")])
+            note(refine, "state", "optional_refinement_added", "Added bypassed latent refinement after the completed selected Scout result. Enable it to upscale; existing Scout settings and attachments are preserved.")
+
+    if (template or add_scout_refinement) and any(node["type"] == "hunter.refine" for node in nodes.values()):
         from src.workflow_graph import make_edge, make_node
         for hub in list(nodes.values()):
             if hub["type"] != "hub.setup" or any(edge["target"] == {"node": hub["id"], "port": "latent_upscaler"} for edge in edges):
                 continue
             if not any(edge["source"]["node"] == hub["id"] and nodes[edge["target"]["node"]]["type"] == "hunter.refine" for edge in edges):
+                continue
+            if not any(row.get("role") == "latent_upscaler" for row in components):
+                note(hub, "latent_upscaler", "component_unavailable", "Latent refinement requires an installed latent upscaler. Bypassed refinement keeps the original output.", severity="warning")
                 continue
             identifier = "latent_upscaler"
             while identifier in nodes:
@@ -53,12 +92,6 @@ def configure_workflow(document, inventory, *, template=False):
             node = make_node(identifier, "component.latent_upscaler", x=40, y=680)
             nodes[identifier] = node; doc["nodes"].append(node)
             edges.append(make_edge(identifier, "latent_upscaler", hub["id"], "latent_upscaler"))
-
-    def note(node, field, code, message, *, severity="info", **details):
-        row = {"node_id": node["id"], "field": field, "code": code,
-               "severity": severity, "message": message, **details}
-        if row not in notes:
-            notes.append(row)
 
     def reachable(identifier, direction):
         found, pending = set(), [identifier]

@@ -2,6 +2,19 @@
 import math
 
 RECIPE = "seed_hunter"
+
+
+def can_refine_candidate(options, candidate=1):
+    """Only completed schedules have a latent suitable for learned refinement."""
+    if type(candidate) is not int:
+        return False
+    stage = options.get("stage", "preview")
+    if stage == "preview":
+        return 1 <= candidate <= options.get("preview_count", 3)
+    return (stage == "scout" and candidate == 1
+            and options.get("scout_mode", "interactive") in {"interactive", "final"})
+
+
 SAMPLERS = ("euler", "res_multistep", "er_sde")
 SCHEDULERS = ("simple", "normal", "beta", "linear_quadratic")
 DEFAULTS = {

@@ -124,3 +124,20 @@ const reference=s.document.edges.find(e=>e.source.node===ids[0]&&e.target.port==
 assert(s.document.nodes.some(n=>n.id===ids[0]),'Remove reference must preserve input used by another slot');
 s.undo();assert(s.document.edges.some(e=>e.id===reference.id));
 ''')
+
+
+def test_hub_component_choice_preserves_shared_source_and_undo():
+    run_node(r'''
+import assert from 'node:assert/strict';
+const catalog={node_types:[{type:'component.latent_upscaler',outputs:[{id:'latent_upscaler',type:'UPSCALER'}]},{type:'hub.setup',inputs:[{id:'latent_upscaler',type:'UPSCALER'}]}]};
+const s=createWorkflowGraphStore({nodes:[{id:'a',type:'hub.setup'},{id:'b',type:'hub.setup'}],edges:[]},catalog);
+const target={node:'a',port:'latent_upscaler'};
+const first=s.setComponent(target,'latent_upscaler','upscaler-1','one.safetensors');
+s.connect({node:first,port:'latent_upscaler'},{node:'b',port:'latent_upscaler'});
+const second=s.setComponent(target,'latent_upscaler','upscaler-2','two.safetensors');
+assert(s.document.nodes.some(n=>n.id===first),'Other setup still uses the old component');
+assert.equal(s.document.edges.find(e=>e.target.node==='b').source.node,first);
+assert.equal(s.document.edges.find(e=>e.target.node==='a').source.node,second);
+s.undo();assert.equal(s.document.edges.find(e=>e.target.node==='a').source.node,first);assert(!s.document.nodes.some(n=>n.id===second));
+s.setComponent(target,'latent_upscaler','');assert(!s.document.edges.some(e=>e.target.node==='a'));assert(s.document.nodes.some(n=>n.id===first));
+''')

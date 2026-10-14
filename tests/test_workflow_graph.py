@@ -267,7 +267,35 @@ def test_seed_scout_template_uses_ref2va_and_interactive_waiting_controls():
     assert result["valid"],result["issues"]
     config=result["plan"][0]["config"]
     assert config["recipe"]=="seed_hunter" and config["mode"]=="ref2va"
-    assert config["seed_hunter"]=={"stage":"scout","shift_enabled":True,"scout_count":4,"scout_step":1,"scout_mode":"interactive","scout_timeout":0,"scout_preview_mode":"vae"}
+    assert config["seed_hunter"]=={"stage":"scout","shift_enabled":True,"scout_count":3,"scout_step":1,"scout_mode":"interactive","scout_timeout":0,"scout_preview_mode":"vae"}
+    assert len(result["plan"]) == 1 and get(doc, "refine")["state"] == "bypassed"
+
+
+@pytest.mark.parametrize("mode", ["interactive", "final"])
+def test_seed_scout_refinement_uses_chosen_completed_candidate(mode):
+    doc = ready("seed_scout")
+    get(doc, "generate")["params"]["scout_mode"] = mode
+    get(doc, "refine")["state"] = "active"
+    result = compile_graph(doc)
+    assert result["valid"], result["issues"]
+    final = result["plan"][-1]
+    assert final["operation"] == "refine" and final["depends_on"] == "generate" and final["candidate"] == 1
+    assert (final["config"]["width"], final["config"]["height"]) == (1920, 1088)
+
+
+@pytest.mark.parametrize("source,refinement,code", [
+    ({"scout_mode": "scout"}, {}, "refine_source"),
+    ({}, {"candidate": 2}, "candidate"),
+    ({}, {"width": 480}, "refine_dimensions"),
+    ({"mode": "t2va"}, {}, "refine_source"),
+])
+def test_seed_scout_refinement_rejects_partial_latent_or_wrong_candidate(source, refinement, code):
+    doc = ready("seed_scout")
+    get(doc, "generate")["params"].update(source)
+    get(doc, "refine")["params"].update(refinement)
+    get(doc, "refine")["state"] = "active"
+    result = compile_graph(doc)
+    assert not result["valid"] and any(issue["code"] == code for issue in result["issues"])
 
 
 def test_reference_video_ranges_survive_existing_draft_import():

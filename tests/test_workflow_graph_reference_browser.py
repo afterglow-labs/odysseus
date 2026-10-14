@@ -81,6 +81,8 @@ def test_fresh_scout_references_local_server_restore_and_canvas_pan(tmp_path):
                     await handler.fulfill(json={'id': 'fixture-run', 'status': 'queued'})
                 elif path.endswith('/runs'):
                     await handler.fulfill(json={'runs': []})
+                elif path.endswith('/runs/fixture-run'):
+                    await handler.fulfill(json={'id':'fixture-run','status':'completed','steps':[],'outputs':[],'document':submissions[-1]['document']})
                 else:
                     pytest.fail(f'Unexpected request {request.method} {path}')
 
