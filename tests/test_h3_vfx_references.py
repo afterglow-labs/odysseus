@@ -17,6 +17,21 @@ from tests.test_h3_prompt_enhancement import (
 FFP = "minimax_h3_vfx_edit_v1.0_r128_ffp.safetensors"
 
 
+@pytest.mark.parametrize("marker,field,available", [
+    ("<Video 1>", "Reference videos", 0),
+    ("<Picture 2>", "Reference images", 1),
+    ("<Subject 0>", "Reference images", 1),
+    ("<aUdIo 1>", "Reference audio / video soundtracks", 0),
+])
+def test_missing_reference_names_exact_marker_and_attachment_field(vfx_inventory, marker, field, available):
+    with pytest.raises(ValueError) as error:
+        validate(vfx_inventory, {"source_video": [None], "reference_images": [None]},
+                 prompt=f"Use {marker} as guidance.")
+    message = str(error.value)
+    assert marker in message and f"{field}: {available}" in message
+    assert ('write "the source video"' in message) == (marker == "<Video 1>")
+
+
 def test_ffp_is_discovered_as_a_vfx_adapter_and_accepts_native_edited_image(vfx_inventory, tmp_path):
     inv, raw = vfx_inventory
     path = weights(tmp_path / "models--author--MiniMax-H3" / "snapshots" / "revision" / FFP, True)

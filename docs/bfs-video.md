@@ -17,6 +17,10 @@ a ComfyUI window.
 
 ## Queue controls and rerunning jobs
 
+Recent jobs show 10 results per page. Previous/Next changes the visible results;
+Refresh jobs returns to the newest page. Desktop videos load on Play. Job counts
+and bulk queue controls still cover the complete selected workflow scope.
+
 The **Queue controls** section above recent jobs provides **Pause queue** /
 **Resume queue**, **Cancel queued jobs**, **Delete queued jobs**,
 **Edit queued parameters**, and **Run again with new parameters**. Pause is

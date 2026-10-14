@@ -1,3 +1,5 @@
+import { createVideoJobPager, observePagedVideoJobEditor } from './videoJobPage.js';
+import { createVideoJobMedia, releaseVideoJobMedia } from './videoJobMedia.js';
 import { bindMenuDismiss, dismissOrRemove } from './escMenuStack.js';
 import { topPortalZ } from './toolWindowZOrder.js';
 import { showVideoWorkflowExportOptions } from './h3Video.js';
@@ -24,14 +26,6 @@ const button = text => { const node = el('button', 'memory-toolbar-btn', text); 
 const optionId = value => String(value ?? '');
 const bfsComponentId = (value, components = []) => optionId(components.find(item => optionId(item.id) === optionId(value) || item.aliases?.includes(optionId(value)))?.id ?? value);
 
-function jobOrder(a, b) {
-  const rank = job => job.status === 'running' ? 0 : job.status === 'queued' ? 1 : 2;
-  const group = rank(a) - rank(b);
-  if (group) return group;
-  if (a.status === 'queued' && a.queue_position > 0 && b.queue_position > 0) return a.queue_position - b.queue_position;
-  const created = job => typeof job.created_at === 'number' ? job.created_at * 1000 : Date.parse(job.created_at) || 0;
-  return rank(a) === 2 ? created(b) - created(a) : created(a) - created(b);
-}
 
 export function isBfsVideoModel(model) {
   return /(?:^|[/\\])BFS-Best-Face-Swap-Video$/i.test(model?.repo_id || '')
@@ -53,7 +47,7 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
       const link = el('link'); link.id = id; link.rel = 'stylesheet'; link.href = href; document.head.appendChild(link);
     }
   }
-  let closed = false, inventory = null, workflow = null, loading = false, submitting = false, polling = false;
+  let closed = false, inventory = null, workflow = null, loading = false, submitting = false, jobPager = null;
   let jobs = [], pollTimer, saved = {}, pendingPreferred = preferred, preferredAdapter = '', refreshFailed = false;
   let transferBusy = false, editRevision = 0, batchQueue = null, jobEditor = null, queueControls = null;
   let serverPicker = null;
@@ -149,7 +143,6 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
   const inputStatus = el('p', 'h3-video-muted'); inputStatus.setAttribute('role', 'status'); form.appendChild(inputStatus);
   const actions = el('div', 'h3-video-actions');
   const generate = button('Generate video'); generate.className = 'cookbook-btn'; generate.type = 'submit'; generate.disabled = true; actions.appendChild(generate); form.appendChild(actions);
-  form.appendChild(el('p', 'h3-video-muted', 'Jobs render one at a time in submission order, shared with MiniMax H3 workflows. Keep editing this draft to add more jobs; each submission saves its own prompt, settings, and files.'));
   const submissionStatus = el('p', 'h3-video-muted h3-video-submission-status');
   submissionStatus.setAttribute('role', 'status'); submissionStatus.setAttribute('aria-live', 'polite'); submissionStatus.hidden = true; form.appendChild(submissionStatus);
   const jobsHeader = el('div', 'h3-video-toolbar'); jobsHeader.appendChild(el('h3', '', 'Recent BFS jobs'));
@@ -157,10 +150,18 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
   const jobsStatus = el('p', 'h3-video-muted', 'Loading jobs…'); jobsStatus.setAttribute('role', 'status'); scroll.appendChild(jobsStatus);
   const queueContainer = el('div'); scroll.appendChild(queueContainer);
   const jobList = el('div', 'h3-video-jobs'); scroll.appendChild(jobList);
+  jobPager = createVideoJobPager({ container: scroll, beforeNode: jobList, request, isClosed: () => closed,
+    onData: async data => {
+      queueControls?.update(data.queue); jobs = data.jobs.filter(job => !deletedJobs.has(job.id)); renderJobs();
+      await observePagedVideoJobEditor(jobEditor, data.legacyJobs || jobs, request, () => closed);
+      if (!closed) updateReady();
+    },
+    onError: error => { jobsStatus.textContent = `Could not refresh jobs: ${error.message}`; },
+  });
   overlay.appendChild(dialog); document.body.appendChild(overlay);
   const reruns = createVideoJobReruns({ family: 'bfs', request, isClosed: () => closed,
     isBlocked: () => !!queueControls?.busy || !!queueControls?.editing, onChange: () => renderJobs(),
-    onQueued: async result => { queueControls?.update(result.queue); await loadJobs(); },
+    onQueued: async result => { queueControls?.update(result.queue); await loadJobs({ reset: true }); },
   });
 
   function setError(message) { error.textContent = message || ''; error.hidden = !message; if (message) error.scrollIntoView({ block: 'nearest' }); }
@@ -239,7 +240,7 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
     exportWorkflow.disabled = queueBusy || editing || editLoading || batchBusy || transferBusy || loading || submitting || !workflow;
     importWorkflow.disabled = queueBusy || editing || editLoading || batchBusy || transferBusy || loading || submitting || !inventory;
     importWorkflow.textContent = transferBusy ? 'Importing workflow…' : 'Import workflow';
-    generate.textContent = submitting ? editing ? 'Saving changes…' : 'Uploading and adding job…' : editing ? 'Save changes' : jobs.some(job => ACTIVE.has(job.status)) ? 'Add to queue' : 'Generate video';
+    generate.textContent = submitting ? editing ? 'Saving changes…' : 'Uploading and adding job…' : editing ? 'Save changes' : ((jobPager?.counts.running || 0) + (jobPager?.counts.queued || 0)) ? 'Add to queue' : 'Generate video';
     const issue = batchIssue();
     const snapshotReason = editing || editLoading ? 'Finish editing the queued job before adding a batch.' : inventory && inventory.batch_jobs !== true ? 'Batch jobs need the updated Odysseus server. Restart the server after active transfers finish.'
       : queueBusy || transferBusy || loading || submitting ? 'Wait for the current operation to finish.'
@@ -382,11 +383,11 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
     finally { if (!closed) { loading = false; refresh.disabled = false; updateReady(); } }
   }
   function renderJobs() {
-    const running = jobs.filter(job => job.status === 'running').length, queued = jobs.filter(job => job.status === 'queued').length;
-    jobsStatus.textContent = jobs.length ? `${running} rendering · ${queued} queued here. Jobs and their prompts are saved on the server. Closing this panel does not change the queue.` : 'No BFS video jobs yet.';
+    const running = jobPager?.counts.running || 0, queued = jobPager?.counts.queued || 0;
+    jobsStatus.textContent = (jobPager?.total || Object.values(jobPager?.counts || {}).some(Boolean)) ? `${running} rendering · ${queued} queued` : 'No BFS video jobs yet.';
     const ids = new Set(jobs.map(job => job.id));
-    for (const [id, nodes] of jobNodes) if (!ids.has(id)) { nodes.card.remove(); jobNodes.delete(id); }
-    for (const [index, job] of [...jobs].sort(jobOrder).entries()) {
+    for (const [id, nodes] of jobNodes) if (!ids.has(id)) { releaseVideoJobMedia(nodes.card); nodes.card.remove(); jobNodes.delete(id); }
+    for (const [index, job] of jobs.entries()) {
       let nodes = jobNodes.get(job.id);
       if (!nodes) {
         const card = el('article', 'h3-video-job'); card.dataset.jobId = job.id;
@@ -464,19 +465,14 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
       nodes.log.textContent = Array.isArray(job.log_tail) ? job.log_tail.join('\n') : job.log_tail || 'No runtime output yet.';
       if (job.status === 'completed' && !nodes.output.childElementCount) {
         const url = `${API}/jobs/${encodeURIComponent(job.id)}/video`;
-        const video = el('video'); video.src = url; video.controls = true; video.playsInline = true; video.preload = 'metadata';
+        const video = createVideoJobMedia(url);
         const download = el('a', 'memory-toolbar-btn', 'Download MP4'); download.href = url; download.download = job.filename || 'odysseus-bfs.mp4';
-        nodes.output.append(video, download);
+        nodes.output.append(video.node, download);
       }
     }
     updateReady();
   }
-  async function loadJobs() {
-    if (closed || polling) return; polling = true; refreshJobs.disabled = true;
-    try { const data = await request('/jobs'); if (!closed) { queueControls?.update(data.queue); jobs = Array.isArray(data.jobs) ? data.jobs.filter(job => !deletedJobs.has(job.id)) : []; renderJobs(); } }
-    catch (e) { if (!closed) jobsStatus.textContent = `Could not refresh jobs: ${e.message}`; }
-    finally { polling = false; if (!closed) refreshJobs.disabled = false; }
-  }
+  function loadJobs(options = {}) { return jobPager.load(options); }
   async function stopJob(id) {
     if (queueControls?.busy || stopping.has(id)) return; stopping.add(id); setError(''); renderJobs();
     try {
@@ -497,7 +493,7 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
       deletedJobs.add(id); jobs = jobs.filter(job => job.id !== id); renderJobs(); refreshJobs.focus();
     } catch (e) {
       if (!closed) { nodes.deleteError.textContent = `Could not delete job: ${e.message}`; nodes.deleteError.hidden = false; }
-    } finally { deleting.delete(id); if (!closed) renderJobs(); }
+    } finally { deleting.delete(id); if (!closed) await loadJobs(); }
   }
   exportWorkflow.onclick = () => {
     const snapshot = config(), currentInventory = inventory;
@@ -551,7 +547,7 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
       const result = await request(editing ? `/jobs/${encodeURIComponent(editing.id)}` : '/jobs', { method: editing ? 'PATCH' : 'POST', body }); if (closed) return;
       const job = result.job || result;
       if (editing) jobEditor.finish();
-      jobs = [job, ...jobs.filter(row => row.id !== job.id)]; renderJobs();
+      await loadJobs({ reset: !editing });
       submissionStatus.textContent = editing ? `Changes saved to job ${job.id}. Its place in the queue is unchanged. Your previous draft has been restored.` : `Job ${job.id} ${job.status === 'queued' ? 'added to the queue' : 'accepted'}. Its prompt, settings, and files are saved. This draft is ready to edit and submit again.`;
       submissionStatus.hidden = false; submissionStatus.scrollIntoView({ block: 'nearest' });
     } catch (e) { if (!closed) { if (editing) jobEditor.failed(e); else setError(e.message); } }
@@ -561,7 +557,7 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
   form.addEventListener('input', () => { editRevision++; updateReady(); });
   form.addEventListener('change', () => { editRevision++; });
   form.addEventListener('change', () => { save(); updateReady(); });
-  refresh.onclick = () => loadInventory(); refreshJobs.onclick = loadJobs;
+  refresh.onclick = () => loadInventory(); refreshJobs.onclick = () => loadJobs({ reset: true });
   const onKey = event => {
     if (document.querySelector('.video-workflow-export-overlay, .video-server-files-overlay')) return;
     if (event.key === 'Escape') {
@@ -582,7 +578,7 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
   const close = bindMenuDismiss(overlay, () => {
     closed = true; clearInterval(pollTimer); window.removeEventListener('keydown', onKey, true);
     serverPicker?.close();
-    batchQueue?.destroy(); queueControls?.destroy();
+    batchQueue?.destroy(); queueControls?.destroy(); jobPager?.destroy(); releaseVideoJobMedia(jobList);
     for (const state of files.values()) if (state.url) URL.revokeObjectURL(state.url);
     overlay.remove(); if (anchor?.isConnected) anchor.focus();
   }, () => false);
@@ -620,7 +616,7 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
   });
   batchQueue = createVideoBatchQueue({
     family: 'bfs', container: batchContainer, getSnapshot: batchSnapshot,
-    onJob: job => { if (!closed) { jobs = [job, ...jobs.filter(item => item.id !== job.id)]; renderJobs(); } },
+    onJob: () => { if (!closed) loadJobs({ reset: true }); },
     onChange: () => { if (!closed) { editRevision++; updateReady(); } },
   });
   queueControls = createVideoQueueControls({

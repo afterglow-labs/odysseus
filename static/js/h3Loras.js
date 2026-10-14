@@ -74,7 +74,9 @@ export function createH3LoraEditor({ components = [], value = [], max = 8, onCha
   const actions = document.createElement('div'); actions.className = 'h3-video-actions'; actions.append(add, manage);
   const help = document.createElement('p'); help.className = 'h3-video-muted';
   help.textContent = 'Applied in the order shown. Each LoRA has its own strength; 0 turns it off. Combining LoRAs may require different sampling settings.';
-  node.append(list, actions, help);
+  const helpDetails = document.createElement('details'); helpDetails.className = 'h3-workflow-help';
+  const helpLabel = document.createElement('summary'); helpLabel.textContent = 'LoRA help'; helpDetails.append(helpLabel, help);
+  node.append(list, actions, helpDetails);
   let rows = [], disabled = false, libraryAvailable = false;
   const getValue = () => rows.filter(row => row.select.value).map(row => ({ id: row.select.value, strength: row.strength.value.trim() === '' ? '' : Number(row.strength.value) }));
   function refreshDisabled() {

@@ -1,0 +1,92 @@
+// Job history stays bounded while the queue itself remains shared and unfiltered.
+export function createVideoJobPageState({ pageSize = 10, recipe = '' } = {}) {
+  let page = 1, before = null, total = 0, totalPages = 1, counts = {};
+  return {
+    get page() { return page; }, get total() { return total; },
+    get totalPages() { return totalPages; }, get counts() { return counts; },
+    query(options = {}) {
+      const nextPage = options.reset ? 1 : options.page ?? page;
+      const query = new URLSearchParams({ page: String(nextPage), page_size: String(pageSize) });
+      if (recipe) query.set('recipe', recipe);
+      if (!options.reset && before !== null) query.set('before', String(before));
+      return `/jobs?${query}`;
+    },
+    accept(data, options = {}) {
+      let jobs = Array.isArray(data.jobs) ? data.jobs : [];
+      let legacyJobs;
+      const meta = data.pagination;
+      if (meta) {
+        page = Math.max(1, Number(meta.page) || 1); total = Math.max(0, Number(meta.total) || 0);
+        totalPages = Math.max(1, Number(meta.total_pages) || 1); before = meta.before ?? null;
+        counts = data.counts || {};
+      } else {
+        // Older servers ignore page parameters and return the complete list.
+        if (recipe) jobs = jobs.filter(job => job.recipe === recipe || recipe === 'seed_hunter' && job.seed_hunter);
+        counts = jobs.reduce((out, job) => { out[job.status] = (out[job.status] || 0) + 1; return out; }, {});
+        legacyJobs = jobs;
+        total = jobs.length; totalPages = Math.max(1, Math.ceil(total / pageSize));
+        page = Math.max(1, Math.min(totalPages, options.reset ? 1 : options.page ?? page));
+        before = null; jobs = jobs.slice((page - 1) * pageSize, page * pageSize);
+      }
+      return { ...data, jobs, legacyJobs };
+    },
+    get label() {
+      return total ? `${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, total)} of ${total} jobs · Page ${page} of ${totalPages}` : '0 jobs';
+    },
+  };
+}
+
+export function createVideoJobPager({ container, beforeNode, request, recipe = '', onData, onError, isClosed = () => false }) {
+  const state = createVideoJobPageState({ recipe });
+  const node = document.createElement('nav'); node.className = 'video-job-pager'; node.setAttribute('aria-label', 'Job history pages');
+  const previous = document.createElement('button'), next = document.createElement('button'), label = document.createElement('span');
+  for (const button of [previous, next]) { button.type = 'button'; button.className = 'memory-toolbar-btn'; }
+  previous.textContent = 'Previous'; previous.setAttribute('aria-label', 'Previous page of jobs');
+  next.textContent = 'Next'; next.setAttribute('aria-label', 'Next page of jobs');
+  label.className = 'h3-video-muted'; label.setAttribute('role', 'status'); label.setAttribute('aria-live', 'polite');
+  node.append(previous, label, next); container.insertBefore(node, beforeNode || null);
+  let pending = null, task = null, destroyed = false;
+  const alive = () => !destroyed && !isClosed();
+  function render() {
+    label.textContent = state.label;
+    previous.disabled = !!task || state.page <= 1; next.disabled = !!task || state.page >= state.totalPages;
+    node.setAttribute('aria-busy', String(!!task));
+  }
+  function load(options = {}) {
+    if (!alive()) return Promise.resolve();
+    // Explicit refreshes/submissions are never lost behind an in-flight poll.
+    // Polls can reuse the current request; an explicit navigation wins next.
+    if (options.reset || options.page !== undefined || !task) pending = { ...options };
+    if (task) return task;
+    task = Promise.resolve().then(async () => {
+      while (pending && alive()) {
+        const options = pending; pending = null;
+        try {
+          const response = await request(state.query(options));
+          if (!alive()) return;
+          if (pending) continue;
+          const data = state.accept(response, options);
+          await onData(data);
+        } catch (error) { if (alive() && !pending) onError(error); }
+      }
+    }).finally(() => { task = null; if (alive()) render(); });
+    render(); return task;
+  }
+  previous.onclick = () => load({ page: state.page - 1 }); next.onclick = () => load({ page: state.page + 1 });
+  render();
+  return { node, load, get counts() { return state.counts; }, get total() { return state.total; }, destroy() { destroyed = true; pending = null; } };
+}
+
+export async function observePagedVideoJobEditor(editor, jobs, request, isClosed = () => false) {
+  editor?.observe(jobs);
+  const id = editor?.active?.id;
+  if (!id || jobs.some(job => job.id === id)) return;
+  try {
+    const data = await request(`/jobs/${encodeURIComponent(id)}`);
+    if (!isClosed() && editor.active?.id === id) editor.observe([data.job || data]);
+  } catch (error) {
+    if (!isClosed() && editor.active?.id === id && error.status === 404)
+      editor.observe([{ id, status: 'deleted' }]);
+    // A transient detail failure must not discard the user's active draft.
+  }
+}

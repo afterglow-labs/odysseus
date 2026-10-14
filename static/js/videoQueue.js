@@ -41,7 +41,7 @@ export function createVideoQueueControls({ container, family, request, getFields
   const heading = el('div', 'h3-video-toolbar'), title = el('h3', '', 'Queue controls');
   const pause = button('Pause queue', 'pause'); heading.append(title, pause); panel.appendChild(heading);
   const state = el('p', 'h3-video-muted', 'Checking queue…'); state.setAttribute('role', 'status'); panel.appendChild(state);
-  panel.appendChild(el('p', 'h3-video-muted', 'Pause stops the next job from starting. A video already rendering finishes normally. Pause applies to your H3 and BFS jobs together.'));
+  const help = el('details', 'h3-workflow-help'); help.append(el('summary', '', 'Queue help'), el('p', 'h3-video-muted', 'Jobs render one at a time across H3 and BFS. Pause prevents the next job from starting; the current render finishes. Closing this workflow leaves queued jobs running. Each job keeps its saved inputs and settings.')); panel.appendChild(help);
   const actions = el('div', 'h3-video-job-actions');
   const scope = el('select', 'cookbook-field-input'); scope.setAttribute('aria-label', 'Queued job scope');
   scope.add(new Option(`${familyName} queued jobs`, 'family')); scope.add(new Option('All H3 and BFS queued jobs', 'all'));
@@ -250,7 +250,7 @@ export function createVideoQueueControls({ container, family, request, getFields
         targetStatus.textContent = 'Some copies could not be created. Retry this same request to finish; already accepted copies will not be duplicated. Close the editor to abandon this request.';
       } else closeEditor();
       receipt(result, operation === 'rerun' ? 'added as new copies' : 'updated');
-      await reload();
+      await reload({ reset: operation === 'rerun' });
     });
   };
   scope.onchange = render; render();

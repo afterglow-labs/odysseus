@@ -1,3 +1,5 @@
+import { createVideoJobPager, observePagedVideoJobEditor } from './videoJobPage.js';
+import { createVideoJobMedia, releaseVideoJobMedia } from './videoJobMedia.js';
 import { bindMenuDismiss, dismissOrRemove } from './escMenuStack.js';
 import { topPortalZ } from './toolWindowZOrder.js';
 import * as videoWorkflow from './videoWorkflow.js';
@@ -70,14 +72,6 @@ function formatElapsed(created, finished) {
   return `${Math.floor(secs / 60)}m ${secs % 60}s`;
 }
 
-function jobOrder(a, b) {
-  const rank = job => job.status === 'running' ? 0 : job.status === 'queued' ? 1 : 2;
-  const group = rank(a) - rank(b);
-  if (group) return group;
-  if (a.status === 'queued' && a.queue_position > 0 && b.queue_position > 0) return a.queue_position - b.queue_position;
-  const created = job => typeof job.created_at === 'number' ? job.created_at * 1000 : Date.parse(job.created_at) || 0;
-  return rank(a) === 2 ? created(b) - created(a) : created(a) - created(b);
-}
 
 // Shared by H3 and BFS. The callback owns packaging/downloading; the dialog
 // only records the user's explicit content choices and reports preparation.
@@ -203,6 +197,10 @@ export function showVideoWorkflowExportOptions(onExport, anchor = document.activ
   return { overlay, close };
 }
 
+function h3WorkflowHelp(label, ...content) {
+  const details = el('details', 'h3-workflow-help'); details.append(el('summary', '', label), ...content); return details;
+}
+
 export function showH3Video({ preferredModel = null } = {}, anchor = document.activeElement) {
   document.querySelectorAll('.h3-video-overlay').forEach(dismissOrRemove);
   if (!document.getElementById('h3-video-styles')) {
@@ -210,7 +208,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     style.id = 'h3-video-styles'; style.rel = 'stylesheet'; style.href = '/static/h3-video.css';
     document.head.appendChild(style);
   }
-  let closed = false, submitting = false, polling = false, timer = null, inventory = null, jobs = [], loadFailed = false;
+  let closed = false, submitting = false, jobPager = null, timer = null, inventory = null, jobs = [], loadFailed = false;
   let enhancing = false, enhancementController = null, enhancer = null, enhancerChecking = false, enhancerCheck = 0;
   let originalPrompt = null, editRevision = 0, enhancementStarted = 0;
   let enhancerSelection = null, enhancerScope = null, selectionInitialized = false;
@@ -234,13 +232,13 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   header.append(title, closeButton); dialog.appendChild(header);
   const scroll = el('div', 'h3-video-scroll'); dialog.appendChild(scroll);
   scroll.appendChild(el('p', 'h3-video-target', `Local Odysseus server · ${window.location.host}`));
-  scroll.appendChild(el('p', 'h3-video-description', 'Generate video with audio on this Odysseus server. Uses the Comfy inference core internally; no ComfyUI window, node editor, or separate server is needed.'));
+  scroll.appendChild(el('p', 'h3-video-description', 'Generate video with audio.'));
   const gpuPanel = el('section', 'h3-video-gpu-panel'); gpuPanel.setAttribute('aria-label', 'Live GPU memory');
   const gpuHeader = el('div', 'h3-video-toolbar'); gpuHeader.appendChild(el('h3', '', 'GPU memory'));
   const gpuStatus = el('p', 'h3-video-muted', 'Checking live GPU usage…'); gpuStatus.setAttribute('role', 'status');
   const gpuCards = el('div', 'h3-video-grid h3-video-gpu-cards');
-  gpuHeader.appendChild(gpuStatus); gpuPanel.append(gpuHeader, gpuCards,
-    el('p', 'h3-video-muted', 'Usage includes all processes. Placement labels and GPU choices apply to new jobs.'));
+  gpuHeader.appendChild(gpuStatus); gpuPanel.append(gpuHeader, gpuCards);
+  gpuPanel.append(h3WorkflowHelp('GPU help', el('p', 'h3-video-muted', 'Usage includes all processes. GPU choices apply to new jobs.')));
   scroll.appendChild(gpuPanel);
   const inventoryBar = el('div', 'h3-video-toolbar');
   const inventoryStatus = el('p', 'h3-video-muted', 'Checking cached components…');
@@ -313,7 +311,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     },
   });
   form.appendChild(loraEditor.node);
-  const componentPath = el('p', 'h3-video-component-path h3-video-muted'); form.appendChild(componentPath);
+  const componentPath = el('p', 'h3-video-component-path h3-video-muted'); form.appendChild(h3WorkflowHelp('Model path', componentPath));
   const loraCompatibilityError = el('p', 'h3-video-error'); loraCompatibilityError.hidden = true; loraCompatibilityError.setAttribute('role', 'alert'); form.appendChild(loraCompatibilityError);
   const presetBar = el('div', 'h3-video-toolbar'); presetBar.hidden = true;
   const presetStatus = el('p', 'h3-video-muted'); presetStatus.setAttribute('role', 'status');
@@ -338,7 +336,9 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   enhancerPicker.setAttribute('aria-label', 'Enhancement model'); enhancerPicker.disabled = true;
   enhancerPicker.add(new Option('Checking available models…', ''));
   enhancerPickerLabel.appendChild(enhancerPicker); promptGroup.appendChild(enhancerPickerLabel);
-  const enhancerContext = el('p', 'h3-video-muted'); promptGroup.appendChild(enhancerContext);
+  const enhancerContext = el('p', 'h3-video-muted');
+  const enhancerHelp = h3WorkflowHelp('Enhancement help', enhancerContext); enhancerHelp.id = 'h3-enhancement-help'; promptGroup.appendChild(enhancerHelp);
+  const enhancerIssue = el('p', 'h3-video-muted'); enhancerIssue.id = 'h3-enhancement-issue'; enhancerIssue.hidden = true; enhancerIssue.setAttribute('role', 'status'); promptGroup.appendChild(enhancerIssue);
   const enhancerStatus = el('p', 'h3-video-muted', 'Checking enhancement models…');
   enhancerStatus.setAttribute('role', 'status'); enhancerStatus.setAttribute('aria-live', 'polite');
   const refreshEnhancer = button('Check models');
@@ -392,7 +392,6 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
       } }, serverFiles);
     };
     wrap.append(heading, input); if (serverFiles) wrap.append(serverFiles); wrap.append(list);
-    if (key === 'reference_videos') wrap.append(el('p', 'h3-video-muted', 'Choose any 2–15 second section of a longer video. Across multiple references, the selected sections must total at most 15 seconds. Choose a generation length at least as long as the section to use all of it.'));
     inputArea.appendChild(wrap); uploads[key] = state;
   }
   upload('first_frame', 'First frame', 'image/jpeg,image/png,image/webp', false, 'fl2va');
@@ -401,7 +400,8 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   upload('reference_images', 'Reference images', 'image/jpeg,image/png,image/webp', true, 'ref2va');
   upload('reference_videos', 'Reference videos', 'video/*', true, 'ref2va');
   upload('reference_audio', 'Reference audio (optional)', 'audio/*', true, 'ref2va');
-  const modeHelp = el('p', 'h3-video-muted'); form.appendChild(modeHelp);
+  const modeHelp = el('p', 'h3-video-muted'), referenceLengthHelp = el('p', 'h3-video-muted', 'Choose a 2–15 second section from each reference video; selected sections must total at most 15 seconds. Generation length limits how much reference content is used.');
+  const referenceHelp = h3WorkflowHelp('Reference help', modeHelp, referenceLengthHelp); referenceHelp.id = 'h3-reference-help'; form.appendChild(referenceHelp);
   const vfxInputError = el('p', 'h3-video-error'); vfxInputError.hidden = true; vfxInputError.setAttribute('role', 'alert'); form.appendChild(vfxInputError);
   const dimensions = el('div', 'h3-video-grid h3-video-numbers'); form.appendChild(dimensions);
   number(dimensions, 'width', 'Width', 960, 256, 1920, 32);
@@ -409,12 +409,12 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   select(dimensions, 'frames', 'Length at 24 fps', [73, 90, 107, ...Array.from({ length: 15 }, (_, index) => 124 + 17 * index)]
     .map(frames => [String(frames), `${(frames / 24).toFixed(2)} seconds · ${frames} frames`]));
   fields.frames.value = '124';
-  const sourceTimingHelp = el('small', 'h3-video-muted', 'Matches source video. Its aspect ratio is preserved within the Width × Height pixel budget.');
+  const sourceTimingHelp = el('small', 'h3-video-muted', 'Matches source duration.');
   sourceTimingHelp.hidden = true; fields.frames.parentElement.appendChild(sourceTimingHelp);
   number(dimensions, 'steps', 'Steps', 20, 1, 100);
   number(dimensions, 'seed', 'Seed', 42, 0, 4294967295);
   select(dimensions, 'gpu', 'Model / encoder GPU');
-  select(dimensions, 'vae_gpu', 'VAE GPU', [['', 'Same as model GPU']], 'Runs video/audio VAE encoding and decoding on this GPU. Select the 4090 to keep VAEs separate from the 5090 model.');
+  select(dimensions, 'vae_gpu', 'VAE GPU', [['', 'Same as model GPU']], 'GPU for video/audio encoding and decoding.');
   const gpuSelectionError = el('p', 'h3-video-error'); gpuSelectionError.hidden = true; form.appendChild(gpuSelectionError);
   const advanced = el('details', 'h3-video-advanced');
   advanced.appendChild(el('summary', '', 'Advanced'));
@@ -428,7 +428,6 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   const actions = el('div', 'h3-video-actions');
   const generate = button('Generate video', 'cookbook-btn'); generate.type = 'submit'; generate.disabled = true;
   actions.appendChild(generate); form.appendChild(actions);
-  form.appendChild(el('p', 'h3-video-muted', 'Jobs render one at a time in submission order, shared with BFS workflows. Keep editing this draft to add more jobs; each submission saves its own prompt, settings, and files.'));
   const submissionStatus = el('p', 'h3-video-muted h3-video-submission-status');
   submissionStatus.setAttribute('role', 'status'); submissionStatus.setAttribute('aria-live', 'polite'); submissionStatus.hidden = true;
   form.appendChild(submissionStatus);
@@ -438,10 +437,18 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   const jobStatus = el('p', 'h3-video-muted', 'Loading jobs…'); jobStatus.setAttribute('role', 'status'); scroll.appendChild(jobStatus);
   const queueContainer = el('div'); scroll.appendChild(queueContainer);
   const jobList = el('div', 'h3-video-jobs'); scroll.appendChild(jobList);
+  jobPager = createVideoJobPager({ container: scroll, beforeNode: jobList, request, isClosed: () => closed,
+    onData: async data => {
+      queueControls?.update(data.queue); jobs = data.jobs.filter(job => !deletedJobs.has(job.id)); renderJobs();
+      await observePagedVideoJobEditor(jobEditor, data.legacyJobs || jobs, request, () => closed);
+      if (!closed) updateReady();
+    },
+    onError: error => { jobStatus.textContent = `Could not refresh jobs: ${error.message}`; },
+  });
   overlay.appendChild(dialog); document.body.appendChild(overlay);
   const reruns = createVideoJobReruns({ family: 'h3', request, isClosed: () => closed,
     isBlocked: () => !!queueControls?.busy || !!queueControls?.editing, onChange: () => renderJobs(),
-    onQueued: async result => { queueControls?.update(result.queue); await loadJobs(); },
+    onQueued: async result => { queueControls?.update(result.queue); await loadJobs({ reset: true }); },
   });
 
   const setError = message => {
@@ -536,7 +543,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     const videos = batchVideoField()==='reference_videos'?1:uploads.reference_videos.files.length;
     if(fields.mode.value==='ref2va'&&!isVfxEdit()&&!images&&!videos)return 'Audio-only batches need a shared reference image or video.';
     if(fields.mode.value==='fl2va'&&batchVideoField()==='copies'&&!inputCount('first_frame')&&!inputCount('last_frame'))return 'Attach a first or last frame before creating copies.';
-    if (images > 9 || videos > 3 || audio > 3 || images + audio + videos > 12) return 'Each batch job supports up to 9 reference images, 3 reference videos, 3 reference audio files, and 12 references total. The VFX source video is separate.';
+    if (images > 9 || videos > 3 || audio > 3 || images + audio + videos > 12) return `Each batch job supports up to 9 images, 3 videos, 3 audio files, and 12 references total.${isVfxEdit() ? ' The source video is separate.' : ''}`;
     if (!form.checkValidity()) return 'Check the video settings before adding the batch.';
     return '';
   }
@@ -565,7 +572,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     generate.hidden = batching;
     fields.frames.disabled = isVfxEdit() || (batching && batchQueue?.autoVideoLength === true);
     sourceTimingHelp.hidden = !fields.frames.disabled;
-    sourceTimingHelp.textContent = isVfxEdit() ? 'Matches source video. Its aspect ratio is preserved within the Width × Height pixel budget.'
+    sourceTimingHelp.textContent = isVfxEdit() ? 'Matches source duration.'
       : 'Each batch video gets its own length after upload. The chosen length appears beside its queued receipt.';
     updateInputs();
     fields.mode.disabled = fields.model.disabled = batchBusy;
@@ -577,7 +584,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     useInstalledPreset.disabled = !inventory?.installed_preset || inventoryLoading || queueBusy || !!queueControls?.editing || editing || editLoading || batchBusy || transferBusy || enhancing || submitting;
     exportWorkflow.disabled = importWorkflow.disabled = queueBusy || editing || editLoading || batchBusy || transferBusy || enhancing || submitting || !inventory;
     importWorkflow.textContent = transferBusy ? 'Importing workflow…' : 'Import workflow';
-    generate.textContent = submitting ? editing ? 'Saving changes…' : 'Uploading and adding job…' : editing ? 'Save changes' : jobs.some(job => ACTIVE.has(job.status)) ? 'Add to queue' : 'Generate video';
+    generate.textContent = submitting ? editing ? 'Saving changes…' : 'Uploading and adding job…' : editing ? 'Save changes' : ((jobPager?.counts.running || 0) + (jobPager?.counts.queued || 0)) ? 'Add to queue' : 'Generate video';
     const issue = batchIssue();
     const snapshotReason = editing || editLoading ? 'Finish editing the queued job before adding a batch.' : inventory && inventory.batch_jobs !== true ? 'Batch jobs need the updated Odysseus server. Restart the server after active transfers finish.'
       : queueBusy || inventoryLoading || transferBusy || enhancing || submitting ? 'Wait for the current operation to finish.'
@@ -613,7 +620,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
       const count = uploads.reference_images.files.length;
       enhancerContext.textContent = `${count ? `Sends ${count} reference image${count === 1 ? '' : 's'} to the selected enhancement model.` : 'No reference images attached for enhancement.'} ${batchActive() ? 'Batch enhancement describes one video per job. ' : ''}Video and audio references provide counts only; their contents are not sent.`;
     } else enhancerContext.textContent = 'Enhancement uses your prompt and video settings. Text mode does not send attached images.';
-    if (retainedImages) enhancerContext.textContent = 'Saved images stay attached to this job. To use Enhance prompt with their image context, select those images again first.';
+    enhancerIssue.textContent = retainedImages ? 'Reattach saved images to include them in prompt enhancement.' : ''; enhancerIssue.hidden = !retainedImages;
     if (isVfxEdit() && !retainedImages) enhancerContext.textContent = `Enhancement makes a concise VFX edit instruction${uploads.reference_images.files.length ? ' and sends your reference images for context' : ''}. Source and reference video/audio contents are not sent; describe their roles in your prompt. The source video is not a numbered reference.`;
   }
   function enhancementPayload() {
@@ -648,9 +655,9 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     const selected = selectedEnhancer();
     enhancerStatus.title = enhancerSelection?.model || '';
     enhancerStatus.textContent = selected
-      ? `Prompt enhancer: ${enhancerName(selected.label || selected.model)}${selected.endpoint_label ? ` · ${selected.endpoint_label}` : ''}. Click Enhance prompt to rewrite your text.`
-      : enhancerSelection ? 'Your selected enhancer is unavailable. Check models or choose another model; your selection will not be replaced automatically.'
-        : (enhancer?.reason || 'Choose an enhancement model. The loaded Qwen3.8 27B is used by default when available.');
+      ? 'Ready to enhance.'
+      : enhancerSelection ? 'Selected enhancer unavailable. Check models or choose another.'
+        : (enhancer?.reason || 'Choose an enhancement model.');
   }
   enhancerPicker.addEventListener('change', () => {
     const selected = enhancer?.models?.find(item => selectionKey(item) === enhancerPicker.value);
@@ -766,7 +773,8 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     fields.reference_size.disabled = fields.mode.value !== 'ref2va';
     if(inventory)batchQueue?.setInputChoices?.(h3BatchInputChoices(fields.mode.value,isVfxEdit()));
     if(isVfxEdit())batchQueue?.setVideoField?.('source_video');
-    modeHelp.textContent = vfx ? 'VFX Edit changes one source video and retains its original sound. Add optional reference images, videos or audio and describe their roles with <Picture 1>, <Video 1> or <Audio 1>. The source video is a separate guide, not <Video 1>. Use Batch job for one source per job with the same references.' : fields.mode.value === 'fl2va' ? 'Choose a first frame, a last frame, or both to guide the video.' : fields.mode.value === 'ref2va' ? 'Add an image or video, with optional audio. In your prompt, use <Picture 1>, <Video 1>, or <Audio 1> to reference uploads. Clips: 2–15 seconds, with 15 seconds total per video/audio type.' : 'Text mode uses the first / last frame model without image inputs.';
+    modeHelp.textContent = vfx ? 'VFX Edit uses one source video and preserves its duration and sound. Short clips are padded internally for processing, then trimmed to the source duration. Optional references use <Picture 1>, <Video 1> or <Audio 1>; the source is separate.' : fields.mode.value === 'fl2va' ? 'Choose a first frame, a last frame, or both.' : fields.mode.value === 'ref2va' ? 'Use <Picture 1>, <Video 1> or <Audio 1> in your prompt to identify each reference. Add at least one image or video; audio is optional.' : 'Text mode generates from the prompt without image inputs.';
+    referenceLengthHelp.hidden = fields.mode.value !== 'ref2va';
     const current = models.find(item => item.id === fields.model.value);
     componentPath.textContent = current?.path || '';
     componentPath.title = current?.path || '';
@@ -883,11 +891,11 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     } finally { inventoryLoading = false; if (!closed) updateReady(); }
   }
   function renderJobs() {
-    const running = jobs.filter(job => job.status === 'running').length, queued = jobs.filter(job => job.status === 'queued').length;
-    jobStatus.textContent = jobs.length ? `${running} rendering · ${queued} queued here. Jobs and outputs are saved on the server. Closing this panel does not change the queue.` : 'No H3 video jobs yet.';
+    const running = jobPager?.counts.running || 0, queued = jobPager?.counts.queued || 0;
+    jobStatus.textContent = (jobPager?.total || Object.values(jobPager?.counts || {}).some(Boolean)) ? `${running} rendering · ${queued} queued` : 'No H3 video jobs yet.';
     const ids = new Set(jobs.map(job => job.id));
-    for (const [id, nodes] of jobNodes) if (!ids.has(id)) { nodes.card.remove(); jobNodes.delete(id); }
-    for (const [index, job] of [...jobs].sort(jobOrder).entries()) {
+    for (const [id, nodes] of jobNodes) if (!ids.has(id)) { releaseVideoJobMedia(nodes.card); nodes.card.remove(); jobNodes.delete(id); }
+    for (const [index, job] of jobs.entries()) {
       let nodes = jobNodes.get(job.id);
       if (!nodes) {
         const card = el('article', 'h3-video-job'); card.dataset.jobId = job.id;
@@ -984,23 +992,14 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
         // Keep media URLs on the authenticated job endpoint, never an arbitrary
         // provider URL from model metadata or a persisted job record.
         const url = `${API}/jobs/${encodeURIComponent(job.id)}/video`;
-        const video = el('video'); video.controls = true; video.playsInline = true; video.preload = 'metadata'; video.src = url;
+        const video = createVideoJobMedia(url);
         const download = el('a', 'memory-toolbar-btn', 'Download MP4'); download.href = url; download.download = job.filename || 'odysseus-h3.mp4';
-        nodes.output.append(video, download);
+        nodes.output.append(video.node, download);
       }
     }
     updateReady();
   }
-  async function loadJobs() {
-    if (polling || closed) return;
-    polling = true; refreshJobs.disabled = true;
-    try {
-      const result = await request('/jobs'); if (closed) return;
-      queueControls?.update(result.queue);
-      jobs = Array.isArray(result.jobs) ? result.jobs.filter(job => !deletedJobs.has(job.id)) : []; renderJobs();
-    } catch (e) { if (!closed) jobStatus.textContent = `Could not refresh jobs: ${e.message}`; }
-    finally { polling = false; if (!closed) refreshJobs.disabled = false; }
-  }
+  function loadJobs(options = {}) { return jobPager.load(options); }
   async function stopJob(id) {
     if (queueControls?.busy || pendingStops.has(id)) return;
     pendingStops.add(id); setError(''); renderJobs();
@@ -1023,7 +1022,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
       deletedJobs.add(id); jobs = jobs.filter(job => job.id !== id); renderJobs(); refreshJobs.focus();
     } catch (e) {
       if (!closed) { nodes.deleteError.textContent = `Could not delete job: ${e.message}`; nodes.deleteError.hidden = false; }
-    } finally { pendingDeletes.delete(id); if (!closed) renderJobs(); }
+    } finally { pendingDeletes.delete(id); if (!closed) await loadJobs(); }
   }
   exportWorkflow.onclick = () => {
     const issue = vfxInputsIssue(); if (issue) { setError(issue); return; }
@@ -1090,7 +1089,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
       const result = await request(editing ? `/jobs/${encodeURIComponent(editing.id)}` : '/jobs', { method: editing ? 'PATCH' : 'POST', body }); if (closed) return;
       const job = result.job || result;
       if (editing) jobEditor.finish();
-      jobs = [job, ...jobs.filter(item => item.id !== job.id)]; renderJobs();
+      await loadJobs({ reset: !editing });
       submissionStatus.textContent = editing ? `Changes saved to job ${job.id}. Its place in the queue is unchanged. Your previous draft has been restored.` : `Job ${job.id} ${job.status === 'queued' ? 'added to the queue' : 'accepted'}. Its prompt, settings, and files are saved. This draft is ready to edit and submit again.`;
       submissionStatus.hidden = false; submissionStatus.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     } catch (e) { if (!closed) { if (editing) jobEditor.failed(e); else setError(e.message); } }
@@ -1100,7 +1099,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   fields.mode.addEventListener('change', () => { updateMode(); if (applyInstalledPreset({ automatic: true })) updateMode(); });
   useInstalledPreset.onclick = () => { if (applyInstalledPreset()) { updateMode(); updateReady(); } };
   form.addEventListener('change', () => { save(); updateReady(); renderGpuUsage(); });
-  refresh.onclick = () => loadInventory(); refreshJobs.onclick = loadJobs;
+  refresh.onclick = () => loadInventory(); refreshJobs.onclick = () => loadJobs({ reset: true });
   const onKey = event => {
     if (document.querySelector('.video-workflow-export-overlay, .video-server-files-overlay, .h3-lora-library-overlay')) return;
     if (event.key === 'Escape') {
@@ -1123,7 +1122,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     closed = true; clearInterval(timer); window.removeEventListener('keydown', onKey, true);
     serverPicker?.close();
     loraLibrary?.close();
-    batchQueue?.destroy(); queueControls?.destroy();
+    batchQueue?.destroy(); queueControls?.destroy(); jobPager?.destroy(); releaseVideoJobMedia(jobList);
     Object.values(uploads).forEach(state => state.rangeEditors.forEach(editor => editor.destroy()));
     enhancementController?.abort();
     gpuController?.abort();
@@ -1166,7 +1165,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   });
   batchQueue = createVideoBatchQueue({
     family: 'h3', container: batchContainer, getSnapshot: batchSnapshot,
-    onJob: job => { if (!closed) { jobs = [job, ...jobs.filter(item => item.id !== job.id)]; renderJobs(); } },
+    onJob: () => { if (!closed) loadJobs({ reset: true }); },
     onChange: () => { if (!closed) { editRevision++; updateReady(); } },
   });
   queueControls = createVideoQueueControls({

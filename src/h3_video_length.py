@@ -114,10 +114,10 @@ def select_batch_video_length(config, uploads):
             capped = True
         if ranges:
             duration = selected_duration(duration, ranges[0])
-    if duration < 2 - 1e-3 or duration > MAX_SOURCE_SECONDS:
+    if vfx and duration > MAX_SOURCE_SECONDS:
+        raise ValueError(f"This source video is {duration:.3f} seconds long; VFX Edit sources must not exceed 15 seconds")
+    if not vfx and (duration < 2 - 1e-3 or duration > MAX_SOURCE_SECONDS):
         raise ValueError(f"This video is {duration:.3f} seconds long; H3 reference videos must be 2–15 seconds. Trim the clip before adding it to the batch.")
-    if vfx and probe["source_frames"] < 73:
-        raise ValueError("Automatic batch length: VFX Edit needs at least 73 source frames at 24 fps (about 3.05 seconds)")
     # VFX already pads the resampled source and removes that padding from the
     # output. Ordinary references need a ceiling, so their tail is not cut off.
     required = probe["source_frames"] if vfx else math.ceil(duration * FPS - 1e-8)
@@ -129,6 +129,8 @@ def select_batch_video_length(config, uploads):
     metadata = {"duration_seconds": duration, "frames": frames, "selected_seconds": selected,
                 "source_field": field, "capped": capped, "preserve_source_duration": vfx,
                 "output_seconds": probe["source_frames"] / FPS if vfx else selected}
+    if vfx:
+        metadata.update(source_frames=probe["source_frames"], padding_frames=frames - probe["source_frames"])
     if ranges:
         metadata.update(source_duration_seconds=probe["duration_seconds"],
                         reference_video_range=ranges[0])

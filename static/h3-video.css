@@ -200,3 +200,16 @@
   display:inline-flex; flex:0 0 28px; width:28px; height:28px;
   min-width:28px; padding:0; margin-left:4px; vertical-align:middle;
 }
+
+.video-job-pager { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:12px 0; flex-wrap:wrap; }
+.video-job-pager > button { min-height:44px; min-width:76px; }
+.video-job-pager > span { flex:1; text-align:center; }
+.video-job-media { margin:10px 0; }
+.video-job-media > button { min-height:44px; }
+.h3-video-dialog .h3-workflow-help { margin:8px 0; font-size:13px; padding:0; background:transparent; border:0; overflow:visible; }
+.h3-workflow-help > summary { cursor:pointer; color:var(--muted,#aaa); padding:4px 0; width:fit-content; max-width:100%; background:transparent; border:0; border-radius:4px; }
+.h3-workflow-help > summary:focus-visible { outline:2px solid var(--accent,var(--red)); outline-offset:3px; }
+.h3-workflow-help > p { margin:8px 0; padding:0; }
+@media (max-width:480px) {
+  .video-job-pager > span { flex-basis:100%; order:-1; }
+}

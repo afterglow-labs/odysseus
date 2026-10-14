@@ -161,23 +161,24 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
   label.append(toggle, node('strong', '', 'Batch job')); panel.appendChild(label);
   const content = node('div', 'video-batch-content'); content.hidden = !toggle.checked; panel.appendChild(content);
   const explanation = node('p', 'h3-video-muted'); content.appendChild(explanation);
+  const help = node('details', 'h3-workflow-help'); help.appendChild(node('summary', '', 'Batch help'));
+  help.appendChild(node('p', 'h3-video-muted', 'Turn Batch job off to combine multiple references in one job. Each queued job saves its own prompt and settings.'));
   let videoField = retained?.inputField || fieldFor(family), choices = [], serverAvailable = false;
   const typeLabel=node('label','h3-video-field'), typeSelect=node('select','cookbook-field-input');typeSelect.setAttribute('aria-label','Batch input');typeLabel.append(node('span','','Batch input'),typeSelect);typeLabel.hidden=true;content.append(typeLabel);
   const lengthLabel = node('label', 'video-batch-toggle'), autoLength = node('input'); autoLength.type = 'checkbox'; autoLength.dataset.batchAutoLength = '';
   autoLength.checked = retained?.autoVideoLength ?? true;
   lengthLabel.append(autoLength, node('span', '', 'Automatically match each video’s length'));
-  const lengthHelp = node('p', 'h3-video-muted'); content.append(lengthLabel, lengthHelp);
+  const lengthHelp = node('p', 'h3-video-muted'); content.appendChild(lengthLabel); help.appendChild(lengthHelp);
   function describeVideoField(field) {
     videoField = field;
     const kind=inputKind(field),noun=kind==='copy'?'copies':`${kind}s`;
-    explanation.textContent = field==='copies' ? 'Repeat this draft as separate jobs, including its attached inputs, prompt, settings and seed.'
-      : `One ${kind} per job. Other inputs, prompt and settings are shared. Turn Batch job off to combine multiple references in one job.`;
-    if(field==='source_video')explanation.textContent+=recipe==='seed_hunter'?' Each video is a separate continuation source.':' Each video is the VFX source to edit.';
+    explanation.textContent = field==='copies' ? 'One copy per job, using this draft’s inputs and settings.'
+      : `One ${kind} per job · shared prompt and settings.`;
     lengthLabel.hidden = family !== 'h3' || field !== 'reference_videos';
     lengthHelp.hidden = family !== 'h3' || !['reference_videos','source_video'].includes(field);
     lengthHelp.textContent = field === 'source_video'
-      ? recipe==='seed_hunter'?'Each source uses the continuation length and overlap chosen above.':'VFX Edit automatically matches each source video’s length.'
-      : autoLength.checked ? 'Each video automatically gets its own supported output length. No manual timing is required. Choose a section only when you want a different part.'
+      ? recipe==='seed_hunter'?'Uses the selected continuation length and overlap.':'Matches each source video’s duration.'
+      : autoLength.checked ? 'Automatic length per video; optional section selection below.'
         : 'Every video uses the generation length selected in this draft.';
     input.accept={video:'.mp4,.mov,.m4v,.webm,.mkv,.avi',image:'.png,.jpg,.jpeg,.webp',audio:'.wav,.mp3,.flac,.m4a,.aac,.ogg,.opus'}[kind]||'';
     drop.hidden=kind==='copy';repeatControls.hidden=kind!=='copy';dropTitle.textContent=`Drop all your ${noun} here`;dropHelp.textContent=`or click to select multiple ${noun}`;drop.setAttribute('aria-label',`Add batch ${noun}`);
@@ -198,7 +199,7 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
   const actions = node('div', 'h3-video-actions video-batch-actions');
   const queueButton = action('Queue videos'), retryButton = action('Retry failed'), pauseButton = action('Pause adding'), newBatchButton = action('New batch'), clearButton = action('Clear list');
   queueButton.className = 'cookbook-btn'; actions.append(queueButton, retryButton, pauseButton, newBatchButton, clearButton); content.appendChild(actions);
-  content.appendChild(node('p', 'h3-video-muted', 'Uploads run one at a time in the listed order; queued jobs render on the server. Pause or closing this panel stops adding after the current upload finishes. Reopen it to resume with the saved prompt and settings. Refreshing the page loses files not yet queued. Clearing this list does not delete server jobs. You can start another batch with a different prompt and settings while earlier jobs render.'));
+  help.appendChild(node('p', 'h3-video-muted', 'Uploads run in order. Pause or Close stops adding after the current upload; reopening resumes this batch. Refreshing the page loses files not yet queued. Clear list keeps server jobs. Start another batch while earlier jobs render.')); content.appendChild(help);
   container.appendChild(panel);
   let available = true, enabled = false, reason = '', snapshotEnabled = true, snapshotReason = '', destroyed = false, previousBusy = false;
   const rows = new Map();

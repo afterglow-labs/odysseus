@@ -1,3 +1,5 @@
+import { createVideoJobPager, observePagedVideoJobEditor } from './videoJobPage.js';
+import { createVideoJobMedia, releaseVideoJobMedia } from './videoJobMedia.js';
 import { bindMenuDismiss, dismissOrRemove } from './escMenuStack.js';
 import { bindSeedHunterHelp } from './seedHunterHelp.js';
 import { topPortalZ } from './toolWindowZOrder.js';
@@ -88,7 +90,7 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
   document.querySelectorAll('.h3-seed-hunter-overlay').forEach(dismissOrRemove);
   if (!document.getElementById('h3-video-styles')) { const css = make('link'); css.id = 'h3-video-styles'; css.rel = 'stylesheet'; css.href = '/static/h3-video.css'; document.head.append(css); }
   let saved = {}; try { saved = JSON.parse(localStorage.getItem(STORAGE) || '{}'); } catch {}
-  let inventory = null, jobs = [], closed = false, busy = false, loading = false, polling = false, revision = 0;
+  let inventory = null, jobs = [], closed = false, busy = false, loading = false, jobPager = null, revision = 0;
   let picker, library, queue, batchQueue, jobEditor, editingComponents = null, selection = null, finalRequest = null, finalBusy = false;
   let restoredRangeConfig = {}, optionSnapshot = {}, selecting = 0, finalComponents = [], enhancer = [], enhancing = false, enhancerController, previousPrompt = null;
   const fields = {}, options = {}, uploads = {}, finalFields = {}, jobNodes = new Map();
@@ -96,7 +98,7 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
   const dialog = make('section', 'cookbook-edit-modal h3-video-dialog h3-seed-hunter-dialog'); dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true'); dialog.setAttribute('aria-label', 'H3 Seed Hunter');
   const header = make('div', 'h3-video-header'), closeButton = button('Close'); header.append(make('h2', '', 'H3 Seed Hunter'), closeButton);
   const scroll = make('div', 'h3-video-scroll'); dialog.append(header, scroll); overlay.append(dialog); document.body.append(overlay);
-  scroll.append(make('p', 'h3-video-target', `Local Odysseus server · ${window.location.host}`), make('p', 'h3-video-description', 'Generate previews, choose a result, then refine its saved latent at a higher resolution. Each stage enters the shared video queue.'));
+  scroll.append(make('p', 'h3-video-target', `Local Odysseus server · ${window.location.host}`), make('p', 'h3-video-description', 'Generate previews, then refine a selected result.'));
   const status = make('p', 'h3-video-muted', 'Checking Seed Hunter components…'); status.setAttribute('role', 'status');
   const error = make('p', 'h3-video-error'); error.hidden = true; error.setAttribute('role', 'alert');
   const toolbar = make('div', 'h3-video-toolbar'), refresh = button('Refresh components'), exportButton = button('Export workflow'), importButton = button('Import workflow');
@@ -175,7 +177,7 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
     input.onchange = () => { try { add([...input.files]); } catch (e) { fail(e); } input.value = ''; };
     if (server) server.onclick = () => { picker?.close(); picker = showVideoServerFiles({ family: 'h3', multiple, onSelect: add }, server); };
     wrap.addEventListener('dragover', event => { event.preventDefault(); }); wrap.addEventListener('drop', event => { event.preventDefault(); try { add([...event.dataTransfer.files]); } catch (e) { fail(e); } });
-    wrap.append(title, input); if (server) wrap.append(server); wrap.append(list); if(key==='reference_videos')wrap.append(make('p','h3-video-muted','Choose any 2–15 second section of a longer video. Across multiple references, selected sections must total at most 15 seconds. Choose a generation length at least as long as the section to use all of it.')); media.append(wrap); return state;
+    wrap.append(title, input); if (server) wrap.append(server); wrap.append(list); media.append(wrap); return state;
   }
   upload('source_video', 'Continuation source video', 'video/*', false, 1);
   upload('first_frame','First-frame guide (optional; otherwise Picture 1)','image/*',false,1);upload('last_frame','Last-frame guide (optional; otherwise Picture 2)','image/*',false,1);
@@ -188,11 +190,34 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
   select(finalGrid, 'latent_upscaler', 'Latent upscaler', [], finalFields); number(finalGrid, 'width', 'Final width', 1088, 64, 4096, 32, finalFields); number(finalGrid, 'height', 'Final height', 1952, 64, 4096, 32, finalFields);
   number(finalGrid, 'steps', 'Refinement steps', 2, 1, 100, 1, finalFields); number(finalGrid, 'seed', 'Refinement seed', 42, 0, Number.MAX_SAFE_INTEGER, 1, finalFields); number(finalGrid, 'denoise', 'Denoise', .4, 0, 1, .05, finalFields);
   select(finalGrid, 'sampler', 'Refinement sampler', [['er_sde','ER-SDE'],['euler','Euler'],['res_multistep','RES multistep']], finalFields); select(finalGrid, 'scheduler', 'Refinement scheduler', [['linear_quadratic','Linear quadratic'],['beta','Beta'],['simple','Simple'],['normal','Normal']], finalFields);
-  const finalLoras = createH3LoraEditor({ idPrefix: 'seed-hunter-final', onChange: () => { finalRequest = null; save(); } }); finalForm.append(make('p', 'h3-video-muted', 'This stack applies only to refinement. It starts with the preview’s saved LoRAs.'), finalLoras.node);
+  const finalLoras = createH3LoraEditor({ idPrefix: 'seed-hunter-final', onChange: () => { finalRequest = null; save(); } }); finalForm.append(finalLoras.node);
   const finalActions = make('div', 'h3-video-actions'), finalSubmit = button('Render selected preview'), finalReroll = button('Randomize refinement seed'), cancelSelection = button('Clear selection'); finalSubmit.dataset.seedHunterHelpAction = 'refine_preview'; finalSubmit.type = 'submit'; finalSubmit.className = 'cookbook-btn'; finalActions.append(finalSubmit, finalReroll, cancelSelection); finalForm.append(finalActions);
   finalReroll.onclick = () => { finalFields.seed.value = randomSeed(); finalRequest = null; save(); }; cancelSelection.onclick = () => { selecting++; selection = null; finalRequest = null; finalSection.hidden = true; save(); renderJobs(); };
   finalForm.addEventListener('input', () => { finalRequest = null; save(); }); finalForm.addEventListener('change', () => { finalRequest = null; save(); });
   const jobToolbar = make('div', 'h3-video-toolbar'), refreshJobs = button('Refresh jobs'); jobToolbar.append(make('h3', '', 'Seed Hunter jobs'), refreshJobs); const jobStatus = make('p', 'h3-video-muted'), jobList = make('div', 'h3-video-jobs'); scroll.append(jobToolbar, jobStatus, jobList);
+  jobPager = createVideoJobPager({ container: scroll, beforeNode: jobList, request, recipe: 'seed_hunter', isClosed: () => closed,
+    onData: async data => {
+      jobs = data.jobs; queue?.update(data.queue); renderJobs();
+      await observePagedVideoJobEditor(jobEditor, data.legacyJobs || jobs, request, () => closed);
+      if (!closed) update();
+      if (saved.selected && !selection && inventory) {
+        const remembered = saved.selected;
+        let job = (data.legacyJobs || jobs).find(job => job.id === remembered.job_id);
+        if (!job) {
+          try { job = await request(`/jobs/${encodeURIComponent(remembered.job_id)}`); }
+          catch (error) {
+            if (error.status !== 404) throw error;
+            if (!closed && saved.selected === remembered) { saved.selected = null; save(); }
+            return;
+          }
+        }
+        if (closed || selection || saved.selected !== remembered) return;
+        const candidate = job.seed_hunter?.candidates?.find(item => item.index === remembered.index);
+        saved.selected = null;
+        if (candidate?.can_refine) await selectCandidate(job, candidate, true); else save();
+      }
+    }, onError: error => { jobStatus.textContent = `Could not refresh jobs: ${error.message}`; },
+  });
   const disposeHelp = bindSeedHunterHelp(overlay);
   function fail(reason) { error.textContent = reason?.message || String(reason || ''); error.hidden = !error.textContent; }
   function readOptions() { return {...optionSnapshot, refmod_strengths:uploads.reference_mods?[...uploads.reference_mods.retained,...uploads.reference_mods.files].map((_,i)=>uploads.reference_mods.strengths[i]??1):[], ...Object.fromEntries(Object.keys(options).map(key => { const n = options[key]; return [key, n.type === 'checkbox' ? n.checked : n.type === 'number' || ['continuation_overlap','output_fps'].includes(key) ? (n.value === '' ? null : Number(n.value)) : n.value]; }))}; }
@@ -294,7 +319,7 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
       loras.setInventory(effectiveComponents(), data.max_loras || 8); loras.setValue(h3LoraStack(before));
       fill(finalFields.latent_upscaler, data.components.filter(c => c.role === 'latent_upscaler'), finalFields.latent_upscaler.value || saved.final_config?.latent_upscaler);
       if (first) { prompt.value = before.prompt || ''; for (const key of ['dialogue_text','dialogue_tone','dialogue_template']) if (saved[key] !== undefined) fields[key].value = saved[key]; }
-      status.textContent = !data.seed_hunter ? 'Seed Hunter needs the updated Odysseus server.' : !data.runtime_ready ? data.runtime_error || 'H3 runtime unavailable.' : 'Seed Hunter is ready. Preview and refinement are separate submissions.';
+      status.textContent = !data.seed_hunter ? 'Seed Hunter needs the updated Odysseus server.' : !data.runtime_ready ? data.runtime_error || 'H3 runtime unavailable.' : 'Seed Hunter is ready.';
     } catch (e) { fail(e); } finally { loading = false; if (!closed) update(); }
   }
   form.addEventListener('input', changed); form.addEventListener('change', changed);
@@ -313,7 +338,7 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
         catch (e) { jobEditor.failed(e); return; }
       }
       else { const body = new FormData(); body.append('config', JSON.stringify(values)); appendVideoInputs(body, currentUploads()); await request('/jobs', { method: 'POST', body }); }
-      if (!closed) { status.textContent = editedJobId ? 'Changes saved to the queued job. Its queue position is unchanged, and your previous draft has been restored.' : 'Job added to the shared video queue. Your draft remains available.'; await loadJobs(); }
+      if (!closed) { status.textContent = editedJobId ? 'Changes saved to the queued job. Its queue position is unchanged, and your previous draft has been restored.' : 'Job added to the shared video queue. Your draft remains available.'; await loadJobs({ reset: !editedJobId }); }
     } catch (e) { fail(e); } finally { busy = false; if (!closed) update(); }
   });
   async function selectCandidate(job, candidate, remembered = false) {
@@ -338,39 +363,41 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
     const current = { candidate: selection.index, config: values };
     if (!finalRequest || finalRequest.source !== selection.job_id || JSON.stringify(finalRequest.payload) !== JSON.stringify(current)) finalRequest = { source: selection.job_id, payload: clone(current), request_id: crypto.randomUUID() };
     save(); finalBusy = true; update(); error.hidden = true;
-    try { const result=await request(`/jobs/${encodeURIComponent(finalRequest.source)}/seed-hunter/finalize`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...finalRequest.payload, request_id: finalRequest.request_id }) }); if(!result.id&&!result.job?.id)throw new Error('The server did not confirm this refinement.'); finalRequest = null; save(); status.textContent = 'Refinement queued. The saved preview remains available for another variation.'; await loadJobs(); }
+    try { const result=await request(`/jobs/${encodeURIComponent(finalRequest.source)}/seed-hunter/finalize`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...finalRequest.payload, request_id: finalRequest.request_id }) }); if(!result.id&&!result.job?.id)throw new Error('The server did not confirm this refinement.'); finalRequest = null; save(); status.textContent = 'Refinement queued. The saved preview remains available for another variation.'; await loadJobs({ reset: true }); }
     catch (e) { fail(`${e.message} Retry keeps the same submission ID.`); }
     finally { finalBusy = false; if (!closed) update(); }
   };
-  const reruns = createVideoJobReruns({ family: 'h3', request, onChange: () => renderJobs(), onQueued: loadJobs, isClosed: () => closed, isBlocked: () => busy || finalBusy });
+  const reruns = createVideoJobReruns({ family: 'h3', request, onChange: () => renderJobs(), onQueued: () => loadJobs({ reset: true }), isClosed: () => closed, isBlocked: () => busy || finalBusy });
   async function stopJob(job) { try { await request(`/jobs/${job.id}`, { method: 'DELETE' }); await loadJobs(); } catch (e) { fail(e); } }
   function renderJobs() {
-    jobStatus.textContent = `${jobs.filter(j => j.status === 'running').length} rendering · ${jobs.filter(j => j.status === 'queued').length} queued · saved previews stay available after closing this panel.`;
-    for (const [id, node] of jobNodes) if (!jobs.some(j => j.id === id)) { node.card.remove(); jobNodes.delete(id); }
-    for (const job of jobs) {
+    jobStatus.textContent = `${jobPager?.counts.running || 0} rendering · ${jobPager?.counts.queued || 0} queued`;
+    for (const [id, node] of jobNodes) if (!jobs.some(j => j.id === id)) { releaseVideoJobMedia(node.card); node.card.remove(); jobNodes.delete(id); }
+    for (const [index, job] of jobs.entries()) {
       let nodes = jobNodes.get(job.id);
       if (!nodes) {
         const card = make('article', 'h3-video-job'), heading = make('h4'), line = make('p', 'h3-video-muted'), tools = make('div', 'h3-video-job-actions'), stop = button('Stop'), retry = button('Retry'), edit = button('Edit queued job'), editRerun = button('Edit & rerun'), remove = button('Delete job');
         const jobError = make('p', 'h3-video-error'), candidates = make('div', 'h3-seed-hunter-candidates'), output = make('div', 'h3-video-output'), details = make('details'), log = make('pre', 'h3-video-log'), promptDetails = make('details'), usedPrompt = make('pre', 'h3-video-prompt-used');
+        card.dataset.jobId = job.id;
         details.append(make('summary','','Runtime log'), log); promptDetails.append(make('summary','','Prompt used'),usedPrompt); tools.append(stop,retry,edit,editRerun,remove); card.append(heading,line,tools,jobError,candidates,output,promptDetails,details); jobList.append(card);
         const deletion = make('div','h3-video-delete-confirmation'), keep = button('Keep job'), confirm = button('Delete permanently'); deletion.hidden = true; deletion.append(make('p','','Delete this job and its saved previews, latents and outputs?'),keep,confirm); card.append(deletion);
         nodes = {card,heading,line,stop,retry,edit,editRerun,remove,jobError,candidates,output,log,usedPrompt,previews:new Map(),deletion}; jobNodes.set(job.id,nodes);
         stop.onclick = () => stopJob(job); retry.onclick = () => reruns.run(jobs.find(j => j.id===job.id)||job); edit.onclick = () => jobEditor.open(job.id); editRerun.onclick = () => queue.openRerun(job.id,async(source,patch)=>{const result=await reruns.run(source,patch,true);return {result,...reruns.state(source)};});
         remove.onclick=()=>{deletion.hidden=false;};keep.onclick=()=>{deletion.hidden=true;};confirm.onclick=async()=>{confirm.disabled=true;try{const result=await request(`/jobs/${job.id}/record`,{method:'DELETE'});if(!result.deleted)throw new Error('Deletion was not confirmed.');if(selection?.job_id===job.id){selection=null;finalSection.hidden=true;save();}await loadJobs();}catch(e){fail(e);}finally{confirm.disabled=false;}};
       }
+      if (jobList.children[index] !== nodes.card) jobList.insertBefore(nodes.card, jobList.children[index] || null);
       const stageName=job.seed_hunter?.stage||'preview'; nodes.heading.textContent=`${stageName} · ${job.status} · ${job.id}`;nodes.line.textContent=[job.phase,job.total_steps?`Step ${job.step||0}/${job.total_steps}`:''].filter(Boolean).join(' · ');
       const state=reruns.state(job);nodes.retry.hidden=nodes.editRerun.hidden=state.hidden;nodes.retry.disabled=nodes.editRerun.disabled=state.disabled;nodes.retry.textContent=state.label;nodes.edit.hidden=job.status!=='queued';nodes.stop.hidden=!ACTIVE.has(job.status);nodes.remove.hidden=!TERMINAL.has(job.status);
       nodes.jobError.textContent=job.error||state.error||'';nodes.jobError.hidden=!nodes.jobError.textContent;nodes.log.textContent=(job.log_tail||[]).join?.('\n')||job.log_tail||'';if(nodes.usedPrompt.textContent!==job.prompt)nodes.usedPrompt.textContent=job.prompt||'Prompt unavailable.';
-      for(const candidate of job.seed_hunter?.candidates||[]){let c=nodes.previews.get(candidate.index);if(!c){const card=make('section','h3-seed-hunter-candidate'),label=make('h5'),video=make('video'),choose=button('Use this preview'),download=make('a','memory-toolbar-btn','Download preview');video.controls=true;video.playsInline=true;video.preload='metadata';const url=`${API}/jobs/${encodeURIComponent(job.id)}/seed-hunter/candidates/${candidate.index}/video`;video.src=download.href=url;download.download=`h3-preview-${candidate.index}.mp4`;card.append(label,video,choose,download);nodes.candidates.append(card);c={card,label,video,choose};nodes.previews.set(candidate.index,c);choose.onclick=()=>selectCandidate(jobs.find(j=>j.id===job.id)||job,(jobs.find(j=>j.id===job.id)?.seed_hunter?.candidates||[]).find(p=>p.index===candidate.index)||candidate);}
-        if(candidate.audio_url&&!c.audio){const audio=make('audio'),link=make('a','memory-toolbar-btn','Download audio');audio.controls=true;audio.preload='none';audio.src=link.href=`${API}/jobs/${encodeURIComponent(job.id)}/seed-hunter/candidates/${candidate.index}/audio`;link.download=`h3-dialogue-${candidate.index}.flac`;c.card.append(audio,link);c.audio=audio;}
+      for(const candidate of job.seed_hunter?.candidates||[]){let c=nodes.previews.get(candidate.index);if(!c){const card=make('section','h3-seed-hunter-candidate'),label=make('h5'),choose=button('Use this preview'),download=make('a','memory-toolbar-btn','Download preview');const url=`${API}/jobs/${encodeURIComponent(job.id)}/seed-hunter/candidates/${candidate.index}/video`;const player=createVideoJobMedia(url,{label:`Play preview ${candidate.index}`});download.href=url;download.download=`h3-preview-${candidate.index}.mp4`;card.append(label,player.node,choose,download);nodes.candidates.append(card);c={card,label,video:player.media,choose};nodes.previews.set(candidate.index,c);choose.onclick=()=>selectCandidate(jobs.find(j=>j.id===job.id)||job,(jobs.find(j=>j.id===job.id)?.seed_hunter?.candidates||[]).find(p=>p.index===candidate.index)||candidate);}
+        if(candidate.audio_url&&!c.audio){const link=make('a','memory-toolbar-btn','Download audio');link.href=`${API}/jobs/${encodeURIComponent(job.id)}/seed-hunter/candidates/${candidate.index}/audio`;const player=createVideoJobMedia(link.href,{type:'audio',label:'Play audio'});link.download=`h3-dialogue-${candidate.index}.flac`;c.card.append(player.node,link);c.audio=player.media;}
         c.label.textContent=`Preview ${candidate.index} · seed ${candidate.seed}`;c.choose.hidden=!candidate.can_refine;c.choose.disabled=finalBusy;c.card.classList.toggle('selected',selection?.job_id===job.id&&selection.index===candidate.index);c.choose.textContent=selection?.job_id===job.id&&selection.index===candidate.index?'Selected preview':'Use this preview';}
-      if(job.status==='completed'&&stageName!=='preview'&&!(job.seed_hunter?.candidates?.length)&&!nodes.output.childElementCount){const video=make('video');video.controls=true;video.playsInline=true;video.preload='metadata';video.src=`${API}/jobs/${job.id}/video`;nodes.output.append(video);}
+      if(job.status==='completed'&&stageName!=='preview'&&!(job.seed_hunter?.candidates?.length)&&!nodes.output.childElementCount){nodes.output.append(createVideoJobMedia(`${API}/jobs/${encodeURIComponent(job.id)}/video`).node);}
     }
   }
-  async function loadJobs() { if(polling||closed)return;polling=true;try{const data=await request('/jobs');if(closed)return;jobs=(data.jobs||[]).filter(j=>j.seed_hunter||j.recipe==='seed_hunter');queue?.update(data.queue);jobEditor?.observe(jobs);renderJobs();if(saved.selected&&!selection&&inventory){const job=jobs.find(j=>j.id===saved.selected.job_id),candidate=job?.seed_hunter?.candidates?.find(c=>c.index===saved.selected.index);const remembered=saved.selected;saved.selected=null;if(candidate?.can_refine)await selectCandidate(job,candidate,true);else if(remembered)save();}}catch(e){if(!closed)jobStatus.textContent=e.message;}finally{polling=false;}}
-  refresh.onclick=loadInventory;refreshJobs.onclick=loadJobs;
+  function loadJobs(options = {}) { return jobPager.load(options); }
+  refresh.onclick=loadInventory;refreshJobs.onclick=()=>loadJobs({reset:true});
   jobEditor=createVideoJobEditor({form,request,isClosed:()=>closed,isBusy:()=>busy||loading||finalBusy||!!batchQueue?.busy,getDraft:()=>({config:config(),uploads:Object.fromEntries(Object.entries(uploads).map(([key,s])=>[key,[...s.files]]))}),applyEdit:value=>{editingComponents=value.lora_components||null;restore(value.config,{},value.inputs);},restoreDraft:value=>{editingComponents=null;restore(value.config,value.uploads);},onChange:update,onError:fail});
-  batchQueue=createVideoBatchQueue({family:'h3',recipe:'seed_hunter',sessionKey:'h3:seed_hunter',container:batchContainer,getSnapshot:batchSnapshot,onJob:job=>{if(!closed){jobs=[job,...jobs.filter(item=>item.id!==job.id)];renderJobs();}},onChange:()=>{if(!closed){revision++;update();}}});
+  batchQueue=createVideoBatchQueue({family:'h3',recipe:'seed_hunter',sessionKey:'h3:seed_hunter',container:batchContainer,getSnapshot:batchSnapshot,onJob:()=>{if(!closed)loadJobs({reset:true});},onChange:()=>{if(!closed){revision++;update();}}});
   function nestedEditor(onChange, savedConfig) {
     const node=make('div','h3-video-grid'), rows=[];
     const allowed=savedConfig?.seed_hunter?.stage==='final'||!savedConfig ? FINAL_OPTIONS : new Set(Object.keys(options).filter(k=>k!=='stage'));
@@ -391,7 +418,7 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
   enhance.onclick=async()=>{const model=enhancer[Number(enhancerSelect.value)];if(!model||enhance.disabled)return;const before=prompt.value,captured=revision;enhancing=true;enhancerController=new AbortController();update();try{const payload={recipe:'seed_hunter',prompt:before,mode:'ref2va',width:Number(fields.width.value),height:Number(fields.height.value),frames:Number(fields.frames.value),endpoint_id:model.endpoint_id,model:model.model,reference_counts:seedHunterEnhancerInputs(uploads,readOptions()).counts};const body=new FormData();body.append('config',JSON.stringify(payload));for(const [key,files] of Object.entries(seedHunterEnhancerInputs(uploads,readOptions()).images))for(const file of files)body.append(key,file,file.name);const result=await request('/enhance-prompt',{method:'POST',body,signal:enhancerController.signal});if(!closed&&captured===revision&&prompt.value===before){if(!result.prompt?.trim()||result.prompt.length>16000)throw new Error('Enhancement returned no usable prompt.');previousPrompt=before;prompt.value=result.prompt;changed();status.textContent='Prompt enhanced. Review it before generating.';}}catch(e){if(e.name!=='AbortError')fail(e);}finally{enhancing=false;if(!closed)update();}};
   restorePrompt.onclick=()=>{if(previousPrompt!==null){prompt.value=previousPrompt;previousPrompt=null;changed();}};checkModels.onclick=checkEnhancer;
   function onKey(event){if(document.querySelector('.settings-help-tooltip'))return;if(document.querySelector('.video-server-files-overlay,.h3-lora-library-overlay,.video-workflow-export-overlay'))return;if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();}else if(event.key==='Tab'){const controls=[...dialog.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),summary,a[href]')].filter(n=>n.getClientRects().length);if(event.shiftKey&&document.activeElement===controls[0]){event.preventDefault();controls.at(-1)?.focus();}else if(!event.shiftKey&&document.activeElement===controls.at(-1)){event.preventDefault();controls[0]?.focus();}}}
-  const close=bindMenuDismiss(overlay,()=>{closed=true;disposeHelp();clearInterval(timer);window.removeEventListener('keydown',onKey,true);enhancerController?.abort();picker?.close();library?.close();queue?.destroy();batchQueue?.destroy();Object.values(uploads).forEach(state=>state.rangeEditors.forEach(editor=>editor.destroy()));overlay.remove();if(anchor?.isConnected)anchor.focus();},()=>false);
+  const close=bindMenuDismiss(overlay,()=>{closed=true;disposeHelp();jobPager?.destroy();releaseVideoJobMedia(jobList);clearInterval(timer);window.removeEventListener('keydown',onKey,true);enhancerController?.abort();picker?.close();library?.close();queue?.destroy();batchQueue?.destroy();Object.values(uploads).forEach(state=>state.rangeEditors.forEach(editor=>editor.destroy()));overlay.remove();if(anchor?.isConnected)anchor.focus();},()=>false);
   closeButton.onclick=close;window.addEventListener('keydown',onKey,true);closeButton.focus();
   for(const [key,value]of Object.entries({...BASE,...(saved.config||{})}))if(fields[key])fields[key].value=value;
   for(const key of NESTED){const n=options[key],v=saved.config?.seed_hunter?.[key]??OPTIONS[key];if(n.type==='checkbox')n.checked=v;else n.value=v??'';}

@@ -35,6 +35,20 @@ def test_only_published_standard_and_ffp_basenames_select_recipe(name, expected)
     assert worker.is_vfx_edit({"lora": str(Path("/models") / name) if name else None}) is expected
 
 
+@pytest.mark.parametrize("change", [
+    {"loras": []}, {"lora_scale": 0},
+    {"loras": [{"path": worker.VFX_EDIT_LORA, "strength": 0}]},
+    {"loras": [{"path": "/models/turbo.safetensors", "strength": 1}]},
+    {"lora": ""},
+])
+def test_removed_or_disabled_vfx_adapter_is_not_activated_by_stale_profile(change):
+    from src.h3_vfx import is_vfx_config
+    config = {"lora": worker.VFX_EDIT_LORA, "lora_scale": 1,
+              "lora_profiles": {worker.VFX_EDIT_LORA: {"trigger_words": ["vfx_edit:"]}}, **change}
+    assert not is_vfx_config(config)
+    assert not worker.is_vfx_edit(config)
+
+
 @pytest.mark.parametrize("prompt", [
     "Add sparks. Keep the camera motion.",
     "vfx_edit: Add sparks. Keep the camera motion.",
@@ -152,7 +166,7 @@ def reference_media(job, tmp_path, monkeypatch, *, ffp=False):
     paired = {"sample_rate": worker.AUDIO_RATE, "waveform": torch.full((1, 2, 3 * worker.AUDIO_RATE), .125)}
     audio = {"sample_rate": worker.AUDIO_RATE, "waveform": torch.full((1, 2, 2 * worker.AUDIO_RATE), .625)}
     reads = []
-    def read_video(path):
+    def read_video(path, **kwargs):
         reads.append(path)
         if path == job["uploads"]["source_video"]:
             return source, soundtrack, len(source) / 24, len(source) / 24
@@ -192,7 +206,7 @@ def test_source_and_reference_duration_budgets_are_independent(job, tmp_path, mo
     # channels. Native reference videos still share their own 15-second budget.
     native_path = job["uploads"]["reference_videos"][0]
     frames = torch.zeros((360, 16, 8, 3))
-    monkeypatch.setattr(worker, "read_video", lambda path: (frames, None, 15, 0))
+    monkeypatch.setattr(worker, "read_video", lambda path, **kwargs: (frames, None, 15, 0))
     job["uploads"]["reference_audio"] = []
     config, media = worker.validate_job(job)
     prepared = worker.prepare_media(media, config)
@@ -293,7 +307,7 @@ def source_media(monkeypatch, *, count=200, duration=None, soundtrack=True):
     frames = torch.arange(count, dtype=torch.float32).reshape(count, 1, 1, 1).expand(count, 16, 8, 3) / count
     audio = {"sample_rate": worker.AUDIO_RATE,
              "waveform": torch.full((1, 2, round(count / worker.FPS * worker.AUDIO_RATE)), .375)} if soundtrack else None
-    monkeypatch.setattr(worker, "read_video", lambda _: (
+    monkeypatch.setattr(worker, "read_video", lambda _, **kwargs: (
         frames, audio, count / worker.FPS if duration is None else duration, 0))
     return frames, audio
 
@@ -314,7 +328,8 @@ def test_full_source_sets_grid_length_aspect_and_separate_silent_guide(job, monk
     assert job["config"]["frames"] == 124
 
 
-@pytest.mark.parametrize("count,expected", [(73, 73), (89, 90), (90, 90), (124, 124), (200, 209), (360, 362)])
+@pytest.mark.parametrize("count,expected", [(1, 73), (12, 73), (48, 73), (60, 73), (72, 73),
+                                           (73, 73), (89, 90), (90, 90), (124, 124), (200, 209), (360, 362)])
 def test_source_alignment_preserves_all_frames_ignoring_generic_limit(job, monkeypatch, count, expected):
     source, _ = source_media(monkeypatch, count=count, soundtrack=False)
     job["config"]["frames"] = 73
@@ -336,12 +351,49 @@ def test_partial_last_decoded_frame_is_preserved_in_24fps_output(job, monkeypatc
     assert torch.equal(prepared["guide_video"], frames)
 
 
-@pytest.mark.parametrize("count", [48, 72])
-def test_source_shorter_than_training_minimum_fails_before_weights(job, monkeypatch, count):
-    source_media(monkeypatch, count=count, soundtrack=False)
-    with pytest.raises(ValueError, match="at least 73 source frames"):
+def test_empty_source_fails_before_weights(job, monkeypatch):
+    source_media(monkeypatch, count=0, soundtrack=False)
+    with pytest.raises(ValueError, match="no readable frames"):
         worker.run_job(job, runtime_factory=lambda _: SimpleNamespace(
             load=lambda *_: pytest.fail("Must validate source before loading weights")))
+
+
+@pytest.mark.parametrize("count", [1, 12, 60, 72])
+def test_real_short_source_keeps_video_and_audio_tail_but_native_refs_keep_minimum(tmp_path, count):
+    """Exercise real CPU decoding/muxing; no model or GPU is initialized."""
+    source = tmp_path / "source.mp4"
+    frames = torch.linspace(.1, .7, count).reshape(count, 1, 1, 1).expand(count, 32, 32, 3)
+    samples = round(count / worker.FPS * worker.AUDIO_RATE)
+    wave = .25 * torch.sin(torch.arange(samples) * (2 * math.pi * 440 / worker.AUDIO_RATE))
+    soundtrack = {"waveform": wave.reshape(1, 1, -1).expand(1, 2, -1), "sample_rate": worker.AUDIO_RATE}
+    worker.mux_mp4(source, frames, soundtrack)
+    original = source.read_bytes()
+    if count < 48:
+        with pytest.raises(ValueError, match="2–15 seconds"):
+            worker.read_video(source)
+    decoded, audio, duration, _ = worker.read_video(source, check_minimum=False)
+    assert len(decoded) == count and duration == pytest.approx(count / 24)
+    config = {"frames": 362, "width": 32, "height": 32}
+    prepared = worker.prepare_vfx_media({"source_video": str(source)}, config)
+    assert prepared["output_frames"] == count
+    assert config["frames"] == len(prepared["guide_video"]) == 73
+    assert torch.equal(prepared["guide_video"][:count], decoded)
+    assert torch.equal(prepared["guide_video"][count:], decoded[-1:].expand(73 - count, *decoded.shape[1:]))
+    assert torch.equal(prepared["source_audio"]["waveform"], audio["waveform"])
+    assert prepared["guide_audio"]["waveform"].count_nonzero() == 0
+    output = tmp_path / "output.mp4"
+    worker.mux_mp4(output, prepared["guide_video"][:prepared["output_frames"]], prepared["source_audio"])
+    final_frames, final_audio, final_duration, _ = worker.read_video(output, check_minimum=False)
+    assert len(final_frames) == count and final_duration == pytest.approx(count / 24)
+    assert final_audio["waveform"].shape[-1] == samples
+    # AAC is lossy; verify that the final source tone is still audible and
+    # correlated through the last sample window, without padded extra silence.
+    tail = min(1000, samples)
+    final_tail = final_audio["waveform"][0, 0, -tail:]
+    assert final_tail.square().mean().sqrt() > .1
+    correlation = torch.corrcoef(torch.stack((final_tail, audio["waveform"][0, 0, -tail:])))
+    assert correlation[0, 1] > .98
+    assert source.read_bytes() == original
 
 
 @pytest.mark.parametrize("source_width,source_height,area", [
@@ -358,7 +410,8 @@ def test_source_canvas_respects_pixel_and_dimension_limits(source_width, source_
 
 
 @pytest.mark.parametrize("soundtrack", [True, False])
-@pytest.mark.parametrize("count,sampling_count", [(200, 209), (360, 362)])
+@pytest.mark.parametrize("count,sampling_count", [(1, 73), (12, 73), (48, 73), (60, 73), (72, 73),
+                                                  (200, 209), (360, 362)])
 def test_worker_guides_source_at_zero_and_muxes_complete_edited_clip_and_original_audio(
         job, monkeypatch, soundtrack, count, sampling_count):
     source, original_audio = source_media(monkeypatch, count=count, soundtrack=soundtrack)

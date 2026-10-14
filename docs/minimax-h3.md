@@ -18,6 +18,12 @@ The core's original license remains in `runtimes/minimax-h3/ComfyUI/LICENSE`.
 
 ## Queue controls and rerunning jobs
 
+Recent jobs are shown 10 at a time with Previous/Next controls. Polling updates
+the current page without moving newer submissions into an older page. Refresh
+jobs returns to the latest results. Counts describe the whole workflow list,
+not just the visible page. Desktop output media loads when Play is pressed.
+Paging does not pause rendering or narrow the scope of bulk queue actions.
+
 **Queue controls** appears above the recent jobs in both H3 and BFS panels.
 **Pause queue** lets the current render finish and holds your waiting H3 and BFS
 jobs until **Resume queue**. The pause is saved on the server and survives closing
@@ -317,9 +323,11 @@ Reference mode without VFX Edit, batching still uses one reference video per job
 Existing queued jobs and their captured settings do not change when the draft's
 LoRAs or attachments change.
 
-Output duration follows the source at 24 fps, with a minimum of 73 frames.
-The worker pads the guide to the next `17k + 5` frame count, then trims that
-padding from the output so the source ending and soundtrack are retained.
+Output duration follows the source at 24 fps. The worker holds the last source
+frame to reach at least 73 processing frames and the next `17k + 5` frame count,
+then trims that padding from the output so the source ending and soundtrack are
+retained. Short source clips are accepted; 73 is the minimum processing length,
+not a minimum upload length.
 The VFX frame values include 73, 90, and 107 in
 addition to the normal range; the duration control is disabled because the worker
 matches each source automatically. The source aspect ratio is retained within the
@@ -378,11 +386,16 @@ server for enhancement.
 
 ## Controls
 
+Mode, enhancement, media and queue explanations are available through Help
+controls instead of repeated paragraphs. VFX-specific guidance follows the
+active adapter selection; errors and required actions stay visible.
+
 - Width/height: multiples of 32; area at most `768 × 1344` pixels.
 - Frames: aligned upward to `17k + 5`, at 24 fps. The default 124 frames is about
   5.17 seconds; 362 frames is about 15.08 seconds. The low-level worker accepts
   shorter smoke-test clips, but H3's documented trained range starts at 124.
-  VFX Edit instead matches the source duration and supports at least 73 frames.
+  VFX Edit matches the source duration, padding short sources internally to at
+  least 73 processing frames and removing that padding from the output.
 - Reference video conditioning retains the decoded frames within the requested
   output length, then repeats the last frame to reach H3's next valid frame
   count. Its reference audio receives a matching silent tail if needed. This
@@ -475,9 +488,9 @@ original automatic/fixed choice, prompt, and settings.
 
 VFX Edit already matches the source duration: it uses a supported sampling
 length and trims padding from the output. The batch receipt distinguishes this
-from ordinary reference generation. Unsupported clips (with less than two seconds
-remaining at the selected reference start, or too short for VFX Edit) fail individually with
-an explanation rather than silently cutting them down or using the draft length.
+from ordinary reference generation. Short VFX source clips are padded internally;
+ordinary video references still need at least two seconds at the selected start.
+Unreadable, empty, or unsupported clips fail individually with an explanation.
 
 With **Batch job** off, the ordinary reference-video control still puts multiple
 videos in one job; VFX Edit requires exactly one source video. Its selected files

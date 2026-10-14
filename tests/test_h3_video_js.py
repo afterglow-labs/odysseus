@@ -58,6 +58,8 @@ globalThis.setInterval=()=>1;globalThis.clearInterval=()=>{};
 const stored=new Map();globalThis.localStorage={getItem:key=>stored.get(key)||null,setItem:(key,value)=>stored.set(key,value),removeItem:key=>stored.delete(key)};
 const topPortalZ=()=>1,bindMenuDismiss=(node,close)=>close,dismissOrRemove=()=>{},dismissTopMenu=()=>{};
 const videoWorkflow={};
+const createVideoJobPager=()=>({counts:{},total:0,load:async()=>{},destroy(){}});
+const releaseVideoJobMedia=()=>{};
 let batch,editor,editorOptions;
 const createVideoBatchQueue=options=>(batch={...options,active:false,busy:false,setAvailable(){},setEnabled(enabled,issue){this.enabled=enabled;this.issue=issue;},destroy(){}});
 const createVideoJobEditor=options=>{editorOptions=options;return editor={active:null,loading:false,observe(){},finish(){}};};
@@ -108,11 +110,36 @@ assert.equal(byId('source_video').multiple,false);assert.equal(byId('reference_v
 assert.equal(byId('reference_images').parentElement.hidden,false);assert.equal(byId('reference_audio').disabled,false);
 assert.equal(byId('frames').disabled,true);assert.equal(byId('reference_size').disabled,false);
 assert.equal(byId('frames').options.find(option=>option.value==='73').hidden,false);
-assert.ok(elements.some(node=>!node.hidden&&node.textContent.startsWith('Matches source video.')));
+assert.ok(elements.some(node=>!node.hidden&&node.textContent==='Matches source duration.'));
 await change('lora','turbo');
 assert.equal(byId('reference_videos').multiple,true);assert.equal(byId('reference_images').disabled,false);
 assert.equal(byId('frames').disabled,false);assert.equal(byId('frames').options.find(option=>option.value==='73').hidden,true);
 assert.equal(byId('frames').value,'124');assert.equal(byId('prompt').value,'Keep this exact prompt');
+""")
+
+
+def test_prompt_help_is_collapsed_and_vfx_copy_tracks_only_active_adapter_strength():
+    run_js(r"""
+showH3Video();await flush();await change('prompt','Keep my exact prompt.');
+const enhancement=byId('enhancement-help'),reference=byId('reference-help');
+const helpText=node=>node.children.map(child=>child.textContent).join(' ');
+assert.equal(enhancement.tagName,'DETAILS');assert.ok(!enhancement.open);assert.ok(!reference.open);
+assert.doesNotMatch(helpText(enhancement),/VFX/);assert.doesNotMatch(helpText(reference),/VFX/);
+await change('lora','vfx');assert.match(helpText(enhancement),/VFX edit instruction/);assert.match(helpText(reference),/VFX Edit/);
+await change('lora_scale','0');assert.doesNotMatch(helpText(enhancement),/VFX/);assert.doesNotMatch(helpText(reference),/VFX/);
+await change('lora_scale','1');assert.match(helpText(enhancement),/VFX edit instruction/);
+await change('lora','turbo');assert.doesNotMatch(helpText(enhancement),/VFX/);assert.doesNotMatch(helpText(reference),/VFX/);
+assert.equal(byId('prompt').value,'Keep my exact prompt.');
+""")
+
+
+def test_saved_image_enhancement_action_remains_visible_outside_collapsed_help():
+    run_js(r"""
+showH3Video();await flush();
+editorOptions.applyEdit({config:{...defaults,prompt:'Keep this'},inputs:{reference_images:[{index:0,name:'saved.png',size:4}]}});
+const issue=byId('enhancement-issue');assert.equal(issue.hidden,false);assert.match(issue.textContent,/Reattach saved images/);
+for(let node=issue.parentElement;node;node=node.parentElement)assert.notEqual(node.tagName,'DETAILS');
+assert.equal(byText('Enhance prompt').disabled,true);
 """)
 
 

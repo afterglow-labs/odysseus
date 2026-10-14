@@ -18,6 +18,11 @@ server. It is an implemented recipe, not an arbitrary Comfy graph executor.
 4. Choose the final dimensions, steps, sampler, scheduler, denoise and LoRAs,
    then submit refinement explicitly.
 
+Saved jobs are paged in groups of 10 on desktop and iOS. Candidate videos load
+when played. Page changes do not change a selected refinement or the rendering
+queue; refresh the list to return to the newest jobs. An opened iOS job remains
+available independently of the current results page.
+
 Defaults follow the saved graph: 0.4 MP at 9:16 (480 × 864), 73 frames at 24 fps,
 6 steps, ER SDE with beta scheduling. Refinement defaults to about 2 MP at the
 preview's actual aspect ratio (1088 × 1952), 2 steps, ER SDE,

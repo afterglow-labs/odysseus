@@ -82,7 +82,8 @@ def test_auto_length_never_guesses_which_reference_is_the_batch_source(monkeypat
         length.select_batch_video_length({"mode": mode, "loras": []}, uploads)
 
 
-@pytest.mark.parametrize("source_frames,expected", [(73, 73), (74, 90), (124, 124), (125, 141), (360, 362)])
+@pytest.mark.parametrize("source_frames,expected", [(1, 73), (12, 73), (48, 73), (60, 73), (72, 73),
+                                                     (73, 73), (74, 90), (124, 124), (125, 141), (360, 362)])
 def test_vfx_uses_only_source_and_preserves_actual_output_length(monkeypatch, source_frames, expected):
     def probe(path, *, exact_frames):
         assert path == "source.mp4" and exact_frames is True
@@ -95,12 +96,27 @@ def test_vfx_uses_only_source_and_preserves_actual_output_length(monkeypatch, so
     assert chosen["frames"] == expected and info["selected_seconds"] == expected / 24
     assert info["output_seconds"] == source_frames / 24 and info["preserve_source_duration"] is True
     assert info["source_field"] == "source_video"
+    assert info["source_frames"] == source_frames and info["padding_frames"] == expected - source_frames
 
 
-def test_vfx_too_short_source_is_rejected(monkeypatch):
-    monkeypatch.setattr(length, "probe_video", lambda *args, **kwargs: {"duration_seconds": 3, "source_frames": 72})
-    with pytest.raises(ValueError, match="73 source frames"):
+def test_vfx_source_still_rejects_more_than_fifteen_seconds(monkeypatch):
+    monkeypatch.setattr(length, "probe_video", lambda *args, **kwargs: {"duration_seconds": 16, "source_frames": 384})
+    with pytest.raises(ValueError, match="must not exceed 15 seconds"):
         length.select_batch_video_length({"mode": "ref2va", "lora": h3.VFX_EDIT_LORA}, {"source_video": "clip.mp4"})
+
+
+@pytest.mark.parametrize("change", [{"loras": []}, {"lora_scale": 0},
+                                    {"loras": [{"path": h3.VFX_EDIT_LORA, "strength": 0}]}])
+def test_disabled_vfx_uses_ordinary_auto_length_rules(monkeypatch, change):
+    def probe(path, *, exact_frames):
+        assert path == "reference.mp4" and exact_frames is False
+        return {"duration_seconds": 2.5, "source_frames": 60}
+    monkeypatch.setattr(length, "probe_video", probe)
+    config = {"mode": "ref2va", "lora": h3.VFX_EDIT_LORA, "lora_scale": 1,
+              "lora_profiles": {h3.VFX_EDIT_LORA: {"trigger_words": ["vfx_edit:"]}}, **change}
+    chosen, info = length.select_batch_video_length(config, {"reference_videos": ["reference.mp4"]})
+    assert chosen["frames"] == 124
+    assert info["preserve_source_duration"] is False and info["source_field"] == "reference_videos"
 
 
 @pytest.mark.parametrize("result", [
@@ -213,13 +229,15 @@ def test_auto_length_flag_must_be_explicit_boolean_text(backend, value):
     assert not backend.calls
 
 
-def test_vfx_route_keeps_common_references_separate_and_saves_actual_sampling_frames(backend, vfx_inventory, monkeypatch):
+@pytest.mark.parametrize("source_frames,sampling_frames", [(12, 73), (60, 73), (99, 107)])
+def test_vfx_route_keeps_common_references_separate_and_saves_actual_sampling_frames(
+        backend, vfx_inventory, monkeypatch, source_frames, sampling_frames):
     inv, raw = vfx_inventory
     manager = backend.managers["h3"]
     manager.inventory = lambda: inv
     def probe(path, *, exact_frames):
         assert Path(path).read_bytes() == b"source" and exact_frames
-        return {"duration_seconds": 4.125, "source_frames": 99}
+        return {"duration_seconds": source_frames / 24, "source_frames": source_frames}
     monkeypatch.setattr(length, "probe_video", probe)
     response = backend.client().post("/api/video/h3/jobs",
         data={"config": json.dumps(raw), "auto_video_length": "true"},
@@ -228,8 +246,9 @@ def test_vfx_route_keeps_common_references_separate_and_saves_actual_sampling_fr
     assert response.status_code == 201, response.text
     job = response.json()
     manifest = h3._read(manager.directory(job["id"]) / "manifest.json")
-    assert manifest["config"]["frames"] == 107
-    assert job["batch_video_length"]["output_seconds"] == 99 / 24
+    assert manifest["config"]["frames"] == sampling_frames
+    assert job["batch_video_length"]["output_seconds"] == source_frames / 24
+    assert job["batch_video_length"]["padding_frames"] == sampling_frames - source_frames
     assert Path(manifest["reference_videos"][0]).read_bytes() == b"common"
 
 

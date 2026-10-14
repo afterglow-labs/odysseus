@@ -58,10 +58,20 @@ def setup_bfs_video_routes(manager=None):
 
     @router.get('/jobs')
     async def jobs(request: Request):
-        from src.video_queue_control import queue_status
         owner = _owner(request)
-        return {'jobs': await asyncio.to_thread(manager.jobs, owner),
-                'queue': await asyncio.to_thread(queue_status, manager, owner)}
+        from src.video_job_listing import history, list_options
+        try:
+            options = list_options(request.query_params, 'bfs')
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return await asyncio.to_thread(history, manager, owner, **options)
+
+    @router.get('/jobs/{job_id}')
+    async def job_detail(job_id: str, request: Request):
+        try:
+            return await asyncio.to_thread(manager.view, job_id, _owner(request))
+        except FileNotFoundError as exc:
+            raise HTTPException(404, 'Video job not found') from exc
 
     @router.post('/jobs', status_code=201)
     async def create(request: Request):

@@ -360,7 +360,7 @@ def read_audio(path, *, optional=False, check_minimum=True):
     return {"waveform": torch.from_numpy(waveform.copy()).unsqueeze(0), "sample_rate": AUDIO_RATE}, min(duration, 15.0)
 
 
-def read_video(path):
+def read_video(path, *, check_minimum=True):
     """Resample VFR clips to 24fps and resize during decode, before float tensors."""
     import av
     import numpy as np
@@ -401,7 +401,9 @@ def read_video(path):
             prior, prior_time, last_time = current, current_time, current_time
             last_duration = float(frame.duration * frame.time_base) if frame.duration and frame.time_base else 1 / source_rate
         duration = last_time + last_duration if count else 0
-        if duration < 2 - 1e-3 or duration > 15.05:
+        if not arrays or not math.isfinite(duration) or duration <= 0:
+            raise ValueError("Video contains no readable frames")
+        if (check_minimum and duration < 2 - 1e-3) or duration > 15.05:
             raise ValueError("Reference video must be 2–15 seconds")
         while len(arrays) < min(round(duration * FPS), 15 * FPS):
             arrays.append(prior)
@@ -490,11 +492,13 @@ def prepare_vfx_media(media, config):
     """Pad the complete source for sampling, retaining its original output length."""
     import torch
 
-    frames, soundtrack, _, _ = read_video(media["source_video"])
+    # A source guide may be shorter than native reference clips: repeat its
+    # final frame for sampling, then trim only that processing padding below.
+    frames, soundtrack, _, _ = read_video(media["source_video"], check_minimum=False)
     output_frames = len(frames)
-    if output_frames < 73:
-        raise ValueError("VFX Edit needs at least 73 source frames at 24 fps (about 3.05 seconds)")
-    sampling_frames = output_frames + (5 - output_frames) % 17
+    if output_frames < 1:
+        raise ValueError("VFX Edit source video contains no readable frames")
+    sampling_frames = max(73, output_frames + (5 - output_frames) % 17)
     if sampling_frames > 362:
         raise ValueError("VFX Edit source video must not exceed 15 seconds")
     config["frames"] = sampling_frames

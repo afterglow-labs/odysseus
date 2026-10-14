@@ -463,8 +463,15 @@ def validate_config(raw, components, gpus, uploads):
         marker_limits = {"picture": counts["reference_images"], "subject": counts["reference_images"],
                          "video": counts["reference_videos"], "audio": counts["reference_audio"] + counts["reference_videos"]}
         for marker in re.finditer(r"<(Picture|Video|Audio|Subject)\s+(\d+)>", prompt, re.I):
-            if not 1 <= int(marker[2]) <= marker_limits[marker[1].lower()]:
-                raise ValueError("A numbered reference has no matching attachment. The source video is an aligned guide, not a numbered reference.")
+            kind = marker[1].lower()
+            available = marker_limits[kind]
+            if not 1 <= int(marker[2]) <= available:
+                field = {"picture": "Reference images", "subject": "Reference images",
+                         "video": "Reference videos", "audio": "Reference audio / video soundtracks"}[kind]
+                guidance = (' If you mean Source video, write "the source video" instead.'
+                            if kind == "video" else "")
+                raise ValueError(f"{marker[0]} has no matching attachment ({field}: {available})."
+                                 f" Correct the reference number or attach the matching file.{guidance}")
         prompt = re.sub(r"^(?:vfx_edit:\s*)+", "", prompt.strip(), flags=re.I)
         if not prompt:
             raise ValueError("VFX Edit needs an edit instruction after vfx_edit:")
@@ -555,11 +562,11 @@ def _stop_supervisor(record):
             os.close(handle)
 
 
-def _owned_workers(directory):
+def _owned_workers(directory, *, snapshot=None):
     """Collect descendants and inherited markers, verifying saved start times."""
     state = _read(directory / "state.json")
     receipt = _read(directory / "processes.json")
-    current = _snapshot()
+    current = _snapshot() if snapshot is None else snapshot
     excluded = {1, os.getpid(), (state.get("supervisor") or {}).get("pid")}
     ancestor = os.getppid()
     while ancestor and ancestor not in excluded:
@@ -758,7 +765,8 @@ class H3JobManager:
             with _locked(directory / "job.lock"):
                 state = _read(directory / "state.json")
                 if state.get("status") in ACTIVE and not _live_record(state.get("supervisor"), snapshot):
-                    active = _owned_workers(directory)
+                    active = (_owned_workers(directory) if snapshot is None
+                              else _owned_workers(directory, snapshot=snapshot))
                     if active:
                         state.update(status="running", phase="Supervisor interrupted; stop this job to continue the queue")
                     elif time.time() - state.get("created_at", 0) > 15:
@@ -841,6 +849,7 @@ class H3JobManager:
             _write(self.root.parent / "video-queue.json", {"last_order": order})
             state = {"id": directory.name, "owner": owner, "status": "queued", "phase": "queued", "queue_order": order,
                      "error": None, "filename": directory.name + ".mp4", "created_at": time.time(), "steps": config["steps"],
+                     "recipe": config.get("recipe", "h3"),
                      "supervisor_edit_version": 1, "supervisor_control_version": SUPERVISOR_CONTROL_VERSION}
             submission = _read(directory / "submission.json")
             state.update(source_name=submission.get("source_name"), submission_id=submission.get("submission_id"))
