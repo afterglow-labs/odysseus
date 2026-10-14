@@ -285,4 +285,6 @@ def setup_h3_video_routes(manager=None):
     add_lora_library_routes(router, manager, _owner)
     from routes.h3_seed_hunter_routes import add_seed_hunter_routes
     add_seed_hunter_routes(router, manager, _owner)
+    from routes.h3_seed_scout_routes import add_seed_scout_routes
+    add_seed_scout_routes(router, manager, _owner)
     return router

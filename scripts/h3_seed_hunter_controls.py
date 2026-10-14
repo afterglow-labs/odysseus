@@ -17,6 +17,8 @@ DEFAULTS = {
     "source_start_seconds": 0., "source_end_seconds": None,
     "audio_start_seconds": 0., "audio_end_seconds": None,
     "refmod_strengths": [],
+    "scout_count": 6, "scout_step": 3, "scout_mode": "interactive",
+    "scout_timeout": 0, "scout_preview_mode": "vae",
 }
 
 
@@ -24,7 +26,9 @@ def validate_options(raw):
     if not isinstance(raw, dict) or raw.keys() - DEFAULTS.keys():
         raise ValueError("Unknown Seed Hunter setting")
     result = {**DEFAULTS, **raw}
-    enums = {"stage": ("preview", "final", "single", "continuation", "dialogue"),
+    enums = {"stage": ("preview", "final", "single", "continuation", "dialogue", "scout"),
+             "scout_mode": ("interactive", "scout", "final"),
+             "scout_preview_mode": ("vae", "latent2rgb"),
              "attention_backend": ("comfy kitchen attention", "pytorch"),
              "sparse_method": ("none", "sla", "sol_attn", "vsa"),
              "sparse_sink_conditioning": ("exact_kv_and_rows", "none")}
@@ -36,6 +40,7 @@ def validate_options(raw):
         if type(result[key]) is not bool:
             raise ValueError(f"{key} must be true or false")
     ranges = {"preview_count": (1, 3, True), "denoise": (0., 1., False),
+              "scout_count": (1, 32, True), "scout_step": (1, 100, True), "scout_timeout": (0, 86400, True),
               "sparse_keep_percent": (1., 100., False), "sparse_start": (0., 1., False),
               "sparse_end": (0., 1., False), "sparse_min_tokens": (0, 1000000, True),
               "sparse_extra_tokens": (0, 8192, True), "ff_chunk_size": (0, 64, True),
@@ -65,7 +70,7 @@ def validate_options(raw):
             for v in strengths):
         raise ValueError("RefMod strengths must be a list of at most eight values from 0 to 1")
     result["refmod_strengths"] = list(strengths)
-    if result["stage"] in {"single", "continuation", "final"}:
+    if result["stage"] in {"single", "continuation", "final", "scout"}:
         result["preview_count"] = 1
     return result
 

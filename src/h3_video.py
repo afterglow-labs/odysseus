@@ -96,8 +96,8 @@ def _queue_entries(root, *, reconcile=False):
     """Both workflow families share one FIFO, including pre-queue running jobs."""
     root = Path(root)
     roots = [root]
-    if root.name in {"h3", "bfs"}:
-        roots.append(root.with_name("bfs" if root.name == "h3" else "h3"))
+    if root.name in {"h3", "bfs", "comfy"}:
+        roots.extend(root.with_name(name) for name in ("h3", "bfs", "comfy") if name != root.name)
     entries = []
     processes = None
     for base in roots:
@@ -711,6 +711,7 @@ def installed_h3_preset(path, components, gpus, defaults):
 
 
 class H3JobManager:
+    output_basename = "output.mp4"
     def __init__(self, root=JOB_ROOT, *, project=PROJECT_ROOT, runtime=RUNTIME_ROOT,
                  worker=None, gallery_directory=GENERATED_IMAGES_DIR, preset_file=H3_DEFAULTS_FILE):
         self.root, self.project, self.runtime = Path(root), Path(project), Path(runtime)
@@ -810,6 +811,9 @@ class H3JobManager:
         if isinstance(config, dict) and config.get("recipe") == "seed_hunter":
             from src.h3_seed_hunter import summary
             result.update(recipe="seed_hunter", seed_hunter=summary(directory, config, state))
+            if config.get("seed_hunter", {}).get("stage") == "scout":
+                from src.h3_seed_scout import summary as scout_summary
+                result["scout"] = scout_summary(directory, state)
         return result
 
     def jobs(self, owner):
@@ -848,13 +852,13 @@ class H3JobManager:
             order = max(time.time_ns(), previous + 1)
             _write(self.root.parent / "video-queue.json", {"last_order": order})
             state = {"id": directory.name, "owner": owner, "status": "queued", "phase": "queued", "queue_order": order,
-                     "error": None, "filename": directory.name + ".mp4", "created_at": time.time(), "steps": config["steps"],
+                     "error": None, "filename": directory.name + Path(self.output_basename).suffix, "created_at": time.time(), "steps": config["steps"],
                      "recipe": config.get("recipe", "h3"),
                      "supervisor_edit_version": 1, "supervisor_control_version": SUPERVISOR_CONTROL_VERSION}
             submission = _read(directory / "submission.json")
             state.update(source_name=submission.get("source_name"), submission_id=submission.get("submission_id"))
             manifest = {"config": config, "revision": 0, **uploads, "runtime_path": str(self.runtime.resolve()),
-                        "output_path": str((directory / "output.mp4").resolve()),
+                        "output_path": str((directory / self.output_basename).resolve()),
                         "status_path": str((directory / "progress.json").resolve()),
                         "worker_path": str(self.worker.resolve()), "gallery_directory": str(self.gallery_directory.resolve()),
                         "project_path": str(self.project.resolve())}
@@ -1053,7 +1057,8 @@ def _render(manifest_path, execution_lock):
             elif not Path(manifest["output_path"]).is_file() or Path(manifest["output_path"]).stat().st_size < 1:
                 state.update(status="failed", phase="failed", error="Renderer returned no video file")
             else:
-                _save_gallery(manifest, state)
+                if manifest.get("config", {}).get("recipe") != "comfy_graph":
+                    _save_gallery(manifest, state)
                 state.update(status="completed", phase="completed", error=None)
             state["finished_at"] = state.get("finished_at") or time.time()
             _write(directory / "state.json", state)

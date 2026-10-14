@@ -31,6 +31,7 @@ def capabilities(project, runtime, components, gpus=()):
         "features": {"latent_upscaler": (extras / "latent-upscaler").is_dir()
                      and any(c.get("role") == "latent_upscaler" for c in components),
                      "guides": True, "force_audio": True, "continuation": True, "dialogue": True,
+                     "seed_scout": (runtime.parent / "seed-scout/nodes.py").is_file(),
                      "attention_backend": True, "sparse_attention": True,
                      "refmods": (extras / "refmods/core.py").is_file(),
                      "rife": (runtime / "comfy_extras/nodes_frame_interpolation.py").is_file()
@@ -46,6 +47,7 @@ def preflight(config, inventory, inputs):
     features = inventory.get("seed_hunter", {}).get("features", {})
     options = config["seed_hunter"]
     wanted = {"latent_upscaler": options["stage"] == "final",
+              "seed_scout": options["stage"] == "scout",
               "refmods": bool(inputs.get("reference_mods")), "rife": options["output_fps"] == 48,
               "ff_chunking": bool(options["ff_chunk_size"]),
               "low_vram_attention": bool(options["low_vram_chunks"]),
@@ -53,6 +55,11 @@ def preflight(config, inventory, inputs):
     for key, required in wanted.items():
         if required and not features.get(key):
             raise ValueError(f"Seed Hunter {key.replace('_', ' ')} is not installed on this server")
+    if options["stage"] == "scout":
+        if options["scout_mode"] != "final" and options["scout_step"] >= config["steps"]:
+            raise ValueError("Scout step must be before the last step of the full schedule")
+        if config["seed"] + options["scout_count"] - 1 > 2**53 - 1:
+            raise ValueError("Scout seeds must fit a 53-bit integer")
 
 
 def artifact(directory, candidate, kind):

@@ -26,7 +26,7 @@ def _worker():
 
 def validate_inputs(manifest, config, media, uploads):
     options = config["seed_hunter"]
-    if config["mode"] != "ref2va":
+    if config["mode"] != "ref2va" and options["stage"] != "scout":
         raise ValueError("Seed Hunter requires a Ref2VA base model")
     if _worker().is_vfx_edit(config):
         raise ValueError("Use the standard H3 VFX workflow for source-aligned VFX adapters")
@@ -262,6 +262,9 @@ def upscale_latent(manifest, config, latent, progress):
 
 def condition(runtime, config, prepared, clip, vae, audio_vae):
     options = config["seed_hunter"]
+    if options["stage"] == "scout" and config["mode"] != "ref2va":
+        positive, latent = runtime.condition(config, prepared, clip, vae, audio_vae)
+        return positive, latent, positive
     positive, latent = runtime.h3.MiniMaxH3ReferenceToVideo.execute(clip=clip, vae=vae, audio_vae=audio_vae,
         prompt=config["prompt"], width=config["width"], height=config["height"], length=config["frames"],
         ref_image_size=config["reference_size"],
@@ -341,7 +344,13 @@ def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
             candidates.append(row)
             _publish_candidates(folder / "candidates.json", candidates)
             try:
-                output, denoised = sample_candidate(runtime, candidate_config, model, positive, latent, progress)
+                if options["stage"] == "scout":
+                    from scripts.h3_seed_scout import sample as scout_sample
+                    output, denoised, selected_seed = scout_sample(runtime, manifest, candidate_config,
+                        model, positive, latent, vae, progress)
+                    row["seed"] = candidate_config["seed"] = selected_seed
+                else:
+                    output, denoised = sample_candidate(runtime, candidate_config, model, positive, latent, progress)
                 latent_name = f"candidate-{index}.safetensors"
                 save_snapshot(folder / latent_name, latent=denoised, positive=base_positive,
                               config=config, seed=candidate_config["seed"])

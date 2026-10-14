@@ -429,6 +429,10 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
   const transferBar = make('div', 'h3-video-toolbar'); transferBar.append(exportButton, importButton, importInput); scroll.append(transferBar);
   const refineHelp = make('p', 'h3-video-muted', 'Choose a completed preview in Review to load its saved latent and edit refinement settings here.');
   studio = createWorkflowStudio({
+    getGraphDraft: () => {
+      if (Object.values(uploads).some(state => state.retained.length)) throw new Error('Finish the queued-job edit first. Open your regular draft as a graph using Edit workflow graph.');
+      return {config:config(), inputs:currentUploads()};
+    },
     container: scroll, dialog, form, family: 'h3', recipe: 'seed_hunter', title: 'H3 Seed Hunter',
     persistentNodes: [status, toolbar, error], actions: [actions],
     sections: [

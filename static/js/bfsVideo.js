@@ -669,6 +669,10 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
     },
   });
   studio = createWorkflowStudio({
+    getGraphDraft: () => {
+      if ([...files.values()].some(state => state.retained)) throw new Error('Finish the queued-job edit first. Open your regular draft as a graph using Edit workflow graph.');
+      return {config:config(), inputs:Object.fromEntries([...files].filter(([,state]) => state.allowed && state.file).map(([key,state]) => [key,[state.file]]))};
+    },
     container: scroll, dialog, form, family: 'bfs', title: 'BFS Video Workflows',
     persistentNodes: [toolbar, error, missing, inputStatus], actions: [actions, submissionStatus],
     sections: [

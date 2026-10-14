@@ -1190,6 +1190,10 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     }) }]),
   });
   studio = createWorkflowStudio({
+    getGraphDraft: () => {
+      if (Object.values(uploads).some(state => state.retained.length)) throw new Error('Finish the queued-job edit first. Open your regular draft as a graph using Edit workflow graph.');
+      return {config:config(), inputs:Object.fromEntries(Object.entries(uploads).filter(([,state]) => !state.wrap.hidden).map(([key,state]) => [key,[...state.files]]))};
+    },
     container: scroll, dialog, form, family: 'h3', title: 'MiniMax H3 Video',
     persistentNodes: [inventoryBar, error, loraCompatibilityError, gpuSelectionError, vfxInputError], actions: [actions, submissionStatus],
     sections: [

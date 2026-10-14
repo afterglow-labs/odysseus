@@ -1,8 +1,9 @@
 import { createVideoJobMedia, releaseVideoJobMedia } from './videoJobMedia.js';
 import { createWorkflowConversion } from './workflowConversion.js';
 
-// Presentation only. Existing forms, upload objects and queue controllers remain
-// the owners of execution state. Changing this view never submits a workflow.
+// The quick workflow keeps its established form and queue. Editable graphs
+// open as an independent draft in the graph editor, sharing its executable
+// document between Pipeline and Nodes.
 const ORDER = ['inputs', 'prepare', 'generate', 'review', 'refine', 'export'];
 const LABELS = { inputs: 'Inputs', prepare: 'Prepare', setup: 'Model setup', generate: 'Generate', review: 'Review', refine: 'Refine', export: 'Export' };
 let nextId = 0;
@@ -50,7 +51,7 @@ export function workflowStudioStageForControl(element, panels) {
 }
 
 export function createWorkflowStudio({ container, dialog, form, sections = [], getSummary = () => ({}), getPreview = () => null,
-  family = 'h3', recipe = '', actions = [], persistentNodes = [], onApplyConverted } = {}) {
+  family = 'h3', recipe = '', actions = [], persistentNodes = [], onApplyConverted, getGraphDraft } = {}) {
   const id = `workflow-studio-${++nextId}`;
   const storageKey = `odysseus-workflow-studio-v1:${family}:${recipe || 'default'}`;
   let saved = {}; try { saved = JSON.parse(localStorage.getItem(storageKey) || '{}') || {}; } catch {}
@@ -68,13 +69,38 @@ export function createWorkflowStudio({ container, dialog, form, sections = [], g
   container.insertBefore(root, form?.parentElement === container ? form : null);
   const toolbar = node('div', 'workflow-studio-toolbar');
   const tabs = node('div', 'workflow-studio-views'); tabs.setAttribute('aria-label', 'Workflow view');
-  const pipelineTab = control('Pipeline', () => setView('pipeline')), nodeTab = control('Node map', () => setView('nodes'));
+  const pipelineTab = control('Pipeline', () => setView('pipeline')), nodeTab = control('Overview', () => setView('nodes'));
   pipelineTab.prepend(icon('pipeline')); nodeTab.prepend(icon('nodes')); tabs.append(pipelineTab, nodeTab);
   const recipeLabel = node('span', 'workflow-studio-recipe', recipe === 'seed_hunter' ? 'H3 Seed Hunter' : family === 'bfs' ? 'BFS video workflow' : 'H3 video workflow');
   toolbar.append(tabs, recipeLabel); root.append(toolbar);
   const conversion = onApplyConverted ? createWorkflowConversion({ family, recipe, onApply:onApplyConverted }) : null;
   if (conversion) { toolbar.append(conversion.button); root.append(conversion.panel); }
   const notices = node('div', 'workflow-studio-notices'); root.append(notices);
+  if (getGraphDraft) {
+    const openGraph = control('Edit workflow graph', async () => {
+      openGraph.disabled = true;
+      try {
+        const draft = getGraphDraft(), bindings = {}, counts = {};
+        for (const [field, files] of Object.entries(draft.inputs || {})) {
+          if (!files.length) continue;
+          counts[field] = files.length;
+          files.forEach((file, index) => { bindings[`${field}__${index}`] = [file]; });
+        }
+        const response = await fetch('/api/workflow-graphs/from-draft', {method:'POST', credentials:'same-origin',
+          headers:{'Content-Type':'application/json'}, body:JSON.stringify({family, config:draft.config, input_counts:counts, title:recipeLabel.textContent})});
+        const result = await response.json();
+        if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : 'Could not open this draft as a graph.');
+        if (closed) return;
+        const { showWorkflowGraphEditor } = await import('./workflowGraphEditor.js');
+        showWorkflowGraphEditor({document:result.document, bindings}, openGraph);
+      } catch (error) {
+        let message = notices.querySelector('[data-graph-error]');
+        if (!message) { message = node('p', 'h3-video-error'); message.dataset.graphError = 'true'; message.setAttribute('role', 'alert'); notices.append(message); }
+        message.textContent = error.message;
+      } finally { if (!closed) openGraph.disabled = false; }
+    });
+    toolbar.append(openGraph);
+  }
   for (const item of persistentNodes.filter(Boolean)) notices.append(item);
   const workspace = node('div', 'workflow-studio-workspace'); root.append(workspace);
   const navigation = node('nav', 'workflow-studio-stages'); navigation.setAttribute('aria-label', 'Workflow stages');
