@@ -406,3 +406,57 @@ def test_imported_api_settings_missing_from_installed_schema_are_not_dropped(mon
     assert get(doc,'comfy_1')['params']['unsupported_option'] is True
     result=compile_graph(doc)
     assert not result['valid'] and any(i['code']=='input_schema' for i in result['issues'])
+
+
+@pytest.mark.parametrize('value', [2**53, -(2**53), 2**64-1, float(2**53)])
+def test_comfy_integer_precision_blocks_without_clamping_import_or_schema(monkeypatch,value):
+    from src import comfy_node_manifest
+    from src.workflow_graph import node_registry
+    manifest=package_manifest()
+    manifest['nodes'][0]['inputs'][0]['metadata'].update(min=-(2**64),max=2**64-1)
+    monkeypatch.setattr(comfy_node_manifest,'load_manifests',lambda:[manifest])
+    source={'1':{'class_type':'GraphNumber','inputs':{'value':value}},
+            '2':{'class_type':'GraphSave','inputs':{'value':['1',0]}}}
+    doc=import_comfyui(source)
+    before=copy.deepcopy(doc)
+    result=compile_graph(doc)
+    assert not result['valid'] and any(i['code']=='parameter_precision' for i in result['issues'])
+    assert doc==before and doc['source']['document']==source
+    assert get(doc,'comfy_1')['params']['value']==value
+    assert node_registry()['comfy.GraphNumber']['params'][0]['max']==2**64-1
+
+
+@pytest.mark.parametrize('value', [2**53-1, -(2**53-1)])
+def test_comfy_largest_exact_integer_values_remain_executable(monkeypatch,value):
+    from src import comfy_node_manifest
+    monkeypatch.setattr(comfy_node_manifest,'load_manifests',lambda:[package_manifest()])
+    source={'1':{'class_type':'GraphNumber','inputs':{'value':value}},
+            '2':{'class_type':'GraphSave','inputs':{'value':['1',0]}}}
+    result=compile_graph(import_comfyui(source))
+    assert result['valid'],result['issues']
+    assert result['plan'][0]['config']['prompt']['comfy_1']['inputs']['value']==value
+
+
+def test_numeric_select_and_literal_integer_port_share_precision_guard(monkeypatch):
+    from src import comfy_node_manifest
+    manifest=package_manifest()
+    manifest['nodes'].append(comfy_node_manifest.normalize_node_info('GraphNumericChoice',{'input':{'required':{'seed':[[1,2**64-1],{}]}},'output':[],'output_node':True}))
+    monkeypatch.setattr(comfy_node_manifest,'load_manifests',lambda:[manifest])
+    for kind,field in [('GraphNumericChoice','seed'),('GraphSave','value')]:
+        doc=import_comfyui({'1':{'class_type':kind,'inputs':{field:2**64-1}}})
+        result=compile_graph(doc)
+        assert not result['valid'] and any(i['code']=='parameter_precision' for i in result['issues'])
+        assert get(doc,'comfy_1')['params'][field]==2**64-1
+
+
+def test_connected_integer_widget_does_not_execute_its_unsafe_saved_value(monkeypatch):
+    from src import comfy_node_manifest
+    monkeypatch.setattr(comfy_node_manifest,'load_manifests',lambda:[package_manifest()])
+    source={'1':{'class_type':'GraphNumber','inputs':{'value':1}},
+            '2':{'class_type':'GraphAdd','inputs':{'a':['1',0],'b':['1',0]}},
+            '3':{'class_type':'GraphSave','inputs':{'value':['2',0]}}}
+    doc=import_comfyui(source)
+    get(doc,'comfy_2')['params']['b']=2**64-1
+    result=compile_graph(doc)
+    assert result['valid'],result['issues']
+    assert result['plan'][0]['config']['prompt']['comfy_2']['inputs']['b']==['comfy_1',0]

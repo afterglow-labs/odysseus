@@ -1,6 +1,6 @@
 # Editable workflows in Odysseus
 
-Open **Cookbook → Workflows** to build a workflow. **New workflow** offers a blank graph and editable templates. The existing H3, BFS, and Seed Hunter panels remain available as quick workflow forms; **Edit workflow graph** opens their current settings in the builder.
+Open **Cookbook → Launch → Workflows** to build a workflow. **New workflow** offers a blank graph and editable templates. The existing H3, BFS, and Seed Hunter panels remain available as quick workflow forms; **Edit workflow graph** opens their current settings in the builder.
 
 ## Pipeline and Nodes are two editors for the same workflow
 
@@ -93,6 +93,8 @@ If package source changes, discover it again. The worker verifies the source fin
 Use **Node packages → Import /object_info JSON** to load exported node metadata. This supplies schemas for inspection and conversion. It does not supply Python code: execution remains unavailable until matching installed classes are discovered. Installed class declarations take precedence over an unbound metadata export; conflicting installed classes must be resolved.
 
 ## Current compatibility boundaries
+
+Integer settings, including numeric choices, must stay between −9,007,199,254,740,991 and 9,007,199,254,740,991 for exact editing in both web and iOS clients. Larger integers cannot reliably round-trip through those clients. The package's original limits remain visible, but execution blocks out-of-range integer values with a precision error until you choose an exactly representable value. The compiler never clamps values automatically.
 
 Discovery supports legacy `NODE_CLASS_MAPPINGS` and newer extensions that expose an official schema projection. Registered package graphs execute through the private Comfy execution core, including declared hidden inputs, list semantics, validation hooks, and cache/change hooks.
 

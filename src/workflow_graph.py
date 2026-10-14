@@ -16,6 +16,7 @@ FORMAT = "odysseus-workflow-graph"
 VERSION = 1
 MAX_NODES = 800
 MAX_EDGES = 4000
+MAX_EXACT_INTEGER = 2**53 - 1
 IDENTIFIER = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
 
 
@@ -359,6 +360,10 @@ def compile_graph(document, output_ids=None, inventory=None):
             issues.append(row)
     def fail(code, message, node):
         raise _CompileFailure(code, message, node)
+    def check_integer_precision(node, value, label):
+        if (type(value) is int or type(value) is float and value.is_integer()) and abs(value) > MAX_EXACT_INTEGER:
+            fail("parameter_precision", f"{label} exceeds the exact integer precision of the web and iOS editors. "
+                 f"Choose an integer between {-MAX_EXACT_INTEGER} and {MAX_EXACT_INTEGER}; the imported value has not been clamped.", node)
     for edge in document["edges"]:
         incoming.setdefault((edge["target"]["node"], edge["target"]["port"]), []).append(edge["source"])
         left, right = nodes[edge["source"]["node"]], nodes[edge["target"]["node"]]
@@ -408,6 +413,8 @@ def compile_graph(document, output_ids=None, inventory=None):
             if value is None and f.get("nullable"):
                 continue
             kind = f["type"]
+            if kind in {"integer", "select"} or kind == "number" and type(value) is int:
+                check_integer_precision(node, value, f["label"])
             if kind in {"number", "integer"}:
                 if type(value) not in (float, int) or not math.isfinite(value) or kind == "integer" and type(value) is not int:
                     fail("parameter", f"{f['label']} must be a finite {kind}", node)
@@ -475,6 +482,8 @@ def compile_graph(document, output_ids=None, inventory=None):
                 if len(sources)>1: fail("multiple_inputs","A Comfy input accepts one typed connection",node)
                 if not sources:
                     if p["id"] in params and params[p["id"]] is not None:
+                        if p["type"] == "INTEGER":
+                            check_integer_precision(node, params[p["id"]], p["label"])
                         values[p["id"]]=copy.deepcopy(params[p["id"]])
                     elif p["required"]: fail("missing_input","Connect "+p["label"],node)
                     continue
