@@ -41,6 +41,13 @@ def run_js(script):
                    check=True, capture_output=True, text=True)
 
 
+def test_comfy_conversion_errors_identify_missing_node_adapter():
+    run_js(r'''
+const response = new Response(JSON.stringify({detail:{message:'Conversion needs attention',conversion:{issues:[{severity:'error',node_type:'CustomVideoPatch',node_id:'17',message:'This active node needs a native implementation'}]}}}),{status:400});
+await assert.rejects(()=>jsonResponse(response),error=>error.message.includes('CustomVideoPatch (node 17)') && error.message.includes('native implementation'));
+''')
+
+
 def test_portable_component_resolution_preserves_exact_variant_and_rejects_ambiguous_matches():
     run_js(r'''
 const component=(id,name,repo,role='model',variant='fl2va')=>({id,name,role,variant,path:`/new/cache/models--${repo.replace('/','--')}/snapshots/rev/${name}`});

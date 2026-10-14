@@ -635,7 +635,28 @@ class WorkflowTransfers:
         if source.stat().st_size <= JSON_LIMIT:
             raw = source.read_bytes()
             if raw.lstrip().startswith(b"{"):
-                document = json.loads(raw)
+                try:
+                    document = json.loads(raw)
+                except RecursionError as exc:
+                    raise ValueError("Workflow JSON is nested too deeply") from exc
+                if isinstance(document, dict) and document.get("format") != FORMAT:
+                    from src.comfy_workflow_conversion import convert_comfyui, ComfyConversionFailure
+                    conversion = convert_comfyui(document)
+                    if not conversion["convertible"]:
+                        raise ComfyConversionFailure(conversion)
+                    if conversion["family"] != self.family:
+                        raise ValueError("Import this converted workflow into its matching " + str(conversion["family"]).upper() + " editor")
+                    original_graph, document = document, conversion["document"]
+                    validate_document(document, self.family)
+                    source.unlink()
+                    result = self._finish_import(directory, owner, document, {})
+                    # Bind against the same inventory returned to the editor;
+                    # do not retain missing-component warnings from preview.
+                    conversion = convert_comfyui(original_graph, result["inventory"])
+                    result["conversion"] = conversion
+                    result["input_requirements"] = conversion["inputs"]
+                    result.setdefault("warnings", []).extend(row["message"] for row in conversion["issues"])
+                    return result
                 validate_document(document, self.family)
                 references_bundle = bool(document["attachments"]) or any("archive_path" in x for x in document["components"].values())
                 # A workflow.json extracted from a bundle still restores a

@@ -5,6 +5,8 @@ import { bindSeedHunterHelp } from './seedHunterHelp.js';
 import { topPortalZ } from './toolWindowZOrder.js';
 import { createH3LoraEditor, h3LoraStack, h3LoraComponents, h3LoraIssue, insertH3LoraTrigger } from './h3Loras.js';
 import { showH3LoraLibrary } from './h3LoraLibrary.js';
+import { createWorkflowStudio } from './workflowStudio.js';
+import { workflowStudioInputPreview } from './workflowStudioInput.js';
 import { showVideoServerFiles } from './videoServerFiles.js';
 import { referenceVideoRanges, restoreReferenceVideoRanges, createReferenceVideoRangeEditor, referenceVideoRangesField } from './referenceVideoRange.js';
 import { appendVideoInputs } from './videoInputs.js';
@@ -91,7 +93,7 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
   if (!document.getElementById('h3-video-styles')) { const css = make('link'); css.id = 'h3-video-styles'; css.rel = 'stylesheet'; css.href = '/static/h3-video.css'; document.head.append(css); }
   let saved = {}; try { saved = JSON.parse(localStorage.getItem(STORAGE) || '{}'); } catch {}
   let inventory = null, jobs = [], closed = false, busy = false, loading = false, jobPager = null, revision = 0;
-  let picker, library, queue, batchQueue, jobEditor, editingComponents = null, selection = null, finalRequest = null, finalBusy = false;
+  let picker, library, queue, batchQueue, jobEditor, studio = null, editingComponents = null, selection = null, finalRequest = null, finalBusy = false;
   let restoredRangeConfig = {}, optionSnapshot = {}, selecting = 0, finalComponents = [], enhancer = [], enhancing = false, enhancerController, previousPrompt = null;
   const fields = {}, options = {}, uploads = {}, finalFields = {}, jobNodes = new Map();
   const overlay = make('div', 'cookbook-edit-overlay h3-seed-hunter-overlay'); overlay.style.zIndex = String(topPortalZ());
@@ -102,6 +104,7 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
   const status = make('p', 'h3-video-muted', 'Checking Seed Hunter components…'); status.setAttribute('role', 'status');
   const error = make('p', 'h3-video-error'); error.hidden = true; error.setAttribute('role', 'alert');
   const toolbar = make('div', 'h3-video-toolbar'), refresh = button('Refresh components'), exportButton = button('Export workflow'), importButton = button('Import workflow');
+  importButton.title = 'Import an Odysseus archive or convert ComfyUI workflow JSON';
   const importInput = make('input'); importInput.type = 'file'; importInput.accept = '.zip,.json'; importInput.hidden = true;
   toolbar.append(refresh, exportButton, importButton, importInput); scroll.append(status, toolbar, error);
   const form = make('form', 'h3-video-form'); scroll.append(form);
@@ -120,7 +123,7 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
   const effectiveComponents = () => h3LoraComponents(inventory?.components || [], editingComponents);
   const loras = createH3LoraEditor({ idPrefix: 'seed-hunter', onChange: () => { revision++; save(); update(); },
     onManage: (selectedId, trigger) => { library?.close(); library = showH3LoraLibrary({ components: inventory?.components || [], selectedId, onChange: loadInventory }, trigger); },
-    onInsertTrigger: component => { if(stage.value==='final'){fail('Refinement keeps the saved preview prompt.');return;} const profile = component.lora_profile; fields.prompt.value = insertH3LoraTrigger(fields.prompt.value, profile.trigger_words, profile.trigger_position, fields.prompt.selectionStart); changed(); fields.prompt.focus(); },
+    onInsertTrigger: component => { if(stage.value==='final'){fail('Refinement keeps the saved preview prompt.');return;} const profile = component.lora_profile; fields.prompt.value = insertH3LoraTrigger(fields.prompt.value, profile.trigger_words, profile.trigger_position, fields.prompt.selectionStart); changed(); studio?.select('prepare'); fields.prompt.focus(); },
     onApplyRecommended: component => { for (const [key, value] of Object.entries(component.lora_profile?.recommended_settings || {})) if (fields[key] && (stage.value!=='final'||FINAL_FIELDS.has(key))) fields[key].value = value; changed(); },
   }); form.append(loras.node);
   const prompt = field(form, 'prompt', 'Prompt', make('textarea')); prompt.rows = 5; prompt.maxLength = 16000; prompt.required = true;
@@ -302,6 +305,7 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
     const batchReason=batchBlock?'Finish the current operation before adding a batch.':batchIssue();
     batchQueue?.setEnabled(!batchReason,batchReason,{snapshotEnabled:!batchBlock,snapshotReason:batchReason});
     queue?.setBlocked(locked || loading || finalBusy || !!jobEditor?.active); finalSubmit.disabled = finalBusy || !selection || !finalFields.latent_upscaler.value || features.latent_upscaler !== true; finalLoras.setDisabled(finalBusy); for(const n of Object.values(finalFields))n.disabled=finalBusy;finalReroll.disabled=cancelSelection.disabled=finalBusy;
+    studio?.refresh();
   }
   function fill(n, items, selected, blank = false) { n.replaceChildren(); if (blank) n.add(new Option('Use model GPU', '')); for (const item of items) n.add(new Option(displayName(item), item.id)); if(selected!==undefined&&selected!==null){if(![...n.options].some(o=>o.value===String(selected)))n.add(new Option('Choose an available component',selected));n.value=selected;} }
   async function loadInventory() {
@@ -352,7 +356,7 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
       for (const [key, n] of Object.entries(finalFields)) if (defaults[key] !== undefined) n.value = defaults[key];
       finalComponents = h3LoraComponents(inventory.components, data.lora_components); finalLoras.setInventory(finalComponents); finalLoras.setValue(remembered && saved.final_config?.loras ? saved.final_config.loras : h3LoraStack(source));
       finalTitle.textContent = `Refine preview ${candidate.index} · seed ${candidate.seed}`; finalDescription.textContent = `Saved job ${job.id}. Reuses this preview’s latent and inputs; the draft above is separate.`; finalSection.hidden = false;
-      status.textContent = 'Preview selected. Review refinement settings before rendering.'; update(); save(); renderJobs(); if (!remembered) finalSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      status.textContent = 'Preview selected. Review refinement settings before rendering.'; update(); save(); renderJobs(); if (!remembered) { studio?.select('refine'); finalSection.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
     } catch (e) { fail(e); }
   }
   finalForm.onsubmit = async event => {
@@ -396,7 +400,7 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
   }
   function loadJobs(options = {}) { return jobPager.load(options); }
   refresh.onclick=loadInventory;refreshJobs.onclick=()=>loadJobs({reset:true});
-  jobEditor=createVideoJobEditor({form,request,isClosed:()=>closed,isBusy:()=>busy||loading||finalBusy||!!batchQueue?.busy,getDraft:()=>({config:config(),uploads:Object.fromEntries(Object.entries(uploads).map(([key,s])=>[key,[...s.files]]))}),applyEdit:value=>{editingComponents=value.lora_components||null;restore(value.config,{},value.inputs);},restoreDraft:value=>{editingComponents=null;restore(value.config,value.uploads);},onChange:update,onError:fail});
+  jobEditor=createVideoJobEditor({form,request,isClosed:()=>closed,isBusy:()=>busy||loading||finalBusy||!!batchQueue?.busy,getDraft:()=>({config:config(),uploads:Object.fromEntries(Object.entries(uploads).map(([key,s])=>[key,[...s.files]]))}),applyEdit:value=>{editingComponents=value.lora_components||null;restore(value.config,{},value.inputs);studio?.select('prepare');},restoreDraft:value=>{editingComponents=null;restore(value.config,value.uploads);},onChange:update,onError:fail});
   batchQueue=createVideoBatchQueue({family:'h3',recipe:'seed_hunter',sessionKey:'h3:seed_hunter',container:batchContainer,getSnapshot:batchSnapshot,onJob:()=>{if(!closed)loadJobs({reset:true});},onChange:()=>{if(!closed){revision++;update();}}});
   function nestedEditor(onChange, savedConfig) {
     const node=make('div','h3-video-grid'), rows=[];
@@ -418,10 +422,44 @@ export function showH3SeedHunter({} = {}, anchor = document.activeElement) {
   enhance.onclick=async()=>{const model=enhancer[Number(enhancerSelect.value)];if(!model||enhance.disabled)return;const before=prompt.value,captured=revision;enhancing=true;enhancerController=new AbortController();update();try{const payload={recipe:'seed_hunter',prompt:before,mode:'ref2va',width:Number(fields.width.value),height:Number(fields.height.value),frames:Number(fields.frames.value),endpoint_id:model.endpoint_id,model:model.model,reference_counts:seedHunterEnhancerInputs(uploads,readOptions()).counts};const body=new FormData();body.append('config',JSON.stringify(payload));for(const [key,files] of Object.entries(seedHunterEnhancerInputs(uploads,readOptions()).images))for(const file of files)body.append(key,file,file.name);const result=await request('/enhance-prompt',{method:'POST',body,signal:enhancerController.signal});if(!closed&&captured===revision&&prompt.value===before){if(!result.prompt?.trim()||result.prompt.length>16000)throw new Error('Enhancement returned no usable prompt.');previousPrompt=before;prompt.value=result.prompt;changed();status.textContent='Prompt enhanced. Review it before generating.';}}catch(e){if(e.name!=='AbortError')fail(e);}finally{enhancing=false;if(!closed)update();}};
   restorePrompt.onclick=()=>{if(previousPrompt!==null){prompt.value=previousPrompt;previousPrompt=null;changed();}};checkModels.onclick=checkEnhancer;
   function onKey(event){if(document.querySelector('.settings-help-tooltip'))return;if(document.querySelector('.video-server-files-overlay,.h3-lora-library-overlay,.video-workflow-export-overlay'))return;if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();}else if(event.key==='Tab'){const controls=[...dialog.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),summary,a[href]')].filter(n=>n.getClientRects().length);if(event.shiftKey&&document.activeElement===controls[0]){event.preventDefault();controls.at(-1)?.focus();}else if(!event.shiftKey&&document.activeElement===controls.at(-1)){event.preventDefault();controls[0]?.focus();}}}
-  const close=bindMenuDismiss(overlay,()=>{closed=true;disposeHelp();jobPager?.destroy();releaseVideoJobMedia(jobList);clearInterval(timer);window.removeEventListener('keydown',onKey,true);enhancerController?.abort();picker?.close();library?.close();queue?.destroy();batchQueue?.destroy();Object.values(uploads).forEach(state=>state.rangeEditors.forEach(editor=>editor.destroy()));overlay.remove();if(anchor?.isConnected)anchor.focus();},()=>false);
+  const close=bindMenuDismiss(overlay,()=>{closed=true;disposeHelp();studio?.destroy();jobPager?.destroy();releaseVideoJobMedia(jobList);clearInterval(timer);window.removeEventListener('keydown',onKey,true);enhancerController?.abort();picker?.close();library?.close();queue?.destroy();batchQueue?.destroy();Object.values(uploads).forEach(state=>state.rangeEditors.forEach(editor=>editor.destroy()));overlay.remove();if(anchor?.isConnected)anchor.focus();},()=>false);
   closeButton.onclick=close;window.addEventListener('keydown',onKey,true);closeButton.focus();
   for(const [key,value]of Object.entries({...BASE,...(saved.config||{})}))if(fields[key])fields[key].value=value;
   for(const key of NESTED){const n=options[key],v=saved.config?.seed_hunter?.[key]??OPTIONS[key];if(n.type==='checkbox')n.checked=v;else n.value=v??'';}
+  const transferBar = make('div', 'h3-video-toolbar'); transferBar.append(exportButton, importButton, importInput); scroll.append(transferBar);
+  const refineHelp = make('p', 'h3-video-muted', 'Choose a completed preview in Review to load its saved latent and edit refinement settings here.');
+  studio = createWorkflowStudio({
+    container: scroll, dialog, form, family: 'h3', recipe: 'seed_hunter', title: 'H3 Seed Hunter',
+    persistentNodes: [status, toolbar, error], actions: [actions],
+    sections: [
+      { id: 'inputs', title: 'Inputs', parent: form, nodes: [stage.parentElement, batchContainer, media] },
+      { id: 'prepare', title: 'Prepare', parent: form, nodes: [prompt.parentElement, enhancerBar, enhancerInfo, dialoguePanel.parentElement, continuationPanel.parentElement, audioPanel.parentElement] },
+      { id: 'setup', title: 'Model setup', parent: form, nodes: [componentGrid, loras.node] },
+      { id: 'generate', title: 'Generate', parent: form, nodes: [dimensions, sizeTools, advanced.parentElement] },
+      { id: 'review', title: 'Review', parent: scroll, nodes: [queueContainer, jobToolbar, jobStatus, jobPager.node, jobList] },
+      { id: 'refine', title: 'Refine', parent: scroll, nodes: [refineHelp, finalSection] },
+      { id: 'export', title: 'Export', parent: scroll, nodes: [transferBar] },
+    ],
+    getSummary: () => ({
+      model: fields.model.options[fields.model.selectedIndex]?.text || 'Choose H3 model',
+      encoder: fields.encoder.options[fields.encoder.selectedIndex]?.text || 'Choose encoder',
+      videoVae: fields.video_vae.options[fields.video_vae.selectedIndex]?.text || 'Choose video VAE',
+      audioVae: fields.audio_vae.options[fields.audio_vae.selectedIndex]?.text || 'Choose audio VAE',
+      loras: loras.getValue().map(row => ({ name: effectiveComponents().find(item => item.id === row.id)?.display_name || effectiveComponents().find(item => item.id === row.id)?.name || row.id, strength: row.strength, enabled: Number(row.strength) !== 0 })),
+      mode: stage.options[stage.selectedIndex]?.text || stage.value,
+      width: fields.width.value, height: fields.height.value, steps: fields.steps.value, seed: fields.seed.value,
+      inputCount: Object.values(uploads).reduce((count, state) => count + state.files.length + state.retained.length, 0), jobCount: jobPager.total,
+    }),
+    getPreview: () => {
+      return workflowStudioInputPreview(['source_video', 'reference_videos', 'first_frame', 'reference_images', 'reference_audio']
+        .filter(key => !uploads[key].wrap.hidden).flatMap(key => [...uploads[key].retained, ...uploads[key].files]), 'h3');
+    },
+    onApplyConverted: result => {
+      if (result.family !== 'h3' || result.config?.recipe !== 'seed_hunter') throw new Error('Choose a converted Seed Hunter workflow for this panel.');
+      if (busy || loading || finalBusy || enhancing || jobEditor?.active || jobEditor?.loading || batchQueue?.busy || queue?.busy || queue?.editing) throw new Error('Finish the current edit or submission before applying a workflow.');
+      restore({ ...config(), ...result.config, gpu: fields.gpu.value, vae_gpu: fields.vae_gpu.value }, {}); save(); studio?.select('setup');
+    },
+  });
   update();loadInventory();loadJobs();checkEnhancer();const timer=setInterval(()=>{if(!document.hidden)loadJobs();},3000);
   return{overlay,close};
 }

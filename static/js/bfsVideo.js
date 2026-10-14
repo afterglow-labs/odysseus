@@ -10,6 +10,8 @@ import { showVideoServerFiles } from './videoServerFiles.js';
 import { createVideoJobEditor, videoJobEditFormData } from './videoJobEdit.js';
 import { createVideoQueueControls, videoQueueField } from './videoQueue.js';
 import { createVideoJobReruns } from './videoJobRerun.js';
+import { createWorkflowStudio } from './workflowStudio.js';
+import { workflowStudioInputPreview } from './workflowStudioInput.js';
 
 const API = '/api/video/bfs';
 const STORAGE = 'odysseus-bfs-video-settings-v1';
@@ -50,7 +52,7 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
   let closed = false, inventory = null, workflow = null, loading = false, submitting = false, jobPager = null;
   let jobs = [], pollTimer, saved = {}, pendingPreferred = preferred, preferredAdapter = '', refreshFailed = false;
   let transferBusy = false, editRevision = 0, batchQueue = null, jobEditor = null, queueControls = null;
-  let serverPicker = null;
+  let serverPicker = null, studio = null;
   const controls = new Map(), slots = new Map(), files = new Map(), drafts = new Map(), jobNodes = new Map(), stopping = new Set(), deleting = new Set(), deletedJobs = new Set();
   try { saved = JSON.parse(localStorage.getItem(STORAGE)) || {}; } catch {}
   const overlay = el('div', 'cookbook-edit-overlay bfs-video-overlay'); overlay.style.zIndex = String(topPortalZ());
@@ -68,6 +70,7 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
   const refresh = button('Refresh components'); toolbar.append(availability, refresh); scroll.appendChild(toolbar);
   const transferBar = el('div', 'h3-video-toolbar h3-video-transfer-toolbar');
   const transferActions = el('div', 'h3-video-job-actions'), exportWorkflow = button('Export workflow'), importWorkflow = button('Import workflow');
+  importWorkflow.title = 'Import an Odysseus archive or convert ComfyUI workflow JSON';
   exportWorkflow.disabled = importWorkflow.disabled = true;
   const importFile = el('input'); importFile.type = 'file'; importFile.accept = '.json,.zip,application/json,application/zip'; importFile.hidden = true;
   const transferStatus = el('p', 'h3-video-muted'); transferStatus.setAttribute('role', 'status'); transferStatus.hidden = true;
@@ -260,6 +263,7 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
       const state = reruns.state(job); nodes.rerun.disabled = state.disabled;
       nodes.editRerun.disabled = state.disabled || !!queueControls?.blocked || nodes.editorLoading || state.pending || !inventory || !!jobEditor?.active || !!jobEditor?.loading;
     }
+    studio?.refresh();
   }
   function sourceRequirements() {
     const req = workflow?.source_requirements || {};
@@ -578,6 +582,7 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
   const close = bindMenuDismiss(overlay, () => {
     closed = true; clearInterval(pollTimer); window.removeEventListener('keydown', onKey, true);
     serverPicker?.close();
+    studio?.destroy();
     batchQueue?.destroy(); queueControls?.destroy(); jobPager?.destroy(); releaseVideoJobMedia(jobList);
     for (const state of files.values()) if (state.url) URL.revokeObjectURL(state.url);
     overlay.remove(); if (anchor?.isConnected) anchor.focus();
@@ -610,7 +615,7 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
     form, request, isClosed: () => closed,
     isBusy: () => !!queueControls?.busy || !!queueControls?.editing || submitting || loading || transferBusy || !!batchQueue?.busy,
     getDraft: () => ({ config: config(), uploads: Object.fromEntries([...files].map(([key, state]) => [key, state.file])) }),
-    applyEdit: value => { submissionStatus.hidden = true; applyEditorDraft(value.config, {}, value.inputs); },
+    applyEdit: value => { submissionStatus.hidden = true; applyEditorDraft(value.config, {}, value.inputs); studio?.select('prepare'); },
     restoreDraft: value => applyEditorDraft(value.config, value.uploads),
     onChange: updateReady, onError: setError,
   });
@@ -661,6 +666,39 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
         descriptors.push(videoQueueField('components.' + key, slot.label, control));
       }
       return descriptors;
+    },
+  });
+  studio = createWorkflowStudio({
+    container: scroll, dialog, form, family: 'bfs', title: 'BFS Video Workflows',
+    persistentNodes: [toolbar, error, missing, inputStatus], actions: [actions, submissionStatus],
+    sections: [
+      { id: 'inputs', title: 'Inputs', parent: form, nodes: [workflowPicker.parentElement, workflowNote, adapterNotice, batchContainer, inputGrid, sourceNote] },
+      { id: 'prepare', title: 'Prepare', parent: form, nodes: [prompt.parentElement] },
+      { id: 'setup', title: 'Model setup', parent: form, nodes: [componentsTitle, componentGrid] },
+      { id: 'generate', title: 'Generate', parent: form, nodes: [parameterGrid, dynamicControls] },
+      { id: 'review', title: 'Review', parent: scroll, nodes: [jobsHeader, jobsStatus, queueContainer, jobPager.node, jobList] },
+      { id: 'export', title: 'Export', parent: scroll, nodes: [transferBar] },
+    ],
+    getSummary: () => {
+      const selected = [...slots].map(([key, slot]) => ({ key, item: inventory?.components?.find(item => optionId(item.id) === slot.control.value) }));
+      const componentName = pattern => selected.find(row => pattern.test(row.key))?.item?.name || '';
+      return {
+        model: componentName(/model|diffusion/) || workflow?.name || 'Choose workflow',
+        encoder: componentName(/encoder|clip/), videoVae: componentName(/vae/), audioVae: componentName(/audio.*vae/),
+        loras: selected.filter(row => /lora|adapter/.test(row.key) || row.item?.role === 'lora').filter(row => row.item).map(row => ({ name: row.item.display_name || row.item.name, strength: config()[`${row.key}_scale`] ?? config().lora_scale ?? 1, enabled: true })),
+        mode: workflow?.name || workflow?.id || 'BFS', width: controls.get('width')?.control.value, height: controls.get('height')?.control.value,
+        steps: controls.get('steps')?.control.value, seed: controls.get('seed')?.control.value,
+        inputCount: [...files.values()].filter(state => state.allowed && (state.file || state.retained)).length, jobCount: jobPager.total,
+      };
+    },
+    getPreview: () => {
+      return workflowStudioInputPreview(['source_video', 'identity_image'].map(key => files.get(key))
+        .filter(state => state?.allowed).map(state => state.retained || state.file), 'bfs');
+    },
+    onApplyConverted: result => {
+      if (result.family !== 'bfs') throw new Error('Open this converted workflow in its matching workflow panel.');
+      if (submitting || loading || transferBusy || jobEditor?.active || jobEditor?.loading || batchQueue?.busy || queueControls?.busy || queueControls?.editing) throw new Error('Finish the current edit or submission before applying a workflow.');
+      applyEditorDraft({ ...result.config, gpu: gpu.value }, {}); save(); studio?.select('setup');
     },
   });
   loadInventory(); loadJobs(); pollTimer = setInterval(() => { if (!document.hidden) loadJobs(); }, 2000);

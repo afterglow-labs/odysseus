@@ -814,6 +814,8 @@ from routes.h3_video_routes import setup_h3_video_routes
 app.include_router(setup_h3_video_routes())
 from routes.bfs_video_routes import setup_bfs_video_routes
 app.include_router(setup_bfs_video_routes())
+from routes.workflow_conversion_routes import setup_workflow_conversion_routes
+app.include_router(setup_workflow_conversion_routes())
 
 from routes.workspace_routes import setup_workspace_routes
 app.include_router(setup_workspace_routes())

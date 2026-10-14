@@ -25,6 +25,9 @@ def _owner(request):
 
 
 def _failure(exc):
+    from src.comfy_workflow_conversion import ComfyConversionFailure
+    if isinstance(exc, ComfyConversionFailure):
+        return HTTPException(400, {"message": str(exc), "conversion": exc.report})
     if isinstance(exc, FileNotFoundError):
         return HTTPException(404, 'Workflow transfer, saved job, or file not found')
     if isinstance(exc, OSError):

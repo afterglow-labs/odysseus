@@ -19,7 +19,9 @@ async function jsonResponse(response) {
   try { data = await response.json(); } catch {}
   if (!response.ok) {
     const error = data.detail || data.error;
-    throw new Error(typeof error === 'string' ? error : `Workflow request failed (${response.status}).`);
+    const issues = error?.conversion?.issues;
+    const message = typeof error === 'string' ? error : error?.message || `Workflow request failed (${response.status}).`;
+    throw new Error(Array.isArray(issues) && issues.length ? `${message}\n${issues.map(item => `${item.node_type ? `${item.node_type} (node ${item.node_id}): ` : ''}${item.message}`).join('\n')}` : message);
   }
   return data;
 }

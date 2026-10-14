@@ -6,6 +6,8 @@ on desktop, or the separate **H3 Seed Hunter** workflow in the iOS client.
 It uses the existing private Comfy inference core without a ComfyUI window or
 server. It is an implemented recipe, not an arbitrary Comfy graph executor.
 
+The [workflow studio](workflow-studio.md) provides Pipeline and Node map views of the same draft, plus ComfyUI JSON conversion.
+
 ## Preview, choose, refine
 
 1. Choose a Ref2VA checkpoint, encoder, VAEs and adapters. The source workflow's

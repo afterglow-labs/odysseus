@@ -60,6 +60,8 @@ const topPortalZ=()=>1,bindMenuDismiss=(node,close)=>close,dismissOrRemove=()=>{
 const videoWorkflow={};
 const createVideoJobPager=()=>({counts:{},total:0,load:async()=>{},destroy(){}});
 const releaseVideoJobMedia=()=>{};
+let studioOptions,studioSelection;
+const createWorkflowStudio=options=>{studioOptions=options;return{select(id){studioSelection=id;},refresh(){},destroy(){}};};
 let batch,editor,editorOptions;
 const createVideoBatchQueue=options=>(batch={...options,active:false,busy:false,setAvailable(){},setEnabled(enabled,issue){this.enabled=enabled;this.issue=issue;},destroy(){}});
 const createVideoJobEditor=options=>{editorOptions=options;return editor={active:null,loading:false,observe(){},finish(){}};};
