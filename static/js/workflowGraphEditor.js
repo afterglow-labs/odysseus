@@ -4,6 +4,8 @@ import { topPortalZ } from './toolWindowZOrder.js';
 import { graphFieldMultiline, graphOutputKind, graphPortHelp } from './workflowGraphPresentation.js';
 
 const API = '/api/workflow-graphs', DRAFT = 'odysseus-workflow-graph-draft-v1';
+let retainedDraft = null;
+const copyBindings = value => Object.fromEntries(Object.entries(value || {}).map(([key,items]) => [key,[...items]]));
 const make = (tag, cls = '', text) => { const n = document.createElement(tag); n.className = cls; if (text !== undefined) n.textContent = text; return n; };
 const button = (text, run, cls = '') => { const b = make('button', `wg-button ${cls}`, text); b.type = 'button'; b.onclick = run; return b; };
 const friendly = value => String(value || '').replaceAll('_',' ').replace(/\b\w/g,l => l.toUpperCase());
@@ -38,6 +40,7 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
   const packagesBtn = button('Node packages',openPackages);
   toolbar.append(tabs,addBtn,packagesBtn,undoBtn,redoBtn,validateBtn,runBtn);
   const notice = make('p','wg-notice'); notice.setAttribute('role','status'); notice.setAttribute('aria-live','polite'); notice.hidden = true;
+  const setupNotes = make('details','wg-setup-notes'); setupNotes.hidden = true;
   const workspace = make('div','wg-workspace'), main = make('div','wg-main'), inspector = make('aside','wg-inspector'); inspector.setAttribute('aria-label','Operation settings');
   const pipeline = make('div','wg-pipeline'); pipeline.setAttribute('aria-label','Workflow operations');
   const canvas = make('div','wg-canvas'), canvasTools = make('div','wg-canvas-tools');
@@ -45,29 +48,50 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
   zoomOut.setAttribute('aria-label','Zoom out'); zoomIn.setAttribute('aria-label','Zoom in');
   const foldBtn = button('Collapse setup hubs',() => { collapsed = !collapsed; foldBtn.textContent = collapsed ? 'Expand setup hubs' : 'Collapse setup hubs'; renderCanvas(); });
   canvasTools.append(foldBtn,button('Arrange',() => store.layout()),zoomOut,zoomLabel,zoomIn,button('Fit',fit));
-  const wireHint = make('span','wg-wire-hint','Connect: choose an output, then an input. Drag a block to move it.');
+  const wireHint = make('span','wg-wire-hint','Drag the background to pan. Drag a block to move it. Connect an output to an input.');
   canvasTools.append(wireHint);
   const viewport = make('div','wg-viewport'); viewport.tabIndex = 0; viewport.setAttribute('aria-label','Editable workflow canvas');
   const space = make('div','wg-space'), scene = make('div','wg-scene'); space.append(scene); viewport.append(space); canvas.append(canvasTools,viewport); main.append(pipeline,canvas); workspace.append(main,inspector);
   const footer = make('section','wg-footer'), validation = make('details','wg-validation'), validationTitle = make('summary','','Execution plan'); validation.append(validationTitle);
   const validationBody = make('div','wg-validation-body'); validation.append(validationBody);
   const runs = make('details','wg-runs'), runsTitle = make('summary','','Recent workflow runs'), runsBody = make('div','wg-runs-body'); runs.append(runsTitle,runsBody); runs.ontoggle = () => { if (runs.open) refreshRuns(); };
-  footer.append(validation,runs); root.append(header,toolbar,notice,workspace,footer);
+  footer.append(validation,runs); root.append(header,toolbar,notice,setupNotes,workspace,footer);
   const importPicker = make('input'); importPicker.type = 'file'; importPicker.accept = '.json,application/json'; importPicker.hidden = true; root.append(importPicker);
-  let catalog = {}, inventory = {}, store, selected = null, view = 'pipeline', dirty = false, savedId = null, revision = null, lastSaved = '', bindings = {}, zoom = 1, collapsed = true, wireStart = null, edgeSelected = null, closed = false, validationController = null, generation = 0, validationTimer, runsTimer, libraryPanel = null, validated = null, queueing = false, importing = false, saving = false, loadToken = 0, frame, drag = null, requestId = null;
+  let catalog = {}, inventory = {}, store, selected = null, view = 'pipeline', dirty = false, savedId = null, revision = null, lastSaved = '', bindings = {}, zoom = 1, collapsed = true, wireStart = null, edgeSelected = null, closed = false, validationController = null, generation = 0, validationTimer, runsTimer, libraryPanel = null, validated = null, queueing = false, importing = false, saving = false, loadToken = 0, frame, drag = null, requestId = null, pan = {x:0,y:0}, panGesture = null;
   const mediaUrls = new Set(), runCards = new Map();
   const tell = (text,error = false) => { notice.hidden = !text; notice.textContent = text; notice.classList.toggle('wg-error',error); };
+  function renderSetupNotes(notes) {
+    const values = Array.isArray(notes) ? notes.filter(note => typeof note === 'string' || typeof note?.message === 'string') : [];
+    setupNotes.hidden = !values.length; setupNotes.replaceChildren(make('summary','',`Workflow setup · ${values.length} note${values.length === 1 ? '' : 's'}`));
+    const body = make('div','wg-setup-notes-body');
+    for (const note of values) { const row = make('p',note.severity === 'error' ? 'wg-error' : 'wg-muted',typeof note === 'string' ? note : note.message); if (note.node_id && store?.document.nodes.some(n => n.id === note.node_id)) row.append(button('Inspect',() => select(note.node_id))); body.append(row); }
+    setupNotes.append(body);
+  }
   const currentDocument = () => clone(store?.document || blankWorkflowGraph());
   const persist = () => {
     if (!store) return;
     const serializable = Object.fromEntries(Object.entries(bindings).map(([id,items]) => [id,items.filter(f => f.serverFile).map(f => ({name:f.name,serverFile:f.serverFile}))]).filter(([,v]) => v.length));
-    try { localStorage.setItem(DRAFT,JSON.stringify({document:store.document,savedId,revision,serverBindings:serializable,view,selected})); } catch {}
+    try { const serialized = JSON.stringify({document:store.document,savedId,revision,serverBindings:serializable,view,selected}); localStorage.setItem(DRAFT,serialized); retainedDraft = {serialized,bindings:copyBindings(bindings)}; } catch {}
   };
   const updateDirty = () => { dirty = JSON.stringify(store?.document) !== lastSaved; saved.textContent = `${savedId ? `Revision ${revision}` : 'Local draft'}${dirty ? ' · Unsaved changes' : ' · Saved'} · ${store?.document.nodes.length || 0} operations`; saveBtn.disabled = saving || !store; undoBtn.disabled = !store?.canUndo; redoBtn.disabled = !store?.canRedo; };
-  function select(id) { selected = id; edgeSelected = null; persist(); renderPipeline(); renderCanvas(); renderInspector(); if (window.matchMedia('(max-width:720px)').matches) requestAnimationFrame(() => { workspace.scrollTop = inspector.offsetTop - workspace.offsetTop; }); }
+  function select(id) {
+    selected = id; edgeSelected = null; persist(); renderPipeline(); renderCanvas(); renderInspector();
+    if (window.matchMedia('(max-width:720px)').matches) {
+      validation.open = false; runs.open = false; setupNotes.open = false;
+      requestAnimationFrame(() => { workspace.scrollTop = inspector.offsetTop - workspace.offsetTop; });
+    }
+  }
   function setView(next) { workspace.scrollTop = 0; view = next; root.dataset.view = next; pipeline.hidden = next !== 'pipeline'; canvas.hidden = next !== 'nodes'; pipelineTab.setAttribute('aria-pressed',String(next === 'pipeline')); nodesTab.setAttribute('aria-pressed',String(next === 'nodes')); persist(); if (next === 'nodes') renderCanvas(); }
-  function setZoom(next) { zoom = Math.max(.35,Math.min(1.75,next)); scene.style.transform = `scale(${zoom})`; space.style.width = `${Number(scene.dataset.width || 1000)*zoom}px`; space.style.height = `${Number(scene.dataset.height || 500)*zoom}px`; zoomLabel.textContent = `${Math.round(zoom*100)}%`; }
-  function fit() { if (!store?.document.nodes.length) return; setZoom(Math.min(1,(viewport.clientWidth-24)/Number(scene.dataset.width || 1000),(viewport.clientHeight-24)/Number(scene.dataset.height || 500))); viewport.scrollLeft = 0; viewport.scrollTop = 0; }
+  function setZoom(next) { zoom = Math.max(.35,Math.min(1.75,next)); scene.style.transform = `translate(${pan.x}px,${pan.y}px) scale(${zoom})`; space.style.width = `${Math.max(viewport.clientWidth,Number(scene.dataset.width || 1000)*zoom+Math.max(0,pan.x))}px`; space.style.height = `${Math.max(viewport.clientHeight,Number(scene.dataset.height || 500)*zoom+Math.max(0,pan.y))}px`; zoomLabel.textContent = `${Math.round(zoom*100)}%`; }
+  function fit() { if (!store?.document.nodes.length) return; pan = {x:0,y:0}; setZoom(Math.min(1,(viewport.clientWidth-24)/Number(scene.dataset.width || 1000),(viewport.clientHeight-24)/Number(scene.dataset.height || 500))); viewport.scrollLeft = 0; viewport.scrollTop = 0; }
+  viewport.onpointerdown = event => {
+    if (event.button !== 0 || event.target.closest('.wg-node,.wg-wire-hit,button,input,select,textarea,a') || panGesture) return;
+    event.preventDefault(); viewport.focus({preventScroll:true});
+    panGesture = {id:event.pointerId,x:event.clientX,y:event.clientY,origin:{...pan}}; viewport.setPointerCapture(event.pointerId); viewport.classList.add('wg-panning');
+  };
+  viewport.onpointermove = event => { if (!panGesture || event.pointerId !== panGesture.id) return; event.preventDefault(); pan = {x:panGesture.origin.x+event.clientX-panGesture.x,y:panGesture.origin.y+event.clientY-panGesture.y}; setZoom(zoom); };
+  const stopPan = event => { if (!panGesture || event.pointerId !== panGesture.id) return; if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId); panGesture = null; viewport.classList.remove('wg-panning'); };
+  viewport.onpointerup = stopPan; viewport.onpointercancel = stopPan; viewport.onlostpointercapture = () => { panGesture = null; viewport.classList.remove('wg-panning'); };
   function handleChange(document,reason) {
     if (selected && !document.nodes.some(n => n.id === selected)) selected = document.nodes[0]?.id || null;
     requestId = null; validated = null; runBtn.disabled = queueing || !document.nodes.length; generation++; validationController?.abort(); clearTimeout(validationTimer);
@@ -78,6 +102,7 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
   function replace(document,{id = null,rev = null,media = {}} = {}) {
     loadToken++; savedId = id; revision = rev; bindings = media; selected = document.nodes?.[0]?.id || null; wireStart = null; edgeSelected = null;
     lastSaved = id ? JSON.stringify(document) : ''; store.replace(document); closePanel();
+    renderSetupNotes(document.metadata?.setup_notes);
   }
   title.onchange = () => store?.title(title.value.trim() || 'Untitled workflow');
   function openPanel(label) {
@@ -139,11 +164,11 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
   }
   async function openLibrary(fresh) {
     const panel = openPanel(fresh ? 'New workflow' : 'Workflow library');
-    panel.append(make('p','wg-muted',fresh ? 'Start with a blank graph or an editable template. Every operation and connection can be changed.' : 'Saved on this Odysseus server. Opening a workflow restores its graph and settings.'));
+    panel.append(make('p','wg-muted',fresh ? 'Start with a blank graph or an editable template. Every operation and connection can be changed.' : 'Saved on this Odysseus server. Library workflows restore settings and connections; attach media again before queuing.'));
     const cards = make('div','wg-library-grid'); panel.append(cards);
     if (fresh) {
       cards.append(libraryCard('Blank workflow','Build your own connected operations.',() => replace(blankWorkflowGraph())));
-      for (const template of catalog.templates || []) cards.append(libraryCard(template.title || template.name || template.id,template.description || 'Editable workflow template',() => replace(clone(template.document || template.graph))));
+      for (const template of catalog.templates || []) cards.append(libraryCard(template.title || template.name || template.id,template.description || 'Editable workflow template',() => { replace(clone(template.document || template.graph)); renderSetupNotes(template.setup_notes || template.document?.metadata?.setup_notes); }));
       return;
     }
     try {
@@ -219,6 +244,7 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
     }
     for (const n of nodes) {
       const b = box.get(n.id), card = make('article',`wg-node${n.id === selected && !edgeSelected ? ' selected' : ''}${!store.types.has(n.type) ? ' unsupported' : ''}`); card.dataset.graphNode = n.id; card.style.left = `${b.x}px`; card.style.top = `${b.y}px`; card.style.height = `${b.h}px`; card.style.width = '220px';
+      card.onpointerdown = event => { if (!event.target.closest('button,input,select,textarea,a')) startDrag(event,n,card); };
       const head = button(nameOf(n,store.types),() => select(n.id),'wg-node-head'); head.title = 'Select to inspect. Drag to move.'; head.onpointerdown = event => startDrag(event,n,card); card.append(head);
       const category = store.types.get(n.type)?.category || n.type;
       card.append(make('small','wg-node-type',n.state && n.state !== 'active' ? `${category} · ${n.state}` : n.type === 'hub.setup' ? 'Model · applied LoRAs · encoder · VAEs' : category));
@@ -241,10 +267,10 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
     if (!nodes.length) { const empty = make('div','wg-canvas-empty'); empty.append(make('h3','','A blank canvas, ready to connect'),button('Add an operation',openCatalog,'wg-primary')); scene.append(empty); }
   }
   function startDrag(event,n,card) {
-    if (event.button !== 0) return; const x = event.clientX,y = event.clientY, old = {x:parseFloat(card.style.left),y:parseFloat(card.style.top)}; let moved = false;
+    if (event.button !== 0) return; event.stopPropagation(); const x = event.clientX,y = event.clientY, old = {x:parseFloat(card.style.left),y:parseFloat(card.style.top)}; let moved = false;
     const move = e => { if (Math.abs(e.clientX-x)+Math.abs(e.clientY-y)<5 && !moved) return; moved = true; card.style.left = `${Math.max(16,Math.round((old.x+(e.clientX-x)/zoom)/16)*16)}px`; card.style.top = `${Math.max(16,Math.round((old.y+(e.clientY-y)/zoom)/16)*16)}px`; };
-    const up = () => { window.removeEventListener('pointermove',move); window.removeEventListener('pointerup',up); if (moved) { const pos = {x:parseFloat(card.style.left),y:parseFloat(card.style.top)}; store.patch(n.id,{position:pos},'move'); } drag = null; };
-    drag = {move,up}; window.addEventListener('pointermove',move); window.addEventListener('pointerup',up,{once:true});
+    const up = () => { window.removeEventListener('pointermove',move); window.removeEventListener('pointerup',up); window.removeEventListener('pointercancel',up); if (moved) { const pos = {x:parseFloat(card.style.left),y:parseFloat(card.style.top)}; store.patch(n.id,{position:pos},'move'); } drag = null; };
+    drag = {move,up}; window.addEventListener('pointermove',move); window.addEventListener('pointerup',up,{once:true}); window.addEventListener('pointercancel',up,{once:true});
   }
   function choosePort(event,n,p,direction) {
     event.stopPropagation();
@@ -279,7 +305,11 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
     if (!n) { inspector.append(make('h2','','Operation settings'),make('p','wg-muted','Select an operation in either view to edit its parameters and connections.')); return; }
     const spec = store.types.get(n.type); inspector.append(button(`← Back to ${view === 'nodes' ? 'canvas' : 'operations'}`,() => { workspace.scrollTop = 0; },'wg-back-to-map')); inspector.append(make('span','wg-kicker',n.type),make('h2','',nameOf(n,store.types)));
     if (spec?.description) inspector.append(make('p','wg-muted',spec.description));
-    const controls = make('div','wg-inspector-actions'); controls.append(button('Duplicate',() => { selected = store.duplicate(n.id); renderInspector(); renderPipeline(); renderCanvas(); }),button('Delete operation',() => { store.remove(n.id); tell('Operation deleted. Undo restores its connections.'); })); inspector.append(controls);
+    const controls = make('div','wg-inspector-actions'); controls.append(button('Duplicate',() => {
+      const id = store.duplicate(n.id); if (!id) return;
+      for (const key of Object.keys(bindings)) if (key === n.id || key.startsWith(`${n.id}::`)) bindings[id+key.slice(n.id.length)] = [...bindings[key]];
+      selected = id; persist(); renderInspector(); renderPipeline(); renderCanvas();
+    }),button('Delete operation',() => { store.remove(n.id); tell('Operation deleted. Undo restores its connections.'); })); inspector.append(controls);
     const label = make('input','wg-input'); label.value = n.title || ''; label.placeholder = spec?.label || n.type; label.onchange = () => store.patch(n.id,{title:label.value}); inspector.append(fieldLabel('Operation name',label));
     const state = make('select','wg-input'); for (const [value,label] of [['active','Enabled'],['disabled','Disabled'],['bypassed','Bypassed']]) { if (value === 'bypassed' && !spec?.bypass && n.state !== 'bypassed') continue; state.add(new Option(label,value)); }
     state.value = n.state || 'active'; state.onchange = () => store.patch(n.id,{state:state.value}); inspector.append(fieldLabel('Operation state',state));
@@ -289,6 +319,7 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
       renderConnections(n); return;
     }
     if (n.type.startsWith('input.') && ['image','video','audio','refmod'].includes(n.type.slice(6))) inspector.append(renderMediaInput(n));
+    if (spec.execution !== 'comfy' && portList(n,'inputs').some(p => ['IMAGE','VIDEO','AUDIO','REFMOD'].includes(p.type))) inspector.append(renderReferenceAttachments(n));
     for (const f of graphFields(spec)) {
       if (['asset','name'].includes(f.id) && ['input.image','input.video','input.audio','input.refmod'].includes(n.type)) continue;
       inspector.append(parameterControl(n,f));
@@ -354,7 +385,9 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
     const bindingKey = options.parameter && store.types.get(n.type)?.execution === 'comfy' ? `${n.id}::${options.parameter}` : n.id;
     const apply = items => { requestId = null; bindings[bindingKey] = items; store.parameter(n.id,options.parameter || 'name',items.map(f => f.name).join(', ')); persist(); renderInspector(); };
     picker.onchange = () => { if (picker.files?.length) apply([...picker.files]); };
-    box.append(button(`Choose ${kind}`,() => picker.click()),picker);
+    const missing = n.params?.[options.parameter || 'name'] && !bindings[bindingKey]?.length;
+    box.append(button(missing ? 'Attach again' : `Choose ${kind}`,() => picker.click()),picker);
+    bindMediaDrop(box,kind,items => apply(items.slice(0,1)));
     if (kind === 'video') box.append(button('Server files · E: / F:',event => showVideoServerFiles({family:'h3',multiple:false,onSelect:apply},event.currentTarget)));
     const items = bindings[bindingKey] || [];
     if (!items.length) list.append(make('p','wg-muted',n.params?.[options.parameter || 'name'] ? `${n.params[options.parameter || 'name']} · Select the file to attach it to this draft.` : `No ${kind} attached.`));
@@ -367,6 +400,68 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
       })); list.append(row);
     }
     box.append(list); return box;
+  }
+  function bindMediaDrop(box,kind,apply) {
+    const extensions = {video:/\.(mp4|m4v|mov|webm|mkv|avi|mpeg|mpg|mts|m2ts)$/i,image:/\.(png|jpe?g|webp|gif|avif|heic|heif|bmp|tiff?)$/i,audio:/\.(wav|mp3|m4a|aac|ogg|flac|opus|aiff?)$/i,refmod:/\.safetensors$/i};
+    box.ondragover = event => { if ([...event.dataTransfer?.types || []].includes('Files')) { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'copy'; box.classList.add('wg-drop-active'); } };
+    box.ondragleave = event => { if (!box.contains(event.relatedTarget)) box.classList.remove('wg-drop-active'); };
+    box.ondrop = event => {
+      event.preventDefault(); event.stopPropagation(); box.classList.remove('wg-drop-active');
+      const files = [...event.dataTransfer?.files || []], accepted = files.filter(file => file.type.startsWith(`${kind}/`) || extensions[kind]?.test(file.name));
+      if (accepted.length) apply(accepted);
+      if (accepted.length !== files.length) tell(`Only ${kind === 'refmod' ? 'safetensors' : kind} files can be attached here.`,true);
+    };
+  }
+  function renderReferenceAttachments(n) {
+    const bundle = n.type === 'input.references';
+    const group = make('section','wg-reference-attachments'); group.append(make('h3','wg-subheading',bundle ? 'Attach references' : 'Attach media'),make('p','wg-muted',bundle ? 'Multiple references stay together in this job. Add files here or connect existing inputs below.' : 'Choose files for these inputs, or connect existing media operations below.'));
+    const labels = {reference_videos:'Reference videos',reference_images:'Reference images',reference_audio:'Reference audio',source_video:'Source video',first_frame:'First frame',last_frame:'Last frame',reference_mods:'Reference mods',identity_image:'Face / head image',mask_video:'Mask video'};
+    const help = {reference_videos:'Video references for the generated scene. Add several files to use them together.',reference_images:'Image references for the generated scene.',reference_audio:'Audio references used together in this job.',source_video:'One aligned source video to edit or follow. This is separate from numbered references.',first_frame:'Use this image as the first frame.',last_frame:'Use this image as the last frame.',reference_mods:'Attach precomputed reference modifier files.'};
+    const available = portList(n,'inputs').filter(p => ['IMAGE','VIDEO','AUDIO','REFMOD'].includes(p.type));
+    const keys = [...Object.keys(labels).filter(key => available.some(p => p.id === key)),...available.map(p => p.id).filter(key => !Object.hasOwn(labels,key))];
+    for (const key of keys) {
+      const port = portList(n,'inputs').find(p => p.id === key); if (!port) continue;
+      const kind = {VIDEO:'video',IMAGE:'image',AUDIO:'audio',REFMOD:'refmod'}[port.type]; if (!kind) continue;
+      const label = labels[key] || port.label || friendly(key), edges = store.document.edges.filter(e => e.target.node === n.id && e.target.port === key);
+      const section = make('details','wg-reference-slot'); section.dataset.referencePort = key; section.open = key === (bundle ? 'reference_videos' : keys[0]) || !!edges.length;
+      section.append(make('summary','',`${label}${edges.length ? ` · ${edges.length}` : ''}`));
+      const box = make('div','wg-media-input'); box.append(make('p','wg-muted',help[key] || `Choose ${port.multiple ? kind+' files' : 'one '+kind+' file'} for ${label.toLowerCase()}.`));
+      const picker = make('input'); picker.type = 'file'; picker.hidden = true; picker.multiple = !!port.multiple; picker.accept = kind === 'refmod' ? '.safetensors' : `${kind}/*`; picker.setAttribute('aria-label',`Attach ${label.toLowerCase()}`);
+      const attach = items => {
+        if (!items.length) return;
+        try {
+          const chosen = port.multiple ? items : items.slice(0,1), ids = store.attachMedia({node:n.id,port:key},kind,chosen.map(item => item.name));
+          ids.forEach((id,index) => { bindings[id] = [chosen[index]]; }); requestId = null; persist(); renderInspector();
+          tell(`${chosen.length} ${kind}${chosen.length === 1 ? '' : 's'} attached to ${label.toLowerCase()} in this job.`);
+        } catch(error) { tell(error.message,true); }
+      };
+      picker.onchange = () => { if (picker.files?.length) attach([...picker.files]); picker.value = ''; };
+      const choose = button(port.multiple ? `Add ${kind === 'refmod' ? 'reference mods' : kind+'s'}` : `Choose ${kind}`,() => picker.click()); choose.setAttribute('aria-label',`${port.multiple ? 'Add' : 'Choose'} ${label.toLowerCase()}`); box.append(choose,picker);
+      if (kind === 'video') box.append(button('Server files · E: / F:',event => showVideoServerFiles({family:n.type.startsWith('bfs.') ? 'bfs' : 'h3',multiple:!!port.multiple,onSelect:attach},event.currentTarget)));
+      box.append(make('small','wg-muted',`Or drop ${kind === 'refmod' ? '.safetensors files' : kind+' files'} here.`)); bindMediaDrop(box,kind,attach);
+      for (const edge of edges) {
+        const source = store.document.nodes.find(node => node.id === edge.source.node), row = make('div','wg-reference-file');
+        row.append(make('strong','',source?.params?.name || nameOf(source,store.types)));
+        const attached = bindings[source?.id]?.[0];
+        const actions = make('div','wg-toolbar');
+        if (source?.type === `input.${kind}` && !attached) {
+          row.append(make('small','wg-error','This saved file needs to be attached again before queuing.'));
+          const again = make('input'); again.type = 'file'; again.hidden = true; again.accept = picker.accept;
+          again.onchange = () => { const file = again.files?.[0]; if (file) { bindings[source.id] = [file]; store.patch(source.id,{title:file.name,params:{...source.params,name:file.name}}); persist(); renderInspector(); } };
+          actions.append(button('Attach again',() => again.click()),again);
+          if (kind === 'video') actions.append(button('Server files · E: / F:',event => showVideoServerFiles({family:n.type.startsWith('bfs.') ? 'bfs' : 'h3',multiple:false,onSelect:items => { if (items[0]) { bindings[source.id] = [items[0]]; store.patch(source.id,{title:items[0].name,params:{...source.params,name:items[0].name}}); persist(); renderInspector(); } }},event.currentTarget)));
+        }
+        actions.append(button('Open input',() => select(source.id)),button(bundle ? 'Remove reference' : 'Remove input',() => store.detachMedia(edge.id)));
+        if (attached && kind !== 'refmod') actions.append(button('Preview',() => {
+          if (row.querySelector('.wg-media-preview')) return;
+          let url; if (attached.serverFile) url = `/api/video/h3/server-files/video?${new URLSearchParams(attached.serverFile)}`; else { url = URL.createObjectURL(attached); mediaUrls.add(url); }
+          const media = make(kind === 'image' ? 'img' : kind,'wg-media-preview'); media.src = url; if (kind === 'image') media.alt = attached.name; else { media.controls = true; media.preload = 'metadata'; } row.append(media);
+        }));
+        row.append(actions); box.append(row);
+      }
+      section.append(box); group.append(section);
+    }
+    return group;
   }
   function compatibleSources(n,p) {
     const options = [];
@@ -425,6 +520,7 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
       const result = await post('/import',{workflow,title:file.name.replace(/\.json$/i,'')}); if (closed || token !== loadToken) return;
       if (!result.document?.nodes || !result.document?.edges) throw new Error('Import returned an invalid workflow graph.');
       replace(result.document); tell(`${file.name} imported. All operations and connections are retained; review any unsupported operations before queuing.`);
+      renderSetupNotes(result.setup_notes || result.document.metadata?.setup_notes);
       if (result.issues?.length) { validation.open = true; renderValidation({valid:false,issues:result.issues,plan:[]}); }
     } catch(e) { if (!closed && token === loadToken) tell(`Import failed: ${e.message}. Your draft was kept.`,true); } finally { importing = false; importBtn.disabled = false; }
   };
@@ -435,7 +531,8 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
     if (closed || !validated?.valid) { queueing = false; runBtn.disabled = !store.document.nodes.length; runBtn.textContent = 'Queue workflow'; if (!closed) { validation.open = true; tell('Resolve the execution plan issues before queuing.',true); } return; }
     runBtn.textContent = 'Queuing…';
     const snapshot = currentDocument(), body = new FormData(), runtimeBindings = {}; body.append('document',JSON.stringify(snapshot)); requestId ||= workflowRequestId(); body.append('request_id',requestId);
-    const bindingKeys = snapshot.nodes.flatMap(n => [n.id,...(store.types.get(n.type)?.execution === 'comfy' ? graphFields(store.types.get(n.type)).filter(f => f.editor === 'media').map(f => `${n.id}::${f.id}`) : [])]);
+    const plan = Array.isArray(validated.plan) ? validated.plan : validated.plan?.steps || [];
+    const bindingKeys = [...new Set(plan.flatMap(step => Object.values(step.inputs || {}).flat()).filter(key => typeof key === 'string'))];
     for (const key of bindingKeys) if (bindings[key]?.length) { runtimeBindings[key] = bindings[key].map(file => {
       if (file.serverFile) return {server:clone(file.serverFile)}; const key = graphId('input'); body.append(key,file,file.name); return {upload:key};
     }); }
@@ -549,12 +646,15 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
     for (const b of [newBtn,libraryBtn,saveBtn,importBtn,exportBtn,addBtn,packagesBtn,validateBtn,runBtn,undoBtn,redoBtn]) b.disabled = true;
     try {
       catalog = await request('/catalog'); if (closed) return; inventory = catalog.inventory?.h3 || {};
-      let draft; try { draft = JSON.parse(localStorage.getItem(DRAFT) || 'null'); } catch {}
+      let draft, serialized; try { serialized = localStorage.getItem(DRAFT); draft = JSON.parse(serialized || 'null'); } catch {}
       const restored = initial.document || draft?.document || blankWorkflowGraph(); store = createWorkflowGraphStore(restored,catalog);
-      savedId = initial.document ? null : draft?.savedId || null; revision = initial.document ? null : draft?.revision || null; bindings = initial.document ? initial.bindings || {} : draft?.serverBindings || {}; selected = draft?.selected || restored.nodes[0]?.id || null;
+      savedId = initial.document ? null : draft?.savedId || null; revision = initial.document ? null : draft?.revision || null; bindings = initial.document ? initial.bindings || {} : retainedDraft && retainedDraft.serialized === serialized ? copyBindings(retainedDraft.bindings) : draft?.serverBindings || {}; selected = draft?.selected || restored.nodes[0]?.id || null;
       view = draft?.view === 'nodes' ? 'nodes' : 'pipeline'; lastSaved = ''; store.subscribe(handleChange);
       for (const b of [newBtn,libraryBtn,saveBtn,importBtn,exportBtn,addBtn,packagesBtn,validateBtn]) b.disabled = false;
       title.value = restored.title; handleChange(restored,'replace'); setView(view); title.focus();
+      renderSetupNotes(initial.setup_notes || restored.metadata?.setup_notes);
+      const missing = restored.nodes.filter(n => ['input.image','input.video','input.audio','input.refmod'].includes(n.type) && n.params?.name && !bindings[n.id]?.length);
+      if (missing.length) tell(`${missing.length} saved media input${missing.length === 1 ? '' : 's'} need files attached again. Open the input or reference bundle and choose Attach again.`,true);
       if (!restored.nodes.length && !initial.document) openLibrary(true);
     } catch(e) { tell(`Could not open the workflow builder: ${e.message}`,true); saved.textContent = 'Server unavailable'; }
   }

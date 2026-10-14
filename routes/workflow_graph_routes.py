@@ -133,6 +133,7 @@ async def stage_bindings(root, document, bindings, form, limit):
 def setup_workflow_graph_routes(store=None, runs=None, managers=None):
     from src.workflow_graph import catalog, compile_graph, new_document, validate_document
     from src.workflow_graph_import import import_comfyui, from_native_config
+    from src.workflow_graph_setup import configure_workflow
     from src.workflow_graph_runs import GraphRunManager
     from src.comfy_workflow import ComfyJobManager
     managers = managers or {"h3": H3JobManager(), "bfs": BFSJobManager(), "comfy": ComfyJobManager()}
@@ -166,9 +167,13 @@ def setup_workflow_graph_routes(store=None, runs=None, managers=None):
     async def get_catalog(request: Request):
         _owner(request)
         data = catalog()
-        templates = [{**row, "document": new_document(title=row["title"], template=row["id"])}
-                     for row in data.get("templates", [])]
-        return {**data, "templates": templates, "inventory": await inventories()}
+        available = await inventories()
+        templates = []
+        for row in data.get("templates", []):
+            document, notes = configure_workflow(new_document(title=row["title"], template=row["id"]),
+                                                 available, template=True)
+            templates.append({**row, "document": document, "setup_notes": notes})
+        return {**data, "templates": templates, "inventory": available}
 
     @router.get("/documents")
     async def documents(request: Request, offset: int = 0, limit: int = 50):
@@ -210,7 +215,9 @@ def setup_workflow_graph_routes(store=None, runs=None, managers=None):
             if set(body) != {"document"}:
                 raise ValueError("Supply a workflow document")
             validate_document(body["document"])
-            return await asyncio.to_thread(compile_graph, body["document"], inventory=await inventories())
+            available = await inventories()
+            compiled = await asyncio.to_thread(compile_graph, body["document"], inventory=available)
+            return await asyncio.to_thread(runs.validate_plan, compiled, available)
         except (ValueError, TypeError, RecursionError) as exc:
             raise failure(exc) from exc
 
@@ -222,11 +229,15 @@ def setup_workflow_graph_routes(store=None, runs=None, managers=None):
             if set(body) - {"workflow", "title"} or "workflow" not in body:
                 raise ValueError("Supply exported workflow JSON")
             value = body["workflow"]
+            available = await inventories()
             if isinstance(value, dict) and value.get("format") == "odysseus-workflow-graph":
                 validate_document(value)
-                return {"document": value, "issues": []}
-            result = import_comfyui(value, title=body.get("title"))
-            return result if "document" in result else {"document": result, "issues": result.get("import_issues", [])}
+                result = {"document": value, "issues": []}
+            else:
+                converted = await asyncio.to_thread(import_comfyui, value, title=body.get("title"), inventory=available)
+                result = converted if "document" in converted else {"document": converted, "issues": converted.get("import_issues", [])}
+            document, notes = configure_workflow(result["document"], available)
+            return {**result, "document": document, "setup_notes": notes}
         except (ValueError, TypeError, RecursionError) as exc:
             raise failure(exc) from exc
 
@@ -276,7 +287,13 @@ def setup_workflow_graph_routes(store=None, runs=None, managers=None):
                 compiled = await asyncio.to_thread(compile_graph, document, inventory=await inventories())
                 if not compiled.get("valid"):
                     raise HTTPException(422, {"message": "Fix the workflow connections or settings before running", "issues": compiled.get("issues", [])})
-                async with stage_bindings(runs.root, document, body.get("bindings", {}), form, limit) as media:
+                bindings = body.get("bindings", {})
+                if not isinstance(bindings, dict):
+                    raise ValueError("Supply workflow media bindings")
+                required = {ref for step in compiled.get("plan", [])
+                            for refs in step.get("inputs", {}).values() for ref in refs}
+                bindings = {key: value for key, value in bindings.items() if key in required}
+                async with stage_bindings(runs.root, document, bindings, form, limit) as media:
                     return await complete_operation(runs.accept, owner, document, compiled, media, key)
 
             if request.headers.get("content-type", "").startswith("multipart/form-data"):

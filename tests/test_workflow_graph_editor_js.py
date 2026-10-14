@@ -92,3 +92,35 @@ s.connect({node:'s',port:'any'},{node:'t',port:'image'});
 s.connect({node:'s',port:'mixed'},{node:'t',port:'any'});
 assert.equal(s.document.edges.length,2);
 ''')
+
+
+def test_reference_attachments_are_real_multi_inputs_and_atomic_undo():
+    run_node(r'''
+import assert from 'node:assert/strict';
+const catalog={node_types:[
+ {type:'input.video',outputs:[{id:'video',type:'VIDEO'}]},
+ {type:'input.image',outputs:[{id:'image',type:'IMAGE'}]},
+ {type:'input.references',inputs:[{id:'reference_videos',type:'VIDEO',multiple:true},{id:'source_video',type:'VIDEO'},{id:'first_frame',type:'IMAGE'}]}
+]};
+const s=createWorkflowGraphStore({nodes:[{id:'refs',type:'input.references'}],edges:[]},catalog);
+const target={node:'refs',port:'reference_videos'};
+const ids=s.attachMedia(target,'video',['first.mp4','second.mp4']);
+assert.equal(s.document.edges.length,2);
+assert.deepEqual(s.document.nodes.filter(n=>n.type==='input.video').map(n=>n.params.name),['first.mp4','second.mp4']);
+assert.deepEqual(s.document.edges.map(e=>e.source.node),ids);
+s.attachMedia(target,'video',['third.mp4']);assert.equal(s.document.edges.length,3);
+s.undo();assert.equal(s.document.edges.length,2,'One attach action is one undo');
+s.redo();assert.equal(s.document.edges.length,3);
+const source={node:'refs',port:'source_video'};
+const [old]=s.attachMedia(source,'video',['old-source.mp4']);
+const [next]=s.attachMedia(source,'video',['new-source.mp4']);
+assert(!s.document.nodes.some(n=>n.id===old));assert(s.document.nodes.some(n=>n.id===next));
+assert.equal(s.document.edges.filter(e=>e.target.port==='reference_videos').length,3);
+s.undo();assert(s.document.nodes.some(n=>n.id===old));assert(!s.document.nodes.some(n=>n.id===next));
+assert.throws(()=>s.attachMedia(source,'video',['one.mp4','two.mp4']),/one file/);
+assert.throws(()=>s.attachMedia({node:'refs',port:'first_frame'},'video',['wrong.mp4']),/VIDEO cannot connect to IMAGE/);
+s.connect({node:ids[0],port:'video'},source);
+const reference=s.document.edges.find(e=>e.source.node===ids[0]&&e.target.port==='reference_videos');s.detachMedia(reference.id);
+assert(s.document.nodes.some(n=>n.id===ids[0]),'Remove reference must preserve input used by another slot');
+s.undo();assert(s.document.edges.some(e=>e.id===reference.id));
+''')

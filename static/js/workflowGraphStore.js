@@ -71,6 +71,37 @@ export function createWorkflowGraphStore(initial = blankWorkflowGraph(), catalog
       for (const field of graphFields(spec)) if (field.default !== undefined) params[field.id] = copy(field.default);
       change(d => d.nodes.push({id,type,params,state:'active',position:position || {x:48+d.nodes.length%4*272,y:64+Math.floor(d.nodes.length/4)*224}})); return id;
     },
+    attachMedia(target,kind,names) {
+      const owner = document.nodes.find(n => n.id === target.node), type = `input.${kind}`;
+      const input = graphPorts(types.get(owner?.type),'inputs').find(p => p.id === target.port);
+      const output = graphPorts(types.get(type),'outputs').find(p => p.id === kind);
+      if (!owner || !input || !output) throw new Error('This attachment input is unavailable.');
+      if (!Array.isArray(names) || !names.length) return [];
+      if (!input.multiple && names.length !== 1) throw new Error('Choose one file for this input.');
+      const offset = document.edges.filter(e => e.target.node === target.node).length;
+      const nodes = names.map((name,index) => ({id:graphId('node'),type,title:String(name),params:{name:String(name)},state:'active',position:{x:Math.max(16,(owner.position?.x || 320)-288),y:(owner.position?.y || 56)+(offset+index)*144}}));
+      const next = copy(document); next.nodes.push(...nodes);
+      for (const node of nodes) { const problem = connectionIssue(next,types,{node:node.id,port:kind},target); if (problem) throw new Error(problem); }
+      change(d => {
+        if (!input.multiple) {
+          const replaced = d.edges.filter(e => e.target.node === target.node && e.target.port === target.port);
+          d.edges = d.edges.filter(e => !replaced.some(old => old.id === e.id));
+          // Remove a replaced standalone media input, but retain an upstream
+          // operation or a media input that another branch still uses.
+          for (const edge of replaced) if (!d.edges.some(e => e.source.node === edge.source.node)) d.nodes = d.nodes.filter(n => n.id !== edge.source.node || n.type !== type);
+        }
+        d.nodes.push(...nodes);
+        for (const node of nodes) d.edges.push({id:graphId('edge'),source:{node:node.id,port:kind},target:{...target}});
+      });
+      return nodes.map(n => n.id);
+    },
+    detachMedia(edgeId) {
+      change(d => {
+        const edge = d.edges.find(e => e.id === edgeId); if (!edge) return;
+        d.edges = d.edges.filter(e => e.id !== edgeId);
+        if (!d.edges.some(e => e.source.node === edge.source.node)) d.nodes = d.nodes.filter(n => n.id !== edge.source.node || !['input.image','input.video','input.audio','input.refmod'].includes(n.type));
+      });
+    },
     patch(id,patch,reason = 'edit') { change(d => { const n = d.nodes.find(n => n.id === id); if (n) Object.assign(n,copy(patch),{id:n.id,type:n.type}); },reason); },
     parameter(id,key,value) { change(d => { const n = d.nodes.find(n => n.id === id); if (n) { n.params ||= {}; n.params[key] = copy(value); } },'parameter'); },
     remove(id) { change(d => { d.nodes = d.nodes.filter(n => n.id !== id); d.edges = d.edges.filter(e => e.source.node !== id && e.target.node !== id); }); },

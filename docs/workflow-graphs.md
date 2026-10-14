@@ -7,10 +7,10 @@ Open **Cookbook → Launch → Workflows** to build a workflow. **New workflow**
 - **Pipeline:** select an operation, edit its settings, and choose its upstream operations under **Connections**. You can add operations and change the execution order without opening the canvas.
 - **Nodes:** click an output port and then an input port, or drag between them. Select a connection to change its source or delete it. Changing a wire changes what executes.
 - Both views use the same parameters and edges. Switching views keeps your changes. **Undo** and **Redo** work across both views.
-- Drag blocks to move them on the snapped grid. **Arrange** and **Fit** change the layout without changing connections. Setup hubs can collapse the model, LoRAs, encoder, and VAEs into one bundle on the canvas.
+- Drag the canvas background to pan, or drag blocks to move them on the snapped grid. This works with a mouse or touch. **Arrange** changes the layout and **Fit** recenters the view without changing connections. Setup hubs can collapse the model, LoRAs, encoder, and VAEs into one bundle on the canvas.
 - An operation's detailed controls live in the inspector. **Enabled**, **Disabled**, and supported **Bypassed** states affect execution. Bypass requires a declared pass-through connection.
 
-The builder closes only through **Close**. Clicking outside or pressing Escape does not discard the workflow. Draft settings and server-file selections are kept in this browser. Browser security prevents restoring local uploaded `File` objects after closing/reloading the page; select those files again when needed.
+The builder closes only through **Close**. Clicking outside or pressing Escape does not discard the workflow. Closing and reopening the builder in the same browser tab keeps its local attachments. Draft settings and server-file selections also survive a page reload. Local files must be selected again after a page reload; the builder warns about missing files and provides **Attach again** buttons.
 
 ## Models, LoRAs, and inputs
 
@@ -23,16 +23,16 @@ Video VAE ───────────────────────�
 Audio VAE ──────────────────────────↑
 ```
 
-Choose each installed component and LoRA strength in its inspector. One setup connection carries all of those identities to generation; collapsing the setup group does not remove its operations.
+H3, Seed Hunter, and Seed Scout templates select compatible installed base components and a GPU automatically. Imported native workflows first match authored component IDs, aliases, and filenames; if a base component is missing, the setup report identifies the installed substitute. Authored LoRAs are preserved and never replaced with an unrelated adapter. You can change each component and LoRA strength in its inspector. One setup connection carries all of those identities to generation; collapsing the setup group does not remove its operations.
 
-Input operations hold uploaded media or a selected server file. Video inputs support **Server files · E: / F:** so the video stays on the Odysseus computer. Reference bundles distinguish first/last frames, the aligned source video, and numbered references. Multiple references are connections into the same reference bundle; they are separate from submitting separate jobs.
+Select a **References** bundle to add or drop images, videos, audio, and reference mods directly. The builder creates and connects the input operations for you. Other native operations, including BFS, provide the same direct attachment controls for their media inputs. Video inputs support **Server files · E: / F:** with a drive selector, so the video stays on the Odysseus computer. Reference bundles distinguish first/last frames, the aligned source video, and numbered references. Multiple references stay in the same job; they do not create a batch. Only inputs used by the compiled workflow are uploaded when you queue.
 
 Package-defined media controls also support uploads. When a package declares several media controls, each has its own attachment. The graph JSON stores media names/settings, not the media bytes.
 
 ## Check, save, and run
 
-1. Use **Check workflow** to see the compiled plan and any missing components, required connections, unknown operations, or invalid parameters.
-2. Use **Save** to store the graph in this server's **Library**. **Export JSON** downloads the graph, settings, and layout as an `.odysseus.json` document. It does not bundle model weights or attachments.
+1. Use **Check workflow** to see the compiled plan and any missing components, required connections, unknown operations, or invalid parameters. Native generation checks include mode/reference compatibility and GPU support before media upload.
+2. Use **Save** to store settings and connections in this server's **Library**. Opening a Library workflow starts a draft that needs its media attached again. **Export JSON** downloads the graph, settings, and layout as an `.odysseus.json` document. It does not bundle model weights or attachments.
 3. Choose source files and press **Queue workflow**. Each submission captures its own graph and attachments. Further edits affect the next submission, not the queued one.
 4. Open **Recent workflow runs** for status, step details, cancellation, and output downloads. The queue continues if the builder is closed.
 
@@ -49,7 +49,7 @@ The native **Seed Scout** template has an explicit preview choice. When it reach
 - Known native operations can compile into Odysseus H3, BFS, Seed Hunter, Seed Scout, or media-processing steps.
 - Discovered Comfy node classes contribute their actual input types, combo choices, defaults, numeric limits, output types, names, and execution declarations.
 - Unknown or unavailable operations remain visible. An enabled output that depends on them cannot run until its implementation is available or its connection is deliberately changed.
-- Imported model filenames still need to resolve to installed components. Importing JSON does not download models or install Python dependencies.
+- Imported model filenames must resolve to installed components. **Workflow setup** reports resolved choices and any remaining selections; **Inspect** opens the relevant operation. Importing JSON does not download models or install Python dependencies.
 - A required connection must be wired. A **connection-only** field is a package's `forceInput` declaration. Where a widget also accepts a connection, the wire overrides the saved widget value; disconnect it to use that value again.
 - A **list** input receives the package's list value through its connection. It does not mean arbitrary extra wires may be added to a single-input port. The execution core preserves declared list mapping/broadcasting behavior.
 

@@ -154,7 +154,8 @@ class GraphRunManager:
                     raise ValueError("Unsupported saved-preview refinement setting")
             elif operation in {"trim", "resize", "save"}:
                 self._cpu_params(step)
-                if len(inputs.get("video", [])) != 1:
+                video_refs = inputs.get("video", [])
+                if len(video_refs) != 1 or sum(len(media[ref]) if ref in media else 1 for ref in video_refs) != 1:
                     raise ValueError("Media processing needs exactly one video input")
         visiting, done = set(), set()
 
@@ -472,10 +473,34 @@ class GraphRunManager:
                     result[field].append({"path": self._local(directory, row["path"]), "name": row["name"]})
         return result
 
-    def _validate_native(self, step, uploads):
+    def validate_plan(self, compiled, inventories):
+        """Check connected native settings before clients upload any media.
+
+        Each connected media source counts as one prospective file here. Run
+        acceptance still validates the actual staged files and their counts.
+        """
+        result = _plain(compiled)
+        if not result.get("valid"):
+            return result
+        for step in result.get("plan", []):
+            if step.get("operation") != "submit" or step.get("family") not in {"h3", "bfs"}:
+                continue
+            uploads = {field: [None] * len(refs) for field, refs in step.get("inputs", {}).items()}
+            try:
+                self._validate_native(step, uploads, inventory=inventories[step["family"]])
+            except ValueError as exc:
+                result.setdefault("issues", []).append({
+                    "severity": "error", "code": "generation_settings", "message": str(exc),
+                    "node_id": step["id"], "node_type": step.get("node_type"),
+                })
+                result["valid"] = False
+        return result
+
+    def _validate_native(self, step, uploads, *, inventory=None):
         family = step["family"]
         manager = self.managers[family]
-        inventory = manager.submission_inventory()
+        if inventory is None:
+            inventory = manager.submission_inventory()
         if family == "comfy":
             return manager.validate_config(step["config"], uploads)
         if family == "h3":

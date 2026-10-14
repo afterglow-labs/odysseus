@@ -128,7 +128,7 @@ REGISTRY = {s["type"]: s for s in [
           choice("scheduler", "beta", ("beta","simple","normal")), field("shift_video", "number", 12, min=.01,max=100),
           field("shift_audio", "number", 3, min=.01,max=100), choice("reference_size", "match", ("match","max"))]),
     spec("result.select", "Choose result", "Routing", [port("first", "RESULT"), port("second", "RESULT"), port("third", "RESULT")], [port("result", "RESULT")], [choice("selection", "first", ("first", "second", "third"))]),
-    spec("h3.seed_scout", "H3 Seed Scout", "Generation", GENERATION_INPUTS, [port("result", "RESULT")], GENERATION_FIELDS + [field("scout_count", "integer", 4, min=1, max=32), field("scout_step", "integer", 1, min=1, max=100), choice("scout_mode", "interactive", ("interactive", "scout", "final")), field("scout_timeout", "integer", 0, min=0, max=86400), choice("scout_preview_mode", "vae", ("vae", "latent2rgb"))]),
+    spec("h3.seed_scout", "H3 Seed Scout", "Generation", GENERATION_INPUTS, [port("result", "RESULT")], GENERATION_FIELDS + [p for p in HUNTER_FIELDS if p["id"] in {"first_frame_guide", "last_frame_guide", "force_audio", "refmod_strengths"}] + [field("scout_count", "integer", 4, min=1, max=32), field("scout_step", "integer", 1, min=1, max=100), choice("scout_mode", "interactive", ("interactive", "scout", "final")), field("scout_timeout", "integer", 0, min=0, max=86400), choice("scout_preview_mode", "vae", ("vae", "latent2rgb"))]),
     spec("output.video", "Video output", "Outputs", [port("result", "RESULT|VIDEO", required=True)], params=[field("name", default="Video")]),
 ]}
 
@@ -660,6 +660,7 @@ def compile_graph(document, output_ids=None, inventory=None):
                     if kind == "h3.seed_scout":
                         cfg["recipe"] = "seed_hunter"
                         cfg["seed_hunter"] = {"stage": "scout", "shift_enabled": True, **{k: params[k] for k in ("scout_count", "scout_step", "scout_mode", "scout_timeout", "scout_preview_mode")}}
+                        cfg["seed_hunter"].update({k: params[k] for k in ("first_frame_guide", "last_frame_guide", "force_audio", "refmod_strengths") if params[k]})
                     elif kind.startswith("hunter."):
                         stage = kind.split(".")[1]
                         cfg["mode"] = "ref2va"; cfg["recipe"] = "seed_hunter"
