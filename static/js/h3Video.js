@@ -313,7 +313,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   form.appendChild(loraEditor.node);
   const componentPath = el('p', 'h3-video-component-path h3-video-muted'); form.appendChild(h3WorkflowHelp('Model path', componentPath));
   const loraCompatibilityError = el('p', 'h3-video-error'); loraCompatibilityError.hidden = true; loraCompatibilityError.setAttribute('role', 'alert'); form.appendChild(loraCompatibilityError);
-  const presetBar = el('div', 'h3-video-toolbar'); presetBar.hidden = true;
+  const presetBar = el('div', 'h3-video-toolbar'); presetBar.id = 'h3-installed-preset'; presetBar.hidden = true;
   const presetStatus = el('p', 'h3-video-muted'); presetStatus.setAttribute('role', 'status');
   const useInstalledPreset = button('Use installed preset');
   presetBar.append(presetStatus, useInstalledPreset); form.appendChild(presetBar);
@@ -582,6 +582,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     loraCompatibilityError.textContent = [incompatibleLora(), incompatibleLength()].filter(Boolean).join(' '); loraCompatibilityError.hidden = !loraCompatibilityError.textContent;
     generate.disabled = queueBusy || batching || batchBusy || editLoading || !!jobEditor?.blocked || transferBusy || enhancing || submitting || loadFailed || !inventory?.runtime_ready || !!missingGpu?.length || !!loraCompatibilityError.textContent || !!vfxInputError.textContent || !required.every(key => fields[key].value);
     useInstalledPreset.disabled = !inventory?.installed_preset || inventoryLoading || queueBusy || !!queueControls?.editing || editing || editLoading || batchBusy || transferBusy || enhancing || submitting;
+    presetBar.hidden = !isVfxEdit() || !(inventory?.installed_preset || inventory?.installed_preset_error);
     exportWorkflow.disabled = importWorkflow.disabled = queueBusy || editing || editLoading || batchBusy || transferBusy || enhancing || submitting || !inventory;
     importWorkflow.textContent = transferBusy ? 'Importing workflow…' : 'Import workflow';
     generate.textContent = submitting ? editing ? 'Saving changes…' : 'Uploading and adding job…' : editing ? 'Save changes' : ((jobPager?.counts.running || 0) + (jobPager?.counts.queued || 0)) ? 'Add to queue' : 'Generate video';

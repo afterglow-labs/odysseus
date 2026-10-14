@@ -215,6 +215,8 @@
 .video-queue-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; margin:14px 0; }
 .video-queue-field-wide { grid-column:1 / -1; }
 .h3-lora-editor { min-width:0; margin:12px 0; }
+.h3-lora-editor .h3-video-actions { gap:8px; }
+.h3-lora-editor .h3-video-actions button { display:inline-flex; align-items:center; justify-content:center; height:auto; min-height:36px; box-sizing:border-box; padding:8px 14px; line-height:1.2; }
 .h3-lora-list { display:grid; gap:12px; margin-bottom:10px; }
 .h3-lora-row { display:grid; grid-template-columns:minmax(0,1fr) 110px auto; gap:10px; align-items:end; }
 .h3-lora-row > button { margin-bottom:2px; }

@@ -229,12 +229,16 @@ def test_generic_installed_preset_applies_once_preserves_overrides_and_blocks_qu
 inventory.installed_preset={revision:'vfx-one',name:'VFX Edit',config:{...defaults,lora:'vfx'}};
 stored.set(STORAGE,JSON.stringify({...defaults,steps:33}));
 showH3Video();await flush();assert.equal(byId('lora').value,'vfx');assert.equal(byId('steps').value,'20');
-assert.ok(byText('Use installed preset'));await change('steps','31');await change('lora','turbo');
+assert.ok(byText('Use installed preset'));assert.equal(byId('installed-preset').hidden,false);
+await change('steps','31');await change('lora','turbo');assert.equal(byId('installed-preset').hidden,true);
 await change('mode','fl2va');await change('mode','ref2va');
 assert.equal(byId('steps').value,'31');assert.equal(byId('lora').value,'turbo');
 await change('prompt','Keep me');editor.active={id:'queued',revision:1};byText('Use installed preset').onclick();
 assert.equal(byId('steps').value,'31');assert.equal(byId('lora').value,'turbo');
 editor.active=null;byText('Use installed preset').onclick();assert.equal(byId('lora').value,'vfx');
+assert.equal(byId('installed-preset').hidden,false);
+await change('lora_scale','0');assert.equal(byId('installed-preset').hidden,true);
+await change('lora_scale','1');assert.equal(byId('installed-preset').hidden,false);
 assert.equal(byId('prompt').value,'Keep me');assert.equal(byId('width').value,'960');
 """)
 
