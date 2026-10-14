@@ -37,7 +37,7 @@ export function seedHunterHelpKey(control) {
     'Batch input':'batch_input', 'Number of copies':'batch_copies' }[label] || '';
 }
 
-export function bindSeedHunterHelp(modal) {
+export function bindSeedHunterHelp(modal, fieldOverrides = {}) {
   bindSettingsHelp(modal);
   const decorated = new Map();
   let catalogue = null, disposed = false;
@@ -75,7 +75,7 @@ export function bindSeedHunterHelp(modal) {
   const observer = new MutationObserver(decorate);
   observer.observe(modal, { childList: true, subtree: true });
   decorate();
-  loadCatalogue().then(value => { if (!disposed) { catalogue = value; decorated.forEach(({update}) => update()); } })
+  loadCatalogue().then(value => { if (!disposed) { catalogue = {...value,fields:{...value.fields,...fieldOverrides}}; decorated.forEach(({update}) => update()); } })
     .catch(() => { if (!disposed) for (const hint of modal.querySelectorAll('[data-seed-hunter-help]')) hint.dataset.helpHint = 'Option help could not be loaded. Close and reopen this workflow to retry.'; });
   return () => { disposed = true; observer.disconnect(); decorated.clear(); dismissSettingsHelp(); };
 }

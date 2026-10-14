@@ -1,0 +1,8 @@
+.h3-scout-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:12px}
+.h3-scout-choice{min-width:0;border:1px solid var(--border,#555);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:10px}
+.h3-scout-choice h5{margin:0;overflow-wrap:anywhere}
+.h3-scout-choice.selected{border-color:var(--accent,#ff9800)}
+.h3-scout-preview{display:block;width:100%;max-height:360px;object-fit:contain;background:#111;border-radius:6px}
+.h3-scout-preview[hidden]{display:none}
+.h3-scout-choice button{margin-top:auto;white-space:normal}
+.h3-scout-description{line-height:1.5}

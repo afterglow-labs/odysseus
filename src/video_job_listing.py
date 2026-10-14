@@ -10,11 +10,14 @@ def list_options(query, family):
     recipe = query.get("recipe")
     if recipe is not None and (family != "h3" or recipe != "seed_hunter"):
         raise ValueError("Only the H3 seed_hunter recipe filter is supported")
+    stage = query.get("stage")
+    if stage is not None and (recipe != "seed_hunter" or stage not in {"scout", "not_scout"}):
+        raise ValueError("stage requires recipe=seed_hunter and must be scout or not_scout")
     paged = "page" in query or "page_size" in query
     if not paged:
         if "before" in query:
             raise ValueError("before requires page or page_size")
-        return {"recipe": recipe}
+        return {"recipe": recipe, "stage": stage}
     try:
         page = int(query.get("page", "1"))
         page_size = int(query.get("page_size", "10"))
@@ -30,7 +33,7 @@ def list_options(query, family):
             raise ValueError("before must be a finite, nonnegative Unix timestamp") from None
         if not math.isfinite(before) or before < 0:
             raise ValueError("before must be a finite, nonnegative Unix timestamp")
-    return {"page": page, "page_size": page_size, "before": before, "recipe": recipe}
+    return {"page": page, "page_size": page_size, "before": before, "recipe": recipe, "stage": stage}
 
 
 def _created_at(state):
@@ -38,7 +41,7 @@ def _created_at(state):
     return value if isinstance(value, (int, float)) and math.isfinite(value) else 0
 
 
-def history(manager, owner, *, page=None, page_size=10, before=None, recipe=None):
+def history(manager, owner, *, page=None, page_size=10, before=None, recipe=None, stage=None):
     """Cheap state scan first, then full views for only the selected IDs.
 
     Active receipts are reconciled even when they fall outside the page. Old
@@ -67,6 +70,7 @@ def history(manager, owner, *, page=None, page_size=10, before=None, recipe=None
                 except FileNotFoundError:
                     continue
             if recipe is not None:
+                config = None
                 stored_recipe = state.get("recipe")
                 if stored_recipe is None:
                     # Legacy receipts have the recipe only in their manifest.
@@ -74,6 +78,13 @@ def history(manager, owner, *, page=None, page_size=10, before=None, recipe=None
                     stored_recipe = config.get("recipe") if isinstance(config, dict) else None
                 if stored_recipe != recipe:
                     continue
+                if stage is not None:
+                    if config is None:
+                        config = h3._read(directory / "manifest.json").get("config", {})
+                    options = config.get("seed_hunter", {}) if isinstance(config, dict) else {}
+                    is_scout = options.get("stage") == "scout" if isinstance(options, dict) else False
+                    if is_scout != (stage == "scout"):
+                        continue
             states.append((directory.name, state))
 
     counts = {status: 0 for status in ("running", "queued", "completed", "failed", "stopped")}

@@ -1,6 +1,8 @@
 # Editable workflows in Odysseus
 
-Open **Cookbook → Launch → Workflows** to build a workflow. Cookbook has one workflow launcher. **New workflow** offers a blank graph and editable H3, Seed Hunter, Seed Scout, and all seven BFS family presets. Templates select compatible installed components and wire their required media inputs; missing weights are reported in **Workflow setup**.
+This document describes the experimental graph editor. Node development is preserved on `workflows/node-parity-wip` and is separate from the working workflow screens.
+
+Use **Cookbook → Launch** for the classic H3 Video, Seed Hunter, Seed Scout, and BFS workflows. **Build Pipeline** opens the separate [pipeline workspace](workflow-pipeline.md), which uses those same native execution paths and does not require linking nodes.
 
 ## Pipeline and Nodes are two editors for the same workflow
 

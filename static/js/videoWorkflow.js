@@ -5,7 +5,7 @@ import { h3LoraStrengthControl } from './h3Loras.js';
 import { validateReferenceVideoRanges } from './referenceVideoRange.js';
 const FORMAT = 'odysseus-video-workflow';
 const H3_SETTINGS = ['mode', 'width', 'height', 'frames', 'steps', 'seed', 'sampler', 'scheduler', 'shift_video', 'shift_audio', 'lora_scale', 'reference_size', 'prompt'];
-const SEED_HUNTER_OPTIONS = new Set(['stage','preview_count','denoise','shift_enabled','first_frame_guide','last_frame_guide','force_audio','continuation_overlap','output_fps','attention_backend','sparse_method','sparse_keep_percent','sparse_start','sparse_end','sparse_min_tokens','sparse_extra_tokens','sparse_sink_conditioning','upscaler_chunking','upscaler_force_unload','ff_chunk_size','ff_chunk_threshold','low_vram_chunks','source_start_seconds','source_end_seconds','audio_start_seconds','audio_end_seconds','refmod_strengths']);
+const SEED_HUNTER_OPTIONS = new Set(['stage','preview_count','denoise','shift_enabled','first_frame_guide','last_frame_guide','force_audio','continuation_overlap','output_fps','attention_backend','sparse_method','sparse_keep_percent','sparse_start','sparse_end','sparse_min_tokens','sparse_extra_tokens','sparse_sink_conditioning','upscaler_chunking','upscaler_force_unload','ff_chunk_size','ff_chunk_threshold','low_vram_chunks','source_start_seconds','source_end_seconds','audio_start_seconds','audio_end_seconds','refmod_strengths','scout_count','scout_step','scout_mode','scout_timeout','scout_preview_mode']);
 const H3_COMPONENTS = ['model', 'encoder', 'video_vae', 'audio_vae', 'lora'];
 const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -173,7 +173,7 @@ export function resolveVideoWorkflow(workflow, { family, inventory, resolvedComp
     const options = workflow.config.seed_hunter;
     if (!object(options) || Object.keys(options).some(key => !SEED_HUNTER_OPTIONS.has(key))) throw new Error('Invalid Seed Hunter settings.');
     if (options.stage === 'final') throw new Error('Import the source preview workflow; refinement needs its saved preview latent.');
-    if (!['preview','single','continuation','dialogue'].includes(options.stage)) throw new Error('Unknown Seed Hunter stage.');
+    if (!['preview','single','continuation','dialogue','scout'].includes(options.stage)) throw new Error('Unknown Seed Hunter stage.');
     for (const [key,value] of Object.entries(options)) {
       if (key === 'refmod_strengths') { if (!Array.isArray(value) || value.length > 8 || value.some(v=>typeof v !== 'number' || !Number.isFinite(v) || v<0 || v>1)) throw new Error('Invalid reference mod strengths.'); }
       else if (value === null && ['source_end_seconds','audio_end_seconds'].includes(key)) continue;

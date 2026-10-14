@@ -98,6 +98,36 @@ def test_recipe_filter_precedes_page_and_supports_old_receipts(backend, monkeypa
     assert all(path.read_bytes() == content for path, content in unchanged.items())
 
 
+def test_scout_stage_filter_precedes_pagination_and_keeps_history_and_counts_separate(backend, monkeypatch):
+    manager = backend.managers['h3']
+    stages = {}
+    for index in range(1, 22):
+        stage = 'scout' if index % 2 else 'preview'
+        directory = saved_job(manager, index, recipe='seed_hunter', legacy=index % 3 == 0)
+        manifest = h3._read(directory / 'manifest.json')
+        manifest['config']['seed_hunter']['stage'] = stage
+        h3._write(directory / 'manifest.json', manifest)
+        stages[directory.name] = stage
+    saved_job(manager, 22)
+    foreign = saved_job(manager, 23, owner='other', recipe='seed_hunter', legacy=True)
+    original_read = h3._read
+    def read(path, *args, **kwargs):
+        assert path != foreign / 'manifest.json'
+        return original_read(path, *args, **kwargs)
+    monkeypatch.setattr(h3, '_read', read)
+    client = backend.client()
+    for stage, total in [('scout', 11), ('not_scout', 10)]:
+        reply = client.get('/api/video/h3/jobs', params={'page': 2, 'page_size': 5, 'recipe': 'seed_hunter', 'stage': stage})
+        assert reply.status_code == 200, reply.text
+        body = reply.json()
+        assert len(body['jobs']) == 5
+        assert body['pagination']['total'] == body['counts']['completed'] == total
+        assert all((stages[row['id']] == 'scout') == (stage == 'scout') for row in body['jobs'])
+        assert len(client.get('/api/video/h3/jobs', params={'recipe': 'seed_hunter', 'stage': stage}).json()['jobs']) == total
+    assert client.get('/api/video/h3/jobs?recipe=seed_hunter&page=1').json()['pagination']['total'] == 21
+    assert len(client.get('/api/video/h3/jobs').json()['jobs']) == 22
+
+
 @pytest.mark.parametrize("family", ["h3", "bfs"])
 def test_detail_is_bare_full_job_and_owner_admin_scoped(backend, family):
     manager = backend.managers[family]
@@ -163,7 +193,8 @@ def test_offpage_dead_worker_reconciles_counts_without_hydration_or_foreign_muta
 
 @pytest.mark.parametrize("query", ["page=0", "page=-1", "page=1.5", "page=abc", "page_size=0", "page_size=51",
                                   "page_size=1.5", "page=1&before=nan", "page=1&before=inf",
-                                  "page=1&before=-1", "page=1&before=no", "before=1", "recipe=h3"])
+                                  "page=1&before=-1", "page=1&before=no", "before=1", "recipe=h3",
+                                  "stage=scout", "recipe=seed_hunter&stage=preview", "recipe=seed_hunter&stage="])
 def test_invalid_pagination_never_hydrates_jobs(backend, monkeypatch, query):
     for manager in backend.managers.values():
         monkeypatch.setattr(manager, "view", lambda *_args, **_kwargs: pytest.fail("Invalid request hydrated history"))
