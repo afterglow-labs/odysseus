@@ -30,7 +30,8 @@ def configure_workflow(document, inventory, *, template=False):
     nodes = {node["id"]: node for node in doc.get("nodes", [])}
     edges = doc.get("edges", [])
     h3 = inventory.get("h3", inventory) or {}
-    components, gpus = h3.get("components", []), h3.get("gpus", [])
+    components = h3.get("components", [])
+    gpus = h3.get("gpus", (inventory.get("bfs", {}) or {}).get("gpus", []))
     defaults = h3.get("defaults", {})
     if not isinstance(doc.get("metadata"), dict):
         previous_metadata = doc.get("metadata")
@@ -150,7 +151,7 @@ def configure_workflow(document, inventory, *, template=False):
     # BFS inventory deliberately has no global role: compatibility belongs to a
     # specific workflow slot, including its family and filename pattern.
     bfs = inventory.get("bfs", {}) or {}
-    for node in nodes.values():
+    for node in list(nodes.values()):
         if node["type"] != "bfs.components":
             continue
         from src.bfs_video import BY_ID, matches
@@ -178,12 +179,29 @@ def configure_workflow(document, inventory, *, template=False):
                 if not choices:
                     note(node, key, "component_unavailable", f"No compatible installed BFS {key.replace('_', ' ')} is available.", severity="warning")
                     continue
-                chosen = min(choices, key=rank)
+                preferred = defaults.get(key, "")
+                chosen = min(choices, key=lambda row: (not _identity(row, preferred),
+                    key == "model" and "singularity" in row.get("name", "").casefold(), *rank(row)))
             if selected != chosen["id"]:
                 params[key] = chosen["id"]
                 note(node, key, "component_substituted" if selected and not exact else "component_selected",
                      f"Selected installed BFS {key.replace('_', ' ')}: {chosen['name']}." + (f" Replaces unavailable {_name(selected)}." if selected and not exact else ""),
                      severity="warning" if selected and not exact else "info", from_value=selected, to_value=chosen["id"], to_name=chosen["name"])
+        if template:
+            adapter = next((row for row in bfs.get("components", []) if _identity(row, params.get("lora"))), {})
+            for consumer in consumers:
+                if consumer.get("params", {}).get("workflow_id") != "ltx2_v1" or "8750" not in adapter.get("name", ""):
+                    continue
+                if any(edge["target"] == {"node": consumer["id"], "port": "last_frame"} for edge in edges):
+                    continue
+                from src.workflow_graph import make_edge, make_node
+                identifier = consumer["id"] + "_last_frame"
+                while identifier in nodes:
+                    identifier += "_input"
+                frame = make_node(identifier, "input.image", x=40, y=950, title="Last frame")
+                nodes[identifier] = frame; doc["nodes"].append(frame)
+                edges.append(make_edge(identifier, "image", consumer["id"], "last_frame"))
+                note(consumer, "last_frame", "required_input", "The installed first-and-last-frame adapter also requires a last frame.")
 
     for node in nodes.values():
         if not generation(node) and node["type"] != "bfs.generate":

@@ -233,9 +233,14 @@ def node_registry(manifests=None):
 
 
 def catalog():
+    from src.bfs_video import WORKFLOWS
+    templates = [{"id": key, "title": title} for key, title in (("blank", "Empty workflow"), ("h3", "H3 video"),
+        ("seed_hunter", "Seed Hunter previews and refinement"), ("seed_scout", "Seed Scout interactive search"), ("media", "Trim and resize video"))]
+    templates.extend({"id": "bfs_" + workflow["id"], "title": "BFS · " + workflow["label"],
+                      "description": " ".join(workflow["source_requirements"].get("notes", []))}
+                     for workflow in WORKFLOWS)
     return {"format": FORMAT, "version": VERSION, "node_types": list(node_registry().values()),
-            "templates": [{"id": key, "title": title} for key, title in (("blank", "Empty workflow"), ("h3", "H3 video"),
-                ("seed_hunter", "Seed Hunter previews and refinement"), ("seed_scout", "Seed Scout interactive search"), ("media", "Trim and resize video"))]}
+            "templates": templates}
 
 
 def make_node(identifier, kind, *, params=None, x=0, y=0, title=None, state="active"):
@@ -258,6 +263,29 @@ def new_document(title="Untitled workflow", template="h3"):
         doc["nodes"].append(make_node(identifier, kind, **kw))
     def wire(a, ap, b, bp):
         doc["edges"].append(make_edge(a, ap, b, bp))
+    if template.startswith("bfs_") or template == "bfs":
+        from src.bfs_video import BY_ID
+        identity = template.removeprefix("bfs_") if template != "bfs" else "h3_head_swap"
+        workflow = BY_ID.get(identity)
+        if not workflow:
+            raise ValueError("Unknown BFS workflow template")
+        add("setup", "bfs.components", x=40, y=40)
+        add("prompt", "input.prompt", x=40, y=240)
+        add("generate", "bfs.generate", x=390, y=200,
+            params={"workflow_id": identity, **copy.deepcopy(workflow["defaults"])})
+        wire("setup", "setup", "generate", "setup"); wire("prompt", "prompt", "generate", "prompt")
+        media_types = {"source_video": "video", "identity_image": "image", "last_frame": "image", "mask_video": "video"}
+        media_index = 0
+        for slot, medium in media_types.items():
+            if not workflow["source_requirements"].get(slot, {}).get("required"):
+                continue
+            add(slot, "input." + medium, x=40, y=440 + 170 * media_index,
+                title=slot.replace("_", " ").title())
+            wire(slot, medium, "generate", slot)
+            media_index += 1
+        add("output", "output.video", x=750, y=200)
+        wire("generate", "result", "output", "result")
+        return doc
     if template == "media":
         add("video", "input.video", x=40, y=180)
         add("trim", "media.trim", x=300, y=180)

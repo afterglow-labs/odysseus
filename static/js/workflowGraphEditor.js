@@ -445,7 +445,7 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
         const attached = bindings[source?.id]?.[0];
         const actions = make('div','wg-toolbar');
         if (source?.type === `input.${kind}` && !attached) {
-          row.append(make('small','wg-error','This saved file needs to be attached again before queuing.'));
+          row.append(make('small','wg-error','Choose a file for this input before queuing.'));
           const again = make('input'); again.type = 'file'; again.hidden = true; again.accept = picker.accept;
           again.onchange = () => { const file = again.files?.[0]; if (file) { bindings[source.id] = [file]; store.patch(source.id,{title:file.name,params:{...source.params,name:file.name}}); persist(); renderInspector(); } };
           actions.append(button('Attach again',() => again.click()),again);
