@@ -3,6 +3,7 @@ import { createVideoJobMedia, releaseVideoJobMedia } from './videoJobMedia.js';
 import { bindMenuDismiss, dismissOrRemove } from './escMenuStack.js';
 import { topPortalZ } from './toolWindowZOrder.js';
 import * as videoWorkflow from './videoWorkflow.js';
+import { createWorkflowPipeline } from './workflowPipeline.js';
 import { createVideoBatchQueue } from './videoBatch.js';
 import { createVideoJobEditor, videoJobEditFormData } from './videoJobEdit.js';
 import { createVideoQueueControls, videoQueueField } from './videoQueue.js';
@@ -201,13 +202,15 @@ function h3WorkflowHelp(label, ...content) {
   const details = el('details', 'h3-workflow-help'); details.append(el('summary', '', label), ...content); return details;
 }
 
-export function showH3Video({ preferredModel = null } = {}, anchor = document.activeElement) {
+export function showH3Video({ preferredModel = null, layout = 'classic' } = {}, anchor = document.activeElement) {
   document.querySelectorAll('.h3-video-overlay').forEach(dismissOrRemove);
   if (!document.getElementById('h3-video-styles')) {
     const style = el('link');
     style.id = 'h3-video-styles'; style.rel = 'stylesheet'; style.href = '/static/h3-video.css';
     document.head.appendChild(style);
   }
+  const storageKey = STORAGE + (layout === 'pipeline' ? ':pipeline' : '');
+  let pipeline = null;
   let closed = false, submitting = false, jobPager = null, timer = null, inventory = null, jobs = [], loadFailed = false;
   let enhancing = false, enhancementController = null, enhancer = null, enhancerChecking = false, enhancerCheck = 0;
   let originalPrompt = null, editRevision = 0, enhancementStarted = 0;
@@ -219,7 +222,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   let editingLoraComponents = null;
   const loraComponents = () => h3LoraComponents(inventory?.components || [], editingLoraComponents);
   let saved = {};
-  try { saved = JSON.parse(localStorage.getItem(STORAGE)) || {}; } catch {}
+  try { saved = JSON.parse(localStorage.getItem(storageKey)) || {}; } catch {}
   let appliedPresetRevision = saved._installedPresetRevision || '';
   const fields = {}, uploads = {}, jobNodes = new Map(), pendingStops = new Set(), pendingDeletes = new Set(), deletedJobs = new Set(), gpuNodes = new Map();
   const overlay = el('div', 'cookbook-edit-overlay h3-video-overlay');
@@ -313,7 +316,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   form.appendChild(loraEditor.node);
   const componentPath = el('p', 'h3-video-component-path h3-video-muted'); form.appendChild(h3WorkflowHelp('Model path', componentPath));
   const loraCompatibilityError = el('p', 'h3-video-error'); loraCompatibilityError.hidden = true; loraCompatibilityError.setAttribute('role', 'alert'); form.appendChild(loraCompatibilityError);
-  const presetBar = el('div', 'h3-video-toolbar'); presetBar.hidden = true;
+  const presetBar = el('div', 'h3-video-toolbar'); presetBar.id = 'h3-installed-preset'; presetBar.hidden = true;
   const presetStatus = el('p', 'h3-video-muted'); presetStatus.setAttribute('role', 'status');
   const useInstalledPreset = button('Use installed preset');
   presetBar.append(presetStatus, useInstalledPreset); form.appendChild(presetBar);
@@ -461,7 +464,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   };
   function save() {
     if (jobEditor?.active) return;
-    try { localStorage.setItem(STORAGE, JSON.stringify({ ...config(), _installedPresetRevision: appliedPresetRevision })); } catch {}
+    try { localStorage.setItem(storageKey, JSON.stringify({ ...config(), _installedPresetRevision: appliedPresetRevision })); } catch {}
   }
   function applyInstalledPreset({ automatic = false } = {}) {
     const preset = inventory?.installed_preset, values = preset?.config;
@@ -582,6 +585,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     loraCompatibilityError.textContent = [incompatibleLora(), incompatibleLength()].filter(Boolean).join(' '); loraCompatibilityError.hidden = !loraCompatibilityError.textContent;
     generate.disabled = queueBusy || batching || batchBusy || editLoading || !!jobEditor?.blocked || transferBusy || enhancing || submitting || loadFailed || !inventory?.runtime_ready || !!missingGpu?.length || !!loraCompatibilityError.textContent || !!vfxInputError.textContent || !required.every(key => fields[key].value);
     useInstalledPreset.disabled = !inventory?.installed_preset || inventoryLoading || queueBusy || !!queueControls?.editing || editing || editLoading || batchBusy || transferBusy || enhancing || submitting;
+    presetBar.hidden = !isVfxEdit() || !(inventory?.installed_preset || inventory?.installed_preset_error);
     exportWorkflow.disabled = importWorkflow.disabled = queueBusy || editing || editLoading || batchBusy || transferBusy || enhancing || submitting || !inventory;
     importWorkflow.textContent = transferBusy ? 'Importing workflow…' : 'Import workflow';
     generate.textContent = submitting ? editing ? 'Saving changes…' : 'Uploading and adding job…' : editing ? 'Save changes' : ((jobPager?.counts.running || 0) + (jobPager?.counts.queued || 0)) ? 'Add to queue' : 'Generate video';
@@ -1119,7 +1123,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
   // A selection drag can synthesize a click on the backdrop. Only the Close
   // button (or explicit programmatic teardown) may discard this live draft.
   const close = bindMenuDismiss(overlay, () => {
-    closed = true; clearInterval(timer); window.removeEventListener('keydown', onKey, true);
+    pipeline?.destroy(); closed = true; clearInterval(timer); window.removeEventListener('keydown', onKey, true);
     serverPicker?.close();
     loraLibrary?.close();
     batchQueue?.destroy(); queueControls?.destroy(); jobPager?.destroy(); releaseVideoJobMedia(jobList);
@@ -1164,7 +1168,7 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
     onChange: updateReady, onError: setError,
   });
   batchQueue = createVideoBatchQueue({
-    family: 'h3', container: batchContainer, getSnapshot: batchSnapshot,
+    family: 'h3', sessionKey:layout==='pipeline'?'h3:pipeline':'h3', container: batchContainer, getSnapshot: batchSnapshot,
     onJob: () => { if (!closed) loadJobs({ reset: true }); },
     onChange: () => { if (!closed) { editRevision++; updateReady(); } },
   });
@@ -1183,6 +1187,22 @@ export function showH3Video({ preferredModel = null } = {}, anchor = document.ac
       components: h3LoraComponents(inventory?.components || [], savedJob?.lora_components), value: loraEditor.getValue(), max: inventory?.max_loras || 8, idPrefix: 'h3-queue', onChange,
     }) }]),
   });
+  if (layout === 'pipeline') {
+    components.append(fields.gpu.parentElement,fields.vae_gpu.parentElement);
+    pipeline=createWorkflowPipeline({container:scroll,dialog,form,family:'h3',title:'MiniMax H3 Video',
+      sections:[
+        {id:'inputs',title:'Inputs',parent:form,nodes:[fields.mode.parentElement,batchContainer,inputArea,referenceHelp,vfxInputError]},
+        {id:'prepare',title:'Prompt',parent:form,nodes:[promptGroup,enhancerBar]},
+        {id:'setup',title:'Model setup',parent:form,nodes:[components,loraEditor.node,componentPath.closest('details'),loraCompatibilityError,presetBar,gpuSelectionError,gpuPanel]},
+        {id:'generate',title:'Generate',parent:form,nodes:[dimensions,advanced]},
+        {id:'review',title:'Review',parent:scroll,nodes:[jobsHeader,jobStatus,jobPager.node,jobList]},
+        {id:'export',title:'Save / Import',parent:scroll,nodes:[transferBar]},
+      ],actions:[actions],queueNodes:[queueContainer],
+      getInputs:()=>Object.values(uploads).filter(state=>!state.wrap.hidden).flatMap(state=>[...state.retained,...state.files]),
+      getSummary:()=>({model:fields.model.selectedOptions[0]?.text,loras:loraEditor.getValue().map(row=>({...row,name:loraComponents().find(item=>item.id===row.id)?.display_name||loraComponents().find(item=>item.id===row.id)?.name||row.id}))}),
+      setLoras:value=>{loraEditor.setValue(value);loraTouched=true;editRevision++;updateMode(true);save();},
+    });
+  }
   loadInventory(); loadJobs(); checkEnhancer(); loadGpuUsage();
   timer = setInterval(() => {
     if (!document.hidden) { loadJobs(); loadGpuUsage(); }

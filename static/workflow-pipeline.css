@@ -1,0 +1,44 @@
+.h3-video-dialog.workflow-pipeline-dialog{width:min(1520px,calc(100vw - 24px));max-width:1520px}
+.workflow-pipeline{border:1px solid var(--border,#604a70);border-radius:12px;background:var(--bg,#180e24);min-width:0;overflow:hidden}
+.workflow-pipeline [hidden]{display:none!important}
+.workflow-pipeline-toolbar,.workflow-pipeline-preview-toolbar,.workflow-pipeline-footer{display:flex;align-items:center;gap:10px;padding:12px;border-bottom:1px solid var(--border,#604a70)}
+.workflow-pipeline-toolbar>strong{margin-right:auto}
+.workflow-pipeline-workspace{display:grid;grid-template-columns:140px minmax(280px,1fr) minmax(340px,420px);align-items:start}
+.workflow-pipeline-stages{display:flex;flex-direction:column;gap:8px;padding:12px;position:sticky;top:0}
+.workflow-pipeline-stages button{min-height:42px;text-align:left;white-space:normal}
+.workflow-pipeline-stages button[aria-current=step],.workflow-pipeline-preview-toolbar button[aria-pressed=true]{border-color:var(--accent,#f90);background:color-mix(in srgb,var(--accent,#f90) 12%,transparent)}
+.workflow-pipeline-center{min-width:0;border-left:1px solid var(--border,#604a70);border-right:1px solid var(--border,#604a70);background:var(--panel,#20152b)}
+.workflow-pipeline-model{padding:12px;display:flex;flex-direction:column;gap:8px;border-bottom:1px solid var(--border,#604a70)}
+.workflow-pipeline-model>button{white-space:normal;text-align:left;overflow-wrap:anywhere}
+.workflow-pipeline-loras{display:flex;flex-direction:column;gap:7px;font-size:12px}
+.workflow-pipeline-loras label{display:flex;gap:8px;align-items:center;overflow-wrap:anywhere}
+.workflow-pipeline-loras input{flex:none}
+.workflow-pipeline-source,.workflow-pipeline-results{padding:12px;min-width:0}
+.workflow-pipeline-source>select{width:100%;margin-bottom:10px}
+.workflow-pipeline-media{min-height:320px;background:#101014;border-radius:9px;padding:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px}
+.workflow-pipeline-media img,.workflow-pipeline-media video{display:block;width:100%;max-height:600px;object-fit:contain}
+.workflow-pipeline-media .video-job-media{width:100%;text-align:center}
+.workflow-pipeline-media audio{width:100%}
+.workflow-pipeline-settings{padding:14px;min-width:0;max-height:720px;overflow:auto;overscroll-behavior:contain}
+.workflow-pipeline-settings>h3{margin-top:0}
+.workflow-pipeline-settings .h3-video-grid,.workflow-pipeline-settings .h3-video-inputs,.workflow-pipeline-settings .bfs-video-inputs{grid-template-columns:minmax(0,1fr)}
+.workflow-pipeline-settings .h3-video-field,.workflow-pipeline-settings select,.workflow-pipeline-settings input,.workflow-pipeline-settings textarea{min-width:0;max-width:100%}
+.workflow-pipeline-settings .h3-video-field textarea{min-height:140px}
+.workflow-pipeline-settings .h3-lora-row{grid-template-columns:minmax(0,1fr) 80px auto}
+.workflow-pipeline-section-title{display:none}
+.workflow-pipeline-queue{padding:12px;border-top:1px solid var(--border,#604a70)}
+.workflow-pipeline-footer{justify-content:flex-end;border-top:1px solid var(--border,#604a70);border-bottom:0}
+.workflow-pipeline-footer .h3-video-actions{margin:0}
+.workflow-pipeline[data-stage=review]:not([data-all-settings=true]) .workflow-pipeline-workspace{grid-template-columns:140px minmax(0,1fr)}
+.workflow-pipeline[data-all-settings=true] .workflow-pipeline-workspace{display:block}
+.workflow-pipeline[data-all-settings=true] .workflow-pipeline-stages,.workflow-pipeline[data-all-settings=true] .workflow-pipeline-center{display:none}
+.workflow-pipeline[data-all-settings=true] .workflow-pipeline-settings{max-height:none;overflow:visible}
+.workflow-pipeline[data-all-settings=true] .workflow-pipeline-section-title{display:block;border-top:1px solid var(--border,#604a70);padding-top:18px}
+.workflow-pipeline[data-all-settings=true] .workflow-pipeline-settings .h3-video-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+.workflow-pipeline-chooser{width:min(740px,calc(100vw - 24px));background:var(--bg,#180e24);border:1px solid var(--border,#604a70);border-radius:12px;color:var(--fg,#eee)}
+.workflow-pipeline-recipes{padding:20px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.workflow-pipeline-recipes>p{grid-column:1/-1}
+.workflow-pipeline-recipe{white-space:normal;text-align:left;min-height:100px;padding:16px!important;display:flex;flex-direction:column;gap:8px}
+.workflow-pipeline-recipe span{font-size:12px;line-height:1.5;opacity:.8}
+@media(max-width:1100px){.workflow-pipeline-workspace{grid-template-columns:105px minmax(220px,1fr) minmax(290px,340px)}}
+@media(max-width:900px){.workflow-pipeline-workspace,.workflow-pipeline[data-stage=review]:not([data-all-settings=true]) .workflow-pipeline-workspace{display:flex;flex-direction:column}.workflow-pipeline-stages{position:static;flex-direction:row;flex-wrap:wrap;width:100%;box-sizing:border-box}.workflow-pipeline-stages button{flex:1;min-width:100px;text-align:center}.workflow-pipeline-center,.workflow-pipeline-settings{width:100%;box-sizing:border-box;max-height:none;overflow:visible}.workflow-pipeline-settings{order:1}.workflow-pipeline-center{order:2}.workflow-pipeline-stages{order:0}.workflow-pipeline-media{min-height:230px}.workflow-pipeline-recipes{grid-template-columns:1fr}.workflow-pipeline[data-all-settings=true] .workflow-pipeline-settings .h3-video-grid{grid-template-columns:1fr}.workflow-pipeline-toolbar{flex-wrap:wrap}}

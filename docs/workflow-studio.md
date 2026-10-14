@@ -1,4 +1,6 @@
-# Workflow studio
+# Legacy workflow studio
+
+This page describes the earlier combined studio presentation. The classic workflow screens remain the default. The current separate **Build Pipeline** workspace is documented in [Workflow Pipeline](workflow-pipeline.md); node-map development is experimental and kept separate.
 
 H3 Video, H3 Seed Hunter and BFS use two views of the same live draft:
 

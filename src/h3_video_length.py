@@ -94,8 +94,8 @@ def probe_video(path, *, exact_frames=False):
 def select_batch_video_length(config, uploads):
     """Return an independent config and durable explanation of its chosen size."""
     hunter = config.get("recipe") == "seed_hunter"
-    if hunter and config.get("seed_hunter", {}).get("stage", "preview") not in {"preview", "single"}:
-        raise ValueError("Automatic batch video length is available for Seed Hunter previews and single renders; continuation and dialogue keep their configured generation length")
+    if hunter and config.get("seed_hunter", {}).get("stage", "preview") not in {"preview", "single", "scout"}:
+        raise ValueError("Automatic batch video length is available for Seed Hunter previews, single renders and Seed Scout; continuation and dialogue keep their configured generation length")
     vfx = is_vfx_config(config)
     field = "source_video" if vfx else "reference_videos"
     sources = uploads.get(field)

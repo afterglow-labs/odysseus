@@ -202,3 +202,16 @@ resolved.config.seed_hunter.refmod_strengths[0]=.1;assert.equal(doc.config.seed_
 assert.throws(()=>resolveVideoWorkflow({...doc,config:{...doc.config,seed_hunter:{stage:'final'}}},{family:'h3',inventory:{components}}),/saved preview latent/);
 assert.throws(()=>resolveVideoWorkflow({...doc,config:{...doc.config,seed_hunter:{stage:'preview',arbitrary_path:'/secret'}}},{family:'h3',inventory:{components}}),/Invalid Seed Hunter settings/);
 ''')
+
+
+def test_seed_scout_portable_options_keep_explicit_selection_settings_and_remap_models():
+    run_js(r'''
+const components=[{id:'new-h3',role:'model',variant:'ref2va',name:'h3.safetensors'}];
+const options={stage:'scout',scout_count:3,scout_step:3,scout_mode:'interactive',scout_timeout:0,scout_preview_mode:'vae'};
+const doc={format:'odysseus-video-workflow',version:1,family:'h3',config:{recipe:'seed_hunter',mode:'ref2va',prompt:'Neutral test scene',steps:20,seed_hunter:options},components:{model:{name:'h3.safetensors'}}};
+const resolved=resolveVideoWorkflow(doc,{family:'h3',inventory:{components}});
+assert.equal(resolved.config.model,'new-h3');assert.equal(resolved.config.steps,20);
+assert.deepEqual(resolved.config.seed_hunter,options);
+resolved.config.seed_hunter.scout_count=9;assert.equal(options.scout_count,3);
+assert.throws(()=>resolveVideoWorkflow({...doc,config:{...doc.config,seed_hunter:{...options,script:'/tmp/run.py'}}},{family:'h3',inventory:{components}}),/Invalid Seed Hunter settings/);
+''')

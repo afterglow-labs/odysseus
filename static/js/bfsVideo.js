@@ -4,6 +4,7 @@ import { bindMenuDismiss, dismissOrRemove } from './escMenuStack.js';
 import { topPortalZ } from './toolWindowZOrder.js';
 import { showVideoWorkflowExportOptions } from './h3Video.js';
 import * as videoWorkflow from './videoWorkflow.js';
+import { createWorkflowPipeline } from './workflowPipeline.js';
 import { createVideoBatchQueue } from './videoBatch.js';
 import { appendVideoInputs } from './videoInputs.js';
 import { showVideoServerFiles } from './videoServerFiles.js';
@@ -40,19 +41,21 @@ async function request(path, options = {}) {
   return data;
 }
 
-export function showBfsVideo({ preferred = null } = {}, anchor = document.activeElement) {
+export function showBfsVideo({ preferred = null, layout = 'classic' } = {}, anchor = document.activeElement) {
   document.querySelectorAll('.bfs-video-overlay').forEach(dismissOrRemove);
   for (const [id, href] of [['h3-video-styles', '/static/h3-video.css'], ['bfs-video-styles', '/static/bfs-video.css']]) {
     if (!document.getElementById(id)) {
       const link = el('link'); link.id = id; link.rel = 'stylesheet'; link.href = href; document.head.appendChild(link);
     }
   }
+  const storageKey = STORAGE + (layout === 'pipeline' ? ':pipeline' : '');
+  let pipeline = null;
   let closed = false, inventory = null, workflow = null, loading = false, submitting = false, jobPager = null;
   let jobs = [], pollTimer, saved = {}, pendingPreferred = preferred, preferredAdapter = '', refreshFailed = false;
   let transferBusy = false, editRevision = 0, batchQueue = null, jobEditor = null, queueControls = null;
   let serverPicker = null;
   const controls = new Map(), slots = new Map(), files = new Map(), drafts = new Map(), jobNodes = new Map(), stopping = new Set(), deleting = new Set(), deletedJobs = new Set();
-  try { saved = JSON.parse(localStorage.getItem(STORAGE)) || {}; } catch {}
+  try { saved = JSON.parse(localStorage.getItem(storageKey)) || {}; } catch {}
   const overlay = el('div', 'cookbook-edit-overlay bfs-video-overlay'); overlay.style.zIndex = String(topPortalZ());
   const dialog = el('section', 'cookbook-edit-modal h3-video-dialog bfs-video-dialog');
   dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true'); dialog.setAttribute('aria-labelledby', 'bfs-video-title');
@@ -178,7 +181,7 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
     if (!workflow || jobEditor?.active) return;
     const { prompt: draft, ...values } = config(); drafts.set(workflow.id, draft);
     saved = { ...saved, workflow_id: workflow.id, by_workflow: { ...(saved.by_workflow || {}), [workflow.id]: values } };
-    try { localStorage.setItem(STORAGE, JSON.stringify(saved)); } catch {}
+    try { localStorage.setItem(storageKey, JSON.stringify(saved)); } catch {}
   }
   function componentIssues() {
     const issues = [];
@@ -576,7 +579,7 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
   // A selection drag can synthesize a click on the backdrop. Only the Close
   // button (or explicit programmatic teardown) may discard this live draft.
   const close = bindMenuDismiss(overlay, () => {
-    closed = true; clearInterval(pollTimer); window.removeEventListener('keydown', onKey, true);
+    pipeline?.destroy(); closed = true; clearInterval(pollTimer); window.removeEventListener('keydown', onKey, true);
     serverPicker?.close();
     batchQueue?.destroy(); queueControls?.destroy(); jobPager?.destroy(); releaseVideoJobMedia(jobList);
     for (const state of files.values()) if (state.url) URL.revokeObjectURL(state.url);
@@ -615,7 +618,7 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
     onChange: updateReady, onError: setError,
   });
   batchQueue = createVideoBatchQueue({
-    family: 'bfs', container: batchContainer, getSnapshot: batchSnapshot,
+    family: 'bfs', sessionKey:layout==='pipeline'?'bfs:pipeline':'bfs', container: batchContainer, getSnapshot: batchSnapshot,
     onJob: () => { if (!closed) loadJobs({ reset: true }); },
     onChange: () => { if (!closed) { editRevision++; updateReady(); } },
   });
@@ -662,6 +665,18 @@ export function showBfsVideo({ preferred = null } = {}, anchor = document.active
       }
       return descriptors;
     },
+  });
+  if(layout==='pipeline')pipeline=createWorkflowPipeline({container:scroll,dialog,form,family:'bfs',title:'BFS Video',
+    sections:[
+      {id:'inputs',title:'Inputs',parent:form,nodes:[workflowPicker.parentElement,workflowNote,adapterNotice,batchContainer,inputGrid,sourceNote,inputStatus]},
+      {id:'prepare',title:'Prompt',parent:form,nodes:[prompt.parentElement]},
+      {id:'setup',title:'Model setup',parent:form,nodes:[componentsTitle,componentGrid,missing,parameterGrid]},
+      {id:'generate',title:'Generate',parent:form,nodes:[dynamicControls]},
+      {id:'review',title:'Review',parent:scroll,nodes:[jobsHeader,jobsStatus,jobPager.node,jobList]},
+      {id:'export',title:'Save / Import',parent:scroll,nodes:[transferBar]},
+    ],actions:[actions],queueNodes:[queueContainer],
+    getInputs:()=>[...files.values()].filter(state=>state.allowed).flatMap(state=>[state.retained,state.file].filter(Boolean)),
+    getSummary:()=>({model:slots.get('model')?.control.selectedOptions[0]?.text||workflow?.name||'Choose workflow'}),
   });
   loadInventory(); loadJobs(); pollTimer = setInterval(() => { if (!document.hidden) loadJobs(); }, 2000);
   return { overlay, close };

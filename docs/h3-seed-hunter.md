@@ -6,7 +6,7 @@ on desktop, or the separate **H3 Seed Hunter** workflow in the iOS client.
 It uses the existing private Comfy inference core without a ComfyUI window or
 server. It is an implemented recipe, not an arbitrary Comfy graph executor.
 
-The [workflow studio](workflow-studio.md) provides Pipeline and Node map views of the same draft, plus ComfyUI JSON conversion.
+The classic editor remains available. **Cookbook → Launch → Build Pipeline** opens the separate [pipeline workspace](workflow-pipeline.md) using the same native controls and execution path. Node editing remains experimental.
 
 ## Preview, choose, refine
 
@@ -30,6 +30,16 @@ Defaults follow the saved graph: 0.4 MP at 9:16 (480 × 864), 73 frames at 24 fp
 preview's actual aspect ratio (1088 × 1952), 2 steps, ER SDE,
 linear-quadratic scheduling and 0.4 denoise. Video/audio sigma shifts are
 bypassed until explicitly enabled.
+
+Fresh drafts use 20 preview steps and no automatic turbo LoRA. Previously saved drafts and imported workflows retain their explicit settings; the 6-step values above describe the original author's turbo-based preset.
+
+## Seed Scout
+
+**Cookbook → Launch → H3 Seed Scout** is a separate native workflow. It samples several consecutive seeds through the first part of one full schedule and shows animated previews inside Odysseus. **Continue this seed** explicitly resumes the selected candidate's exact partial latent through the remaining schedule, at the same resolution. Viewing a preview, refreshing status, or closing the client never chooses a seed.
+
+Fresh Scout drafts use 20 full-schedule steps, 3 seed choices, previews after step 3, VAE decoding, and no LoRAs. Selection timeout 0 waits until a seed is chosen or the job is stopped. Optional previews-only and single-full-pass modes remain available. Batch submissions can vary a reference video, image or audio input, or repeat the whole draft; video lengths can be detected automatically. Scout drafts, batch trays and paginated history are separate from Seed Hunter.
+
+Seed Hunter's completed-preview/upscale workflow and Seed Scout's partial-schedule continuation are distinct operations.
 
 The preview's denoised video/audio latent and original conditioning are stored
 as a safetensors file plus typed JSON. Refinement uses the learned 3D latent

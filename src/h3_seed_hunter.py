@@ -7,6 +7,7 @@ from src.h3_video import ACTIVE, _read, _write, _locked
 
 
 def capabilities(project, runtime, components, gpus=()):
+    from src.h3_seed_scout import defaults as scout_defaults
     project, runtime = Path(project), Path(runtime)
     extras = project / "runtimes/minimax-h3/seed-hunter"
     defaults = {"mode": "ref2va", "width": 480, "height": 864, "frames": 73, "steps": 6,
@@ -26,6 +27,7 @@ def capabilities(project, runtime, components, gpus=()):
         "version": 1, "stages": ["preview", "single", "continuation", "dialogue"],
         "samplers": list(SAMPLERS), "schedulers": list(SCHEDULERS),
         "defaults": defaults,
+        "scout_defaults": scout_defaults(components, gpus),
         "final_defaults": {"megapixels": 2, "steps": 2, "sampler": "er_sde",
                            "scheduler": "linear_quadratic", "denoise": .4},
         "features": {"latent_upscaler": (extras / "latent-upscaler").is_dir()

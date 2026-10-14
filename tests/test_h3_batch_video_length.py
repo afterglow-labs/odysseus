@@ -55,7 +55,7 @@ def test_automatic_long_reference_chooses_first_fifteen_seconds_without_changing
     assert config == before
 
 
-@pytest.mark.parametrize("stage", ["preview", "single"])
+@pytest.mark.parametrize("stage", ["preview", "single", "scout"])
 @pytest.mark.parametrize("duration,frames", [(2, 73), (3.461, 90), (6.172, 158), (8.674, 209), (15, 362)])
 def test_seed_hunter_auto_length_uses_its_available_frame_choices(monkeypatch, stage, duration, frames):
     monkeypatch.setattr(length, "probe_video", lambda *args, **kwargs:
@@ -184,11 +184,13 @@ def test_each_batch_file_saves_own_frames_and_retry_keeps_receipt(backend, monke
     assert "batch_video_length" not in manager.view(directory.name, "corey")
 
 
-@pytest.mark.parametrize("stage", ["preview", "single"])
+@pytest.mark.parametrize("stage", ["preview", "single", "scout"])
 def test_seed_hunter_batch_submission_persists_its_short_clip_frame_count(backend, monkeypatch, stage):
+    if stage == "scout":
+        backend.inventories["h3"]["seed_hunter"] = {"features": {"seed_scout": True}}
     monkeypatch.setattr(length, "probe_video", lambda *args, **kwargs:
                         {"duration_seconds": 3.461, "source_frames": 83})
-    config = {**backend.configs["h3"], "recipe": "seed_hunter", "seed_hunter": {"stage": stage},
+    config = {**backend.configs["h3"], "recipe": "seed_hunter", "seed_hunter": {"stage": stage, "scout_count": 5, "scout_step": 2, "scout_timeout": 11},
               "frames": 73, "width": 480, "height": 864, "sampler": "er_sde", "scheduler": "beta"}
     response = _send(backend, config=config)
     assert response.status_code == 201, response.text
@@ -196,6 +198,7 @@ def test_seed_hunter_batch_submission_persists_its_short_clip_frame_count(backen
     manifest = h3._read(directory / "manifest.json")
     assert manifest["config"]["frames"] == 90
     assert manifest["config"]["seed_hunter"]["stage"] == stage
+    assert {key: manifest["config"]["seed_hunter"][key] for key in ("scout_count", "scout_step", "scout_timeout")} == {"scout_count": 5, "scout_step": 2, "scout_timeout": 11}
     assert response.json()["batch_video_length"]["duration_seconds"] == 3.461
 
 
