@@ -82,7 +82,7 @@ def test_auth_checked_before_listing(drive, monkeypatch):
     assert called == []
     response = client.get('/api/video/h3/server-files?path=TV%20Shows&search=clip&offset=3&limit=10', headers={'x-user': 'admin'})
     assert response.status_code == 200 and response.headers['cache-control'] == 'private, no-store'
-    assert called == [dict(root='e', path='TV Shows', search='clip', offset=3, limit=10)]
+    assert called == [dict(root='e', path='TV Shows', search='clip', offset=3, limit=10, kind='video')]
 
 
 @pytest.mark.parametrize('family', ['h3', 'bfs'])

@@ -506,6 +506,14 @@ refresh loses files not yet queued; confirmed server jobs continue independently
 **Clear list** clears the local list without deleting any server jobs. Remove
 and re-add an unqueued file to use changed settings instead of its saved snapshot.
 
+**Inputs for this job** adds an individual row's audio, images or extra video
+references alongside its primary input. These files stay with that job and are
+captured in its retry snapshot. A row's selected files replace shared references
+in the same role; other shared roles remain available. Removing the final row
+attachment restores that role's shared inputs. Local files and E:/F: server
+files are supported for images and audio as well as videos. Automatic length
+uses the primary reference video when the row includes additional video references.
+
 ## Selecting videos stored on the server
 
 Video inputs in the desktop workflow offer **Server files** alongside local file

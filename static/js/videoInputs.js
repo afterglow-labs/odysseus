@@ -25,3 +25,13 @@ export function appendVideoInputs(body, uploads) {
   if (Object.keys(serverInputs).length) body.append('server_inputs', JSON.stringify(serverInputs));
   return body;
 }
+
+export function videoFormIssue(form) {
+  const invalid=Array.from(form.elements||[]).find(control=>control.willValidate&&!control.validity.valid);
+  if(invalid){
+    const wrapper=invalid.labels?.[0]||invalid.closest('label'),title=wrapper?.querySelector(':scope > span, :scope > strong');
+    const label=invalid.getAttribute('aria-label')||title?.firstChild?.textContent||wrapper?.textContent||invalid.name||invalid.id||'Draft setting';
+    return `${label.trim()}: ${invalid.validationMessage}`;
+  }
+  return form.checkValidity()?'':'Check the draft settings before queueing.';
+}

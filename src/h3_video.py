@@ -53,7 +53,7 @@ UPLOAD_EXTENSIONS = {
     "last_frame": {".jpg", ".jpeg", ".png", ".webp"},
     "reference_images": {".jpg", ".jpeg", ".png", ".webp"},
     "reference_videos": {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"},
-    "reference_audio": {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".opus"},
+    "reference_audio": {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".mka", ".aac", ".opus"},
 }
 
 

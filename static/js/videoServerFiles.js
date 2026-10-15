@@ -15,13 +15,15 @@ const fileIcon = folder => {
   const path = document.createElementNS(svg.namespaceURI,'path'); path.setAttribute('d',folder ? 'M3 7V5h6l2 2h10v13H3z' : 'M5 3h10l4 4v14H5z M10 10l5 3-5 3z'); svg.append(path); return svg;
 };
 
-export function showVideoServerFiles({ family, multiple = false, onSelect }, anchor = document.activeElement) {
+export function showVideoServerFiles({ family, kind = 'video', multiple = false, onSelect }, anchor = document.activeElement) {
   if (!['h3', 'bfs'].includes(family)) throw new Error('Unknown video workflow family.');
+  if(!['video','image','audio'].includes(kind))throw new Error('Unknown server media type.');
+  const plural=kind==='audio'?'audio files':`${kind}s`,singular=kind==='audio'?'audio file':kind;
   const overlay = make('div', 'cookbook-edit-overlay video-server-files-overlay'); overlay.style.zIndex = String(topPortalZ());
   const dialog = make('section', 'cookbook-edit-modal h3-video-dialog video-server-files-dialog');
   dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true'); dialog.setAttribute('aria-label', 'Server files');
   const header = make('div', 'h3-video-header'), heading = make('div'), closeButton = action('Close');
-  heading.append(make('h2', '', 'Server files'),make('p','h3-video-muted','Choose videos from your Odysseus computer.')); header.append(heading, closeButton);
+  heading.append(make('h2', '', 'Server files'),make('p','h3-video-muted',`Choose ${plural} from your Odysseus computer.`)); header.append(heading, closeButton);
   const controls = make('div', 'video-server-files-controls'), toolbar = make('div', 'video-server-files-nav');
   const driveLabel = make('label', 'h3-video-field'), drive = make('select', 'cookbook-field-input'); drive.setAttribute('aria-label', 'Drive');
   drive.add(new Option('E:', 'e')); drive.add(new Option('F:', 'f')); driveLabel.append(make('span', '', 'Drive'), drive);
@@ -31,15 +33,15 @@ export function showVideoServerFiles({ family, multiple = false, onSelect }, anc
   const listingToolbar = make('div','video-server-files-list-toolbar');
   const status = make('p', 'h3-video-muted'); status.setAttribute('role', 'status');
   const error = make('p', 'h3-video-error'); error.setAttribute('role', 'alert'); error.hidden = true;
-  const selectAll = action('Select shown videos'); selectAll.hidden = !multiple; listingToolbar.append(status,selectAll);
+  const selectAll = action(`Select shown ${plural}`); selectAll.hidden = !multiple; listingToolbar.append(status,selectAll);
   controls.append(toolbar,location,search,error,listingToolbar);
   const content = make('div','video-server-files-browser'), columns = make('div','video-server-files-columns'); columns.setAttribute('aria-hidden','true');
   columns.append(make('span','','Name'),make('span','video-server-files-type','Type'),make('span','video-server-files-size','Size'));
-  const list = make('ul', 'video-server-files-list'); list.setAttribute('aria-label', 'Server folders and videos');
+  const list = make('ul', 'video-server-files-list'); list.setAttribute('aria-label', `Server folders and ${plural}`);
   const more = action('Load more'); more.classList.add('video-server-files-more'); more.hidden = true; content.append(columns,list,more);
   const footer = make('div', 'video-server-files-footer'), selectedTray = make('details','video-server-files-selected'), selectedSummary = make('summary'), selectedStatus = make('span'), selectedHint = make('small','h3-video-muted','Review selection'), selectedList = make('ul');
   selectedSummary.append(selectedStatus,selectedHint); selectedTray.append(selectedSummary,selectedList);
-  const actions = make('div','video-server-files-actions'), help = make('small','h3-video-muted','Selections stay selected when you change folders or drives.'), use = action('Use video'); use.className = 'cookbook-btn';
+  const actions = make('div','video-server-files-actions'), help = make('small','h3-video-muted','Selections stay selected when you change folders or drives.'), use = action(`Use ${singular}`); use.className = 'cookbook-btn';
   const clear = action('Clear selection'); actions.append(help,clear,use); footer.append(selectedTray,actions);
   dialog.append(header,controls,content,footer); overlay.append(dialog); document.body.appendChild(overlay);
   let root = 'e', path = '', parent = null, entries = [], selected = new Map(), loading = false, closed = false, nextOffset = null, controller, debounce;
@@ -71,8 +73,8 @@ export function showVideoServerFiles({ family, multiple = false, onSelect }, anc
     });
   }
   function renderSelection() {
-    selectedStatus.textContent = `${selected.size} video${selected.size === 1 ? '' : 's'} selected${selected.size ? ` · ${fileSize([...selected.values()].reduce((sum,file) => sum+file.size,0))}` : ''}`;
-    use.textContent = multiple ? `Use ${selected.size} video${selected.size === 1 ? '' : 's'}` : 'Use video'; use.disabled = !selected.size; clear.disabled = !selected.size;
+    selectedStatus.textContent = `${selected.size} ${selected.size===1?singular:plural} selected${selected.size ? ` · ${fileSize([...selected.values()].reduce((sum,file) => sum+file.size,0))}` : ''}`;
+    use.textContent = multiple ? `Use ${selected.size} ${selected.size===1?singular:plural}` : `Use ${singular}`; use.disabled = !selected.size; clear.disabled = !selected.size;
     selectedHint.hidden = !selected.size;
     if (!selected.size) selectedTray.open = false;
     selectedList.replaceChildren();
@@ -81,8 +83,8 @@ export function showVideoServerFiles({ family, multiple = false, onSelect }, anc
       label.append(make('strong','',selection.path.split('/').at(-1)),make('small','h3-video-muted',`${selection.root.toUpperCase()}:/${selection.path} · ${fileSize(selection.size)}`));
       remove.setAttribute('aria-label',`Remove ${selection.path.split('/').at(-1)} from selection`); remove.onclick = () => { selected.delete(key); renderSelection(); }; row.append(label,remove); selectedList.append(row);
     }
-    const shown = entries.filter(entry => entry.kind === 'video' && entry.selection);
-    selectAll.textContent = shown.length && shown.every(entry => selected.has(selectionKey(entry.selection))) ? 'Deselect shown videos' : 'Select shown videos';
+    const shown = entries.filter(entry => entry.kind === kind && entry.selection);
+    selectAll.textContent = `${shown.length && shown.every(entry => selected.has(selectionKey(entry.selection))) ? 'Deselect' : 'Select'} shown ${plural}`;
     for (const box of list.querySelectorAll('input[data-server-selection]')) { box.checked = selected.has(box.dataset.serverSelection); box.closest('li').classList.toggle('selected',box.checked); }
   }
   function renderEntries() {
@@ -94,7 +96,7 @@ export function showVideoServerFiles({ family, multiple = false, onSelect }, anc
         const name=make('span','video-server-files-name'); name.append(fileIcon(true),make('span','',entry.name));
         open.append(name,make('small','video-server-files-type','Folder'),make('small','video-server-files-size','—'));
         open.onclick = () => navigate({root,path:entry.path}); row.append(open);
-      } else if (entry.kind === 'video' && entry.selection) {
+      } else if (entry.kind === kind && entry.selection) {
         const label = make('label','video-server-files-entry'), box = make('input'); box.type = multiple ? 'checkbox' : 'radio'; box.name = 'server-video'; box.disabled = loading;
         box.dataset.serverSelection = selectionKey(entry.selection);
         box.onchange = () => {
@@ -116,7 +118,7 @@ export function showVideoServerFiles({ family, multiple = false, onSelect }, anc
     back.disabled = up.disabled = refresh.disabled = selectAll.disabled = more.disabled = true;
     renderEntries(); renderLocation();
     try {
-      const query = new URLSearchParams({ root, path, search: search.value, offset: String(append ? nextOffset || 0 : 0), limit: '200' });
+      const query = new URLSearchParams({ root, path, kind, search: search.value, offset: String(append ? nextOffset || 0 : 0), limit: '200' });
       const response = await fetch(`/api/video/${family}/server-files?${query}`, { credentials: 'same-origin', signal: current.signal });
       let data = {}; try { data = await response.json(); } catch {}
       if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `Could not browse server files (${response.status}).`);
@@ -126,14 +128,14 @@ export function showVideoServerFiles({ family, multiple = false, onSelect }, anc
       drive.value = root; path = data.path || ''; parent = data.parent_path;
       entries = append ? [...entries, ...(data.entries || [])] : data.entries || [];
       nextOffset = data.has_more ? data.next_offset : null;
-      status.textContent = entries.length ? `${entries.length} of ${data.total ?? entries.length} items${search.value ? ' matching this search' : ''}` : search.value ? 'No matching videos or folders in this folder.' : 'No videos or folders found here.';
+      status.textContent = entries.length ? `${entries.length} of ${data.total ?? entries.length} items${search.value ? ' matching this search' : ''}` : search.value ? `No matching ${plural} or folders in this folder.` : `No ${plural} or folders found here.`;
     } catch (reason) {
       if (reason.name === 'AbortError' || closed || current !== controller) return;
       error.textContent = reason.message; error.hidden = false; status.textContent = ''; parent = path ? path.split('/').slice(0, -1).join('/') : null;
     } finally {
       if (!closed && current === controller) {
         loading = false; back.disabled = !history.length; up.disabled = parent === null; refresh.disabled = false;
-        selectAll.disabled = !entries.some(item => item.kind === 'video'); more.hidden = nextOffset === null; more.disabled = false; renderEntries(); renderLocation();
+        selectAll.disabled = !entries.some(item => item.kind === kind); more.hidden = nextOffset === null; more.disabled = false; renderEntries(); renderLocation();
       }
     }
   }
@@ -143,7 +145,7 @@ export function showVideoServerFiles({ family, multiple = false, onSelect }, anc
   refresh.onclick = () => load(); more.onclick = () => load(true);
   search.oninput = () => { clearTimeout(debounce); debounce = setTimeout(() => load(), 250); };
   selectAll.onclick = () => {
-    const shown = entries.filter(entry => entry.kind === 'video' && entry.selection), remove = shown.every(entry => selected.has(selectionKey(entry.selection)));
+    const shown = entries.filter(entry => entry.kind === kind && entry.selection), remove = shown.every(entry => selected.has(selectionKey(entry.selection)));
     for (const entry of shown) if (remove) selected.delete(selectionKey(entry.selection)); else selected.set(selectionKey(entry.selection),entry.selection);
     renderSelection();
   };

@@ -10,7 +10,7 @@ import { createVideoQueueControls, videoQueueField } from './videoQueue.js';
 import { createVideoJobReruns } from './videoJobRerun.js';
 import { h3LoraStack, h3LoraIssue, createH3LoraEditor, insertH3LoraTrigger, H3_LORA_RECOMMENDED_FIELDS, h3LoraComponents } from './h3Loras.js';
 import { referenceVideoRanges, restoreReferenceVideoRanges, createReferenceVideoRangeEditor, referenceVideoRangesField } from './referenceVideoRange.js';
-import { appendVideoInputs } from './videoInputs.js';
+import { appendVideoInputs, videoFormIssue } from './videoInputs.js';
 import { showVideoServerFiles } from './videoServerFiles.js';
 import { showH3LoraLibrary } from './h3LoraLibrary.js';
 
@@ -332,6 +332,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic' } = {}, 
   const prompt = el('textarea', 'cookbook-field-input');
   prompt.id = 'h3-prompt'; prompt.name = 'prompt'; fields.prompt = prompt; promptGroup.appendChild(prompt);
   prompt.rows = 4; prompt.required = true; prompt.maxLength = 16000; prompt.placeholder = 'Describe the scene, movement, sounds, and dialogue…';
+  prompt.value = saved.prompt || '';
   const enhancerBar = el('div', 'h3-video-enhancer-info');
   const enhancerPickerLabel = el('label', 'h3-video-field h3-video-enhancer-picker');
   enhancerPickerLabel.appendChild(el('span', '', 'Enhancement model'));
@@ -357,7 +358,8 @@ export function showH3Video({ preferredModel = null, layout = 'classic' } = {}, 
     const input = el('input'); input.type = 'file'; input.accept = accept; input.multiple = multiple;
     input.id = 'h3-' + key; heading.htmlFor = input.id;
     const list = el('ul', 'h3-video-file-list');
-    const serverFiles = accept === 'video/*' ? button('Server files') : null;
+    const mediaKind = accept.startsWith('image/')?'image':accept.startsWith('audio/')?'audio':'video';
+    const serverFiles = button('Server files');
     if (serverFiles) serverFiles.hidden = true;
     const state = { files: [], retained: [], input, wrap, heading, label, multiple, serverFiles, rangeEditors: [] };
     const render = () => {
@@ -387,7 +389,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic' } = {}, 
       input.value = ''; render(); setError('');
     });
     if (serverFiles) serverFiles.onclick = () => {
-      serverPicker = showVideoServerFiles({ family: 'h3', multiple: state.multiple, onSelect: selected => {
+      serverPicker = showVideoServerFiles({ family: 'h3', kind:mediaKind, multiple: state.multiple, onSelect: selected => {
         if (closed) return;
         if (!state.multiple && selected.length) state.retained = [];
         state.files = state.multiple ? [...state.files, ...selected] : selected.slice(0, 1);
@@ -402,7 +404,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic' } = {}, 
   upload('source_video', 'Source video', 'video/*', false, 'ref2va');
   upload('reference_images', 'Reference images', 'image/jpeg,image/png,image/webp', true, 'ref2va');
   upload('reference_videos', 'Reference videos', 'video/*', true, 'ref2va');
-  upload('reference_audio', 'Reference audio (optional)', 'audio/*', true, 'ref2va');
+  upload('reference_audio', 'Reference audio (optional)', 'audio/*,.mka', true, 'ref2va');
   const modeHelp = el('p', 'h3-video-muted'), referenceLengthHelp = el('p', 'h3-video-muted', 'Choose a 2–15 second section from each reference video; selected sections must total at most 15 seconds. Generation length limits how much reference content is used.');
   const referenceHelp = h3WorkflowHelp('Reference help', modeHelp, referenceLengthHelp); referenceHelp.id = 'h3-reference-help'; form.appendChild(referenceHelp);
   const vfxInputError = el('p', 'h3-video-error'); vfxInputError.hidden = true; vfxInputError.setAttribute('role', 'alert'); form.appendChild(vfxInputError);
@@ -464,7 +466,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic' } = {}, 
   };
   function save() {
     if (jobEditor?.active) return;
-    try { localStorage.setItem(storageKey, JSON.stringify({ ...config(), _installedPresetRevision: appliedPresetRevision })); } catch {}
+    try { localStorage.setItem(storageKey, JSON.stringify({ ...config(), prompt:prompt.value, _installedPresetRevision: appliedPresetRevision })); } catch {}
   }
   function applyInstalledPreset({ automatic = false } = {}) {
     const preset = inventory?.installed_preset, values = preset?.config;
@@ -544,10 +546,9 @@ export function showH3Video({ preferredModel = null, layout = 'classic' } = {}, 
     if (Number(fields.width.value) * Number(fields.height.value) > 1032192) return 'Choose dimensions totaling at most 1,032,192 pixels.';
     const images = batchVideoField()==='reference_images'?1:uploads.reference_images.files.length, audio = batchVideoField()==='reference_audio'?1:uploads.reference_audio.files.length;
     const videos = batchVideoField()==='reference_videos'?1:uploads.reference_videos.files.length;
-    if(fields.mode.value==='ref2va'&&!isVfxEdit()&&!images&&!videos)return 'Audio-only batches need a shared reference image or video.';
-    if(fields.mode.value==='fl2va'&&batchVideoField()==='copies'&&!inputCount('first_frame')&&!inputCount('last_frame'))return 'Attach a first or last frame before creating copies.';
-    if (images > 9 || videos > 3 || audio > 3 || images + audio + videos > 12) return `Each batch job supports up to 9 images, 3 videos, 3 audio files, and 12 references total.${isVfxEdit() ? ' The source video is separate.' : ''}`;
-    if (!form.checkValidity()) return 'Check the video settings before adding the batch.';
+    if(fields.mode.value==='ref2va'&&!isVfxEdit()&&!images&&!videos&&!batchQueue?.hasInputForEach?.(['reference_images','reference_videos']))return 'Attach an image or video to each audio job, or add a shared reference.';
+    if(fields.mode.value==='fl2va'&&batchVideoField()==='copies'&&!inputCount('first_frame')&&!inputCount('last_frame')&&!batchQueue?.hasInputForEach?.(['first_frame','last_frame']))return 'Attach a first or last frame to each job before creating copies.';
+    const formIssue=videoFormIssue(form);if(formIssue)return formIssue;
     return '';
   }
   function batchSnapshot() {
@@ -565,6 +566,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic' } = {}, 
   function updateReady() {
     jobEditor?.observe(jobs);
     if(inventory)batchQueue?.setInputChoices?.(h3BatchInputChoices(fields.mode.value,isVfxEdit()));
+    batchQueue?.setCompanionFields?.(fields.mode.value==='ref2va'?[{field:'reference_audio',label:'Audio for this job'},{field:'reference_images',label:'Images for this job'},{field:'reference_videos',label:'Extra videos for this job'}]:fields.mode.value==='fl2va'?[{field:'first_frame',label:'First frame for this job'},{field:'last_frame',label:'Last frame for this job'}]:[]);
     const batching = batchActive(), batchBusy = !!batchQueue?.busy;
     const editing = !!jobEditor?.active, editLoading = !!jobEditor?.loading;
     const queueBusy = !!queueControls?.busy;
@@ -1123,6 +1125,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic' } = {}, 
   // A selection drag can synthesize a click on the backdrop. Only the Close
   // button (or explicit programmatic teardown) may discard this live draft.
   const close = bindMenuDismiss(overlay, () => {
+    save();
     pipeline?.destroy(); closed = true; clearInterval(timer); window.removeEventListener('keydown', onKey, true);
     serverPicker?.close();
     loraLibrary?.close();

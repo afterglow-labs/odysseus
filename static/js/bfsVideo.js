@@ -96,7 +96,7 @@ export function showBfsVideo({ preferred = null, layout = 'classic' } = {}, anch
     if (mediaType === 'video') { preview.controls = true; preview.playsInline = true; preview.preload = 'metadata'; }
     else preview.alt = label;
     const remove = button('Remove file'); remove.hidden = true; remove.setAttribute('aria-label', `Remove ${label.toLowerCase()}`);
-    const serverFiles = mediaType === 'video' ? button('Server files') : null;
+    const serverFiles = button('Server files');
     if (serverFiles) serverFiles.hidden = true;
     const state = { file: null, retained: null, url: null, input, wrap, preview, remove, name, labelNode, hint, label, help, serverFiles, allowed: false, required: false };
     function clear(clearInput = true) {
@@ -125,7 +125,7 @@ export function showBfsVideo({ preferred = null, layout = 'classic' } = {}, anch
     };
     input.addEventListener('change', () => { const selected = input.files?.[0]; if (selected) setFile(selected); });
     if (serverFiles) serverFiles.onclick = () => {
-      serverPicker = showVideoServerFiles({ family: 'bfs', onSelect: selected => { if (!closed && selected[0]) setFile(selected[0]); } }, serverFiles);
+      serverPicker = showVideoServerFiles({ family: 'bfs', kind:mediaType==='video'?'video':'image', onSelect: selected => { if (!closed && selected[0]) setFile(selected[0]); } }, serverFiles);
     };
     remove.onclick = () => clear(); wrap.append(labelNode, hint, input); if (serverFiles) wrap.append(serverFiles);
     wrap.append(name, preview, remove); inputGrid.appendChild(wrap); files.set(key, state);

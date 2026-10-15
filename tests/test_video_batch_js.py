@@ -48,6 +48,81 @@ assert.ok(Object.isFrozen(e.serverFile));
 ''')
 
 
+def test_each_video_has_its_own_audio_and_images_without_creating_extra_jobs():
+    run_js(r'''
+const remote=(root,path)=>serverVideoInput({root,path,size:1234,mtime_ns:'1780000000000000001'});
+const videos=[remote('e','clips/one.mp4'),remote('f','clips/two.mp4')];
+const shared=new File(['shared'],'shared.wav'),audio1=new File(['one'],'one.wav'),audio2=remote('f','audio/two.flac');
+const image1=remote('e','images/one.png'),image2=new File(['two-image'],'two.png');
+const bodies=[];
+const q=new VideoBatchQueue({family:'h3',getSnapshot:()=>({config:{mode:'ref2va',prompt:'same',steps:20},uploads:{reference_audio:[shared]},videoField:'reference_videos',autoVideoLength:true}),submit:async(f,item)=>{bodies.push(videoBatchFormData(item));return{id:item.id}}});
+q.add(videos);q.addInputs(q.items[0].id,'reference_audio',[audio1]);q.addInputs(q.items[1].id,'reference_audio',[audio2]);
+q.addInputs(q.items[0].id,'reference_images',[image1]);q.addInputs(q.items[1].id,'reference_images',[image2]);
+await q.run();assert.equal(bodies.length,2);assert.equal(q.items.length,2);
+assert.deepEqual(bodies[0].getAll('reference_audio'),[audio1]);assert.deepEqual(bodies[1].getAll('reference_audio'),[]);
+assert.equal(JSON.parse(bodies[0].get('server_inputs')).reference_images[0].path,'images/one.png');
+assert.equal(JSON.parse(bodies[1].get('server_inputs')).reference_audio[0].path,'audio/two.flac');
+assert.deepEqual(bodies[1].getAll('reference_images'),[image2]);
+assert.deepEqual(bodies.map(body=>JSON.parse(body.get('server_inputs')).reference_videos[0].path),['clips/one.mp4','clips/two.mp4']);
+assert.ok(bodies.every(body=>body.get('auto_video_length')==='true'));
+assert.equal(q.items[0].snapshot.config.prompt,'same');
+assert.throws(()=>q.addInputs(q.items[0].id,'reference_audio',[shared]),/already saved/);
+''')
+
+
+def test_per_job_inputs_and_ranges_are_frozen_across_pause_and_ambiguous_retry():
+    run_js(r'''
+const primary=new File(['primary'],'one.mp4'),extra=new File(['extra'],'extra.mp4');
+const audio=new File(['original'],'original.wav');setReferenceVideoRange(extra,{start_seconds:20,duration_seconds:3});
+let attempt=0;const bodies=[];
+const q=new VideoBatchQueue({family:'h3',getSnapshot:()=>({config:{mode:'ref2va',prompt:'original'},videoField:'reference_videos',autoVideoLength:true}),submit:async(f,item)=>{bodies.push(videoBatchFormData(item));if(attempt++===0)throw Error('Lost response');return{id:item.id}}});
+q.add([primary]);const item=q.items[0];q.addInputs(item.id,'reference_videos',[extra]);q.addInputs(item.id,'reference_audio',[audio]);
+await q.run();assert.equal(item.status,'error');const savedId=item.id;
+item.uploads.reference_audio=[];item.uploads.reference_videos=[];setReferenceVideoRange(extra,{start_seconds:100,duration_seconds:2});
+await q.run({retry:true});assert.equal(item.id,savedId);assert.equal(bodies.length,2);
+for(const body of bodies){assert.deepEqual(body.getAll('reference_videos'),[primary,extra]);assert.deepEqual(body.getAll('reference_audio'),[audio]);assert.deepEqual(JSON.parse(body.get('config')).reference_video_ranges,[{start_seconds:0,duration_seconds:15},{start_seconds:20,duration_seconds:3}]);}
+''')
+
+
+def test_per_job_attachment_validation_and_removing_audio_restores_shared_input():
+    run_js(r'''
+const audio=new File(['voice'],'voice.wav');let submitted=0;
+const q=new VideoBatchQueue({family:'h3',getSnapshot:()=>({config:{mode:'ref2va',prompt:'same'},videoField:'reference_videos',uploads:{reference_audio:[audio]}}),submit:async(f,item)=>{submitted++;return{id:item.id}}});
+q.add([new File(['v'],'one.mp4'),new File(['v'],'two.mp4')]);
+const first=q.items[0];q.addInputs(first.id,'reference_audio',[audio]);q.removeInput(first.id,'reference_audio',0);
+assert.throws(()=>q.addInputs(first.id,'reference_audio',[new File(['bad'],'notes.txt')]),/supported audio/);
+assert.throws(()=>q.addInputs(first.id,'reference_videos',[1,2,3].map(n=>new File(['v'],`${n}.mp4`))),/At most 2/);
+assert.equal(first.uploads.reference_audio,undefined);await q.run();assert.equal(submitted,2);
+assert.deepEqual(videoBatchFormData(first).getAll('reference_audio'),[audio]);
+assert.deepEqual(videoBatchFormData(q.items[1]).getAll('reference_audio'),[audio]);
+''')
+
+
+def test_mka_is_audio_for_primary_batches_and_individual_companions():
+    run_js(r'''
+const local=new File(['matroska-audio'],'voice.MKA'),remote=serverVideoInput({root:'f',path:'voice.mka',size:1234,mtime_ns:'1780000000000000001'});
+const q=new VideoBatchQueue({family:'h3',getSnapshot:()=>({config:{recipe:'seed_hunter',mode:'ref2va',prompt:'same',seed_hunter:{stage:'dialogue'}},videoField:'reference_audio'}),submit:async(f,item)=>{const body=videoBatchFormData(item);assert.deepEqual(body.getAll('reference_audio'),[local]);return{id:item.id}}});
+q.inputField='reference_audio';assert.equal(q.add([local]).added,1);await q.run();
+const videoQ=new VideoBatchQueue({family:'h3',getSnapshot:()=>({config:{mode:'ref2va',prompt:'same'},videoField:'reference_videos'}),submit:async(f,item)=>{assert.equal(JSON.parse(videoBatchFormData(item).get('server_inputs')).reference_audio[0].path,'voice.mka');return{id:item.id}}});
+videoQ.add([new File(['v'],'clip.mp4')]);videoQ.addInputs(videoQ.items[0].id,'reference_audio',[remote]);await videoQ.run();
+''')
+
+
+def test_required_audio_and_guides_are_checked_for_all_rows_before_any_submission():
+    run_js(r'''
+let sent=0;
+const q=new VideoBatchQueue({family:'h3',getSnapshot:()=>({config:{recipe:'seed_hunter',mode:'ref2va',prompt:'same',seed_hunter:{stage:'preview',force_audio:true,first_frame_guide:true}},videoField:'reference_videos'}),submit:async(f,item)=>{sent++;return{id:item.id}}});
+q.add([new File(['v'],'one.mp4'),new File(['v'],'two.mp4')]);
+const audio=new File(['audio'],'one.wav'),image=new File(['img'],'one.png');
+q.addInputs(q.items[0].id,'reference_audio',[audio]);q.addInputs(q.items[0].id,'reference_images',[image]);
+await assert.rejects(q.run(),/two.mp4: Preserve supplied audio/);assert.equal(sent,0);assert.ok(q.items.every(item=>!item.snapshot));
+q.addInputs(q.items[1].id,'reference_audio',[new File(['audio2'],'two.wav')]);
+await assert.rejects(q.run(),/two.mp4: the first-frame guide/);assert.equal(sent,0);
+q.addInputs(q.items[1].id,'reference_images',[new File(['img2'],'two.png')]);
+await q.run();assert.equal(sent,2);
+''')
+
+
 def test_mixed_reference_order_and_nanosecond_precision_survive_multipart():
     run_js(r'''
 const make=path=>serverVideoInput({root:'f',path,size:100,mtime_ns:'1780000000123456789'});

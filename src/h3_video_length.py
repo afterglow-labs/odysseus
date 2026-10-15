@@ -100,8 +100,13 @@ def select_batch_video_length(config, uploads):
     field = "source_video" if vfx else "reference_videos"
     sources = uploads.get(field)
     sources = [sources] if isinstance(sources, str) else sources or []
-    if config.get("mode") != "ref2va" or len(sources) != 1:
+    if config.get("mode") != "ref2va" or not sources:
+        raise ValueError("Automatic batch length needs a primary reference video per job in Reference mode"
+                         if not vfx else "Automatic batch length needs exactly one source video per job in Reference mode")
+    if vfx and len(sources) != 1:
         raise ValueError("Automatic batch length needs exactly one source video per job in Reference mode")
+    # The batch row's primary video is first. Additional references are context,
+    # not alternative output-length anchors; preserve their ordering and ranges.
     probe = probe_video(sources[0], exact_frames=vfx)
     duration = probe["duration_seconds"]
     ranges, capped = [], False
@@ -109,7 +114,8 @@ def select_batch_video_length(config, uploads):
         from scripts.h3_reference_video import validate_ranges, selected_duration
         ranges = validate_ranges(config.get("reference_video_ranges", []), len(sources))
         if not ranges and duration > MAX_SOURCE_SECONDS:
-            ranges = [{"start_seconds": 0, "duration_seconds": 15}]
+            ranges = validate_ranges([{"start_seconds": 0, "duration_seconds": 15}
+                                      for _ in sources], len(sources))
             config = {**config, "reference_video_ranges": ranges}
             capped = True
         if ranges:

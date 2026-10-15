@@ -29,6 +29,16 @@ assert.throws(()=>seedHunterResolution(0,9,16));
 """)
 
 
+def test_preview_count_is_capped_in_draft_restore_and_serialization():
+    run_js("""
+for(const [value,wanted] of [[94,3],[4,3],[3,3],[2,2],[1,1],[0,1],[-5,1],[2.8,3],[undefined,3]]){
+ assert.equal(seedHunterPreviewCount(value),wanted);
+ assert.equal(seedHunterConfig({mode:'ref2va'},{stage:'preview',preview_count:value},[]).seed_hunter.preview_count,wanted);
+}
+assert.equal(seedHunterConfig({mode:'ref2va'},{stage:'scout',scout_count:32,preview_count:1},[]).seed_hunter.scout_count,32);
+""")
+
+
 def test_stage_count_and_lora_snapshots_do_not_mutate_ordinary_draft():
     run_js("""
 const source={mode:'ref2va',width:480,height:864,frames:73,steps:6,seed:42,prompt:'Keep this visible'};

@@ -1,4 +1,4 @@
-"""Authenticated server video browsing shared by H3 and BFS clients."""
+"""Authenticated server media browsing and video previews shared by H3 and BFS."""
 import asyncio
 from pathlib import Path
 import re
@@ -114,8 +114,8 @@ def add_server_video_file_routes(router, owner_callback):
 
     @router.get('/server-files')
     async def server_files(request: Request, root: str = 'e', path: str = '',
-                           offset: int = 0, limit: int = 200, search: str = ''):
+                           offset: int = 0, limit: int = 200, search: str = '', kind: str = 'video'):
         owner_callback(request)
         listing = await asyncio.to_thread(list_server_videos, root=root, path=path,
-                                          offset=offset, limit=limit, search=search)
+                                          offset=offset, limit=limit, search=search, kind=kind)
         return JSONResponse(listing, headers={'Cache-Control': 'private, no-store'})

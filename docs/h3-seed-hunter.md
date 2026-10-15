@@ -91,6 +91,20 @@ LoRAs and settings are captured separately for each submission. Repeated
 copies keep the chosen seed. Batch inputs do not replace the ordinary controls
 for combining several references in a single job.
 
+Expand **Inputs for this job** under a batch row to add that video's own audio,
+images or additional reference videos. These remain attachments of that row;
+they do not create separate jobs. Each role uses that row's files when supplied,
+otherwise the main draft's explicitly shared references. Removing the last row
+attachment restores the shared references for that role. Audio and image inputs
+can use local files or the E:/F: server browser, in both classic and pipeline
+layouts and the native iOS client. Input requirements are checked for every row
+before the first submission, and retries keep each row's captured inputs.
+
+The Hunter **Preview count** picker offers 1, 2 or 3 candidates per input;
+older draft/import values outside that range are capped when opened. Scout's
+separate seed-choice limit is unchanged. Reference audio supports Matroska
+audio (`.mka`) as well as WAV, MP3, FLAC, M4A, AAC, OGG and Opus.
+
 Reference video lengths are automatic by default. Each row shows its source
 duration and supported output length; **Choose a section** enables optional
 manual trimming. Preview and single-pass output lengths use the Seed Hunter

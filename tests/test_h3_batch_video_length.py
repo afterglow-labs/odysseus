@@ -74,12 +74,72 @@ def test_non_reference_seed_hunter_branches_do_not_guess_auto_length(monkeypatch
                                         {"reference_videos": ["clip.mp4"]})
 
 
-@pytest.mark.parametrize("mode,uploads", [("t2va", {}), ("ref2va", {}),
-    ("ref2va", {"reference_videos": ["one.mp4", "two.mp4"]})])
-def test_auto_length_never_guesses_which_reference_is_the_batch_source(monkeypatch, mode, uploads):
+@pytest.mark.parametrize("mode,uploads", [("t2va", {}), ("ref2va", {})])
+def test_auto_length_requires_primary_reference_in_reference_mode(monkeypatch, mode, uploads):
     monkeypatch.setattr(length, "probe_video", lambda *args, **kwargs: pytest.fail("No unambiguous source"))
-    with pytest.raises(ValueError, match="exactly one source video"):
+    with pytest.raises(ValueError, match="primary reference video"):
         length.select_batch_video_length({"mode": mode, "loras": []}, uploads)
+
+
+@pytest.mark.parametrize("stage", [None, "preview", "single", "scout"])
+def test_primary_batch_video_determines_length_without_probing_companion(monkeypatch, stage):
+    probes = []
+    def probe(path, **_kwargs):
+        probes.append(path)
+        assert path == "primary.mp4"
+        return {"duration_seconds": 7, "source_frames": 168}
+    monkeypatch.setattr(length, "probe_video", probe)
+    config = {"mode": "ref2va", "loras": [], "frames": 362}
+    if stage:
+        config.update(recipe="seed_hunter", seed_hunter={"stage": stage, "scout_count": 3})
+    uploads = {"reference_videos": ["primary.mp4", "short-context.mp4", "long-context.mp4"]}
+    before = copy.deepcopy((config, uploads))
+    chosen, info = length.select_batch_video_length(config, uploads)
+    assert chosen["frames"] == 175 and info["duration_seconds"] == 7
+    assert probes == ["primary.mp4"] and (config, uploads) == before
+
+
+def test_primary_batch_range_preserves_every_companion_range(monkeypatch):
+    monkeypatch.setattr(length, "probe_video", lambda *args, **kwargs:
+                        {"duration_seconds": 200, "source_frames": 360})
+    ranges = [{"start_seconds": 35, "duration_seconds": 6},
+              {"start_seconds": 90, "duration_seconds": 3}]
+    config = {"mode": "ref2va", "loras": [], "reference_video_ranges": ranges}
+    chosen, info = length.select_batch_video_length(config,
+        {"reference_videos": ["primary.mp4", "context.mp4"]})
+    assert chosen["frames"] == 158 and info["duration_seconds"] == 6
+    assert chosen["reference_video_ranges"] == ranges and info["reference_video_range"] == ranges[0]
+    assert info["capped"] is False
+
+
+def test_long_primary_defaults_ranges_for_each_attached_video(monkeypatch):
+    from scripts.h3_reference_video import validate_ranges
+    monkeypatch.setattr(length, "probe_video", lambda *args, **kwargs:
+                        {"duration_seconds": 200, "source_frames": 360})
+    config = {"mode": "ref2va", "loras": []}
+    chosen, info = length.select_batch_video_length(config,
+        {"reference_videos": ["primary.mp4", "context.mp4"]})
+    ranges = [{"start_seconds": 0, "duration_seconds": 15}] * 2
+    assert chosen["frames"] == 362 and chosen["reference_video_ranges"] == ranges
+    assert validate_ranges(chosen["reference_video_ranges"], 2) == ranges
+    assert info["capped"] is True and "reference_video_ranges" not in config
+
+
+def test_multi_reference_ranges_must_still_match_count(monkeypatch):
+    monkeypatch.setattr(length, "probe_video", lambda *args, **kwargs:
+                        {"duration_seconds": 200, "source_frames": 360})
+    with pytest.raises(ValueError, match="one reference video range for each"):
+        length.select_batch_video_length({"mode": "ref2va", "loras": [],
+            "reference_video_ranges": [{"start_seconds": 0, "duration_seconds": 5}]},
+            {"reference_videos": ["primary.mp4", "context.mp4"]})
+
+
+@pytest.mark.parametrize("sources", [[], ["one.mp4", "two.mp4"]])
+def test_vfx_auto_length_still_requires_exactly_one_aligned_source(monkeypatch, sources):
+    monkeypatch.setattr(length, "probe_video", lambda *args, **kwargs: pytest.fail("Invalid VFX source count"))
+    with pytest.raises(ValueError, match="exactly one source video"):
+        length.select_batch_video_length({"mode": "ref2va", "lora": h3.VFX_EDIT_LORA},
+                                        {"source_video": sources})
 
 
 @pytest.mark.parametrize("source_frames,expected", [(1, 73), (12, 73), (48, 73), (60, 73), (72, 73),
@@ -211,6 +271,30 @@ def test_manual_and_multi_reference_submissions_are_unchanged(backend, monkeypat
     manifest = h3._read(backend.managers["h3"].directory(response.json()["id"]) / "manifest.json")
     assert len(manifest["reference_videos"]) == 2
     assert manifest["config"]["frames"] == backend.configs["h3"]["frames"]
+
+
+@pytest.mark.parametrize("ranges,expected_frames", [
+    ([], 362),
+    ([{"start_seconds": 25, "duration_seconds": 6},
+      {"start_seconds": 10, "duration_seconds": 3}], 158),
+])
+def test_auto_batch_route_retains_companion_video_and_its_range(backend, monkeypatch, ranges, expected_frames):
+    probes = []
+    def probe(path, **_kwargs):
+        content = Path(path).read_bytes()
+        probes.append(content)
+        assert content == b"primary"
+        return {"duration_seconds": 120, "source_frames": 360}
+    monkeypatch.setattr(length, "probe_video", probe)
+    config = {**backend.configs["h3"], "reference_video_ranges": ranges}
+    response = _send(backend, config=config, videos=(b"primary", b"companion"))
+    assert response.status_code == 201, response.text
+    manifest = h3._read(backend.managers["h3"].directory(response.json()["id"]) / "manifest.json")
+    assert manifest["config"]["frames"] == expected_frames
+    assert manifest["config"]["reference_video_ranges"] == (ranges or [
+        {"start_seconds": 0, "duration_seconds": 15}, {"start_seconds": 0, "duration_seconds": 15}])
+    assert [Path(path).read_bytes() for path in manifest["reference_videos"]] == [b"primary", b"companion"]
+    assert probes == [b"primary"] and len(backend.calls) == 1
 
 
 def test_auto_probe_error_cleans_staging_without_queueing(backend, monkeypatch):
