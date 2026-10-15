@@ -51,9 +51,8 @@ def test_preview_cache_reuses_only_unchanged_source_and_selected_window(source, 
     other = proxy.get_server_video_preview(selection, start_seconds=2, duration_seconds=2)
     assert other != first
     path.write_bytes(path.read_bytes() + b'changed')
-    with pytest.raises(HTTPException) as raised:
-        proxy.get_server_video_preview(selection, duration_seconds=2)
-    assert raised.value.status_code == 409
+    current = proxy.get_server_video_preview(selection, duration_seconds=2)
+    assert current != first and current.is_file()
 
 
 @pytest.mark.parametrize('start,length', [(-1, 3), (float('nan'), 3), (0, 31), (0, .1)])

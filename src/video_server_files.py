@@ -240,6 +240,10 @@ class ServerVideoUpload(UploadFile):
     def __init__(self, file, *, filename, info):
         super().__init__(file, filename=filename, size=info.st_size,
                          headers=Headers({'content-type': 'application/octet-stream'}))
+        # Metadata/proxy caches still need the current handle's identity. This
+        # identifies cache entries; it does not reject a listing's old version.
+        self._source_signature = (info.st_dev, info.st_ino, info.st_size,
+                                  info.st_mtime_ns, info.st_ctime_ns)
         self._bytes_read = 0
 
     def check_unchanged(self):

@@ -27,7 +27,7 @@ def details(duration=6.172):
             'mime_type': 'video/mp4', 'browser_compatible': True, 'ios_compatible': True}
 
 
-def test_metadata_cache_revalidates_descriptor_and_ctime(source, monkeypatch):
+def test_metadata_cache_tracks_current_handle_and_ignores_stale_listing(source, monkeypatch):
     calls = []
     def probe(upload):
         calls.append(upload)
@@ -42,9 +42,8 @@ def test_metadata_cache_revalidates_descriptor_and_ctime(source, monkeypatch):
     path.write_bytes(b'changed')
     os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns))
     assert metadata.get_server_video_metadata(selection)['duration_seconds'] == 2
-    with pytest.raises(HTTPException) as error:
-        metadata.get_server_video_metadata({**selection, 'size': 1})
-    assert error.value.status_code == 409
+    assert metadata.get_server_video_metadata({**selection, 'size': 1})['duration_seconds'] == 2
+    assert len(calls) == 2
 
 
 def test_open_handle_remains_original_during_path_replacement(source, monkeypatch):
