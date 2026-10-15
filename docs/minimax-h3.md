@@ -516,6 +516,11 @@ uses the primary reference video when the row includes additional video referenc
 
 ## Selecting videos stored on the server
 
+Server selections open the current file at submission time. Listing timestamps
+and sizes do not reject an otherwise readable file. Each accepted job keeps its
+own complete copy; path restrictions, input size limits and complete-copy checks
+still apply. Interrupted submissions can be retried without reselecting the batch.
+
 Video inputs in the desktop workflow offer **Server files** alongside local file
 selection. The iOS client offers **Photos**, **Files**, and **Server files**.
 Choose **Server files**, then choose `E:` or `F:` in **Drive** to browse the

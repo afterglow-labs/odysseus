@@ -136,12 +136,14 @@ def test_export_copies_server_media_preserving_portable_order(backend, server_me
     assert not backend.calls
 
 
-def test_source_changed_after_selection_does_not_publish_job(backend, server_media):
+def test_source_changed_after_selection_copies_current_file_into_job(backend, server_media):
     source, row = server_media.put("changed.mp4", b"original")
     source.write_bytes(b"changed content")
     result = create(backend, "h3", {"reference_videos": [row]})
-    assert result.status_code in {400, 409}, result.text
-    assert not backend.calls and not list(backend.managers["h3"].root.glob("*/manifest.json"))
+    directory, job = manifest(backend, result)
+    assert Path(job['reference_videos'][0]).read_bytes() == b'changed content'
+    assert Path(job['reference_videos'][0]).parent == directory
+    assert len(backend.calls) == 1
 
 
 def test_source_changed_during_copy_cleans_staging_before_launch(backend, server_media, monkeypatch):
@@ -153,7 +155,7 @@ def test_source_changed_during_copy_cleans_staging_before_launch(backend, server
         source.write_bytes(b"changed while copying")
     monkeypatch.setattr(h3_video_routes, "store_upload_chunk", write_then_change)
     result = create(backend, "h3", {"reference_videos": [row]})
-    assert result.status_code == 409 and "changed" in result.text
+    assert result.status_code == 409 and "copied completely" in result.text
     assert not backend.calls
     assert not list(backend.managers["h3"].root.glob("*/manifest.json"))
     assert not list(backend.managers["h3"].root.glob("*/*.mp4"))

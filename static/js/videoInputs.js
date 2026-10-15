@@ -1,4 +1,4 @@
-// Server videos stay on the server. Only their allowlisted, versioned
+// Server videos stay on the server. Only their allowlisted, relative-path
 // descriptors travel with a submission; ordinary File objects still upload.
 export function serverVideoInput(selection) {
   if (!selection || typeof selection.root !== 'string' || typeof selection.path !== 'string'

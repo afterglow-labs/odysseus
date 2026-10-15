@@ -83,10 +83,11 @@ def test_full_get_and_head_close_validated_handle(preview, monkeypatch):
     assert len(handles) == 3 and all(handle.closed for handle in handles)
 
 
-def test_preview_rejects_changed_file_and_escaped_path(preview):
+def test_preview_uses_current_file_but_rejects_escaped_path(preview):
     assert get(preview, path='../outside.mp4').status_code == 400
     assert get(preview, path='password.txt').status_code == 400
-    assert get(preview, size=1).status_code == 409
+    response = get(preview, size=1, mtime_ns='1')
+    assert response.status_code == 200 and response.content == preview[1].read_bytes()
     video = preview[1]
     target = video.with_name('other.mp4')
     target.write_bytes(video.read_bytes())

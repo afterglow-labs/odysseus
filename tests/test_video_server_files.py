@@ -234,30 +234,47 @@ def test_store_uploads_creates_independent_job_snapshot(drive, tmp_path):
     assert path.read_bytes() == b'video-content'
 
 
-@pytest.mark.parametrize('kind', ['size', 'mtime', 'nonvideo', 'nonregular', 'symlink', 'missing'])
-def test_changed_or_invalid_selection_never_opens_for_copy(drive, kind):
+@pytest.mark.parametrize('change', ['larger', 'smaller', 'mtime'])
+def test_stale_selection_uses_current_open_file_content_and_size(drive, tmp_path, change):
+    from routes.h3_video_routes import _store_uploads
     source = make_file(drive)
     selected = descriptor(source, drive)
-    expected = 409
-    if kind == 'size':
-        source.write_bytes(b'different size')
-    elif kind == 'mtime':
+    if change == 'larger':
+        source.write_bytes(b'the newer file contains more bytes than the selected version')
+    elif change == 'smaller':
+        source.write_bytes(b'new')
+    else:
         os.utime(source, ns=(source.stat().st_atime_ns, source.stat().st_mtime_ns + 10_000_000))
-    elif kind == 'nonvideo':
+    expected = source.read_bytes()
+    stage = tmp_path / 'job'
+    stage.mkdir()
+    async def run():
+        async with media.server_video_inputs(inputs({'source_video': [selected]}), {}, VIDEO_FIELDS) as uploads:
+            assert uploads['source_video'][0].size == len(expected)
+            return await _store_uploads(stage, uploads, 1024)
+    saved = asyncio.run(run())
+    assert Path(saved['source_video']).read_bytes() == expected
+
+
+@pytest.mark.parametrize('kind', ['nonvideo', 'nonregular', 'symlink', 'missing', 'empty'])
+def test_invalid_selection_never_opens_for_copy(drive, kind):
+    source = make_file(drive)
+    selected = descriptor(source, drive)
+    expected = 400
+    if kind == 'nonvideo':
         selected['path'] = 'password.txt'
-        expected = 400
     elif kind == 'nonregular':
         source.unlink()
         os.mkfifo(source)
-        expected = 400
     elif kind == 'symlink':
         other = make_file(drive, 'other.mp4')
         source.unlink()
         source.symlink_to(other)
-        expected = 400
     elif kind == 'missing':
         source.unlink()
         expected = 404
+    elif kind == 'empty':
+        source.write_bytes(b'')
     async def run():
         async with media.server_video_inputs(inputs({'source_video': [selected]}), {}, VIDEO_FIELDS):
             pytest.fail('Invalid selection opened')
@@ -266,17 +283,59 @@ def test_changed_or_invalid_selection_never_opens_for_copy(drive, kind):
     assert error.value.status_code == expected
 
 
-def test_mutation_while_copying_detected_before_store_returns(drive):
+def test_metadata_changes_while_copying_do_not_reject_selected_file(drive):
     source = make_file(drive, content=b'abc123')
     async def run():
         async with media.server_video_inputs(inputs({'source_video': [descriptor(source, drive)]}), {}, VIDEO_FIELDS) as uploads:
             upload = uploads['source_video'][0]
             assert await upload.read(3) == b'abc'
-            source.write_bytes(b'xyz789')
-            with pytest.raises(HTTPException) as error:
-                await upload.read(3)
-            assert error.value.status_code == 409
+            os.utime(source, ns=(source.stat().st_atime_ns, source.stat().st_mtime_ns + 10_000_000))
+            source.chmod(0o600)
+            assert await upload.read(3) == b'123'
+            assert await upload.read(3) == b''
     asyncio.run(run())
+
+
+def test_same_size_edits_while_copying_do_not_fail_version_check(drive):
+    chunk_size = 1024 * 1024
+    source = make_file(drive, content=b'a' * (2 * chunk_size))
+    async def run():
+        async with media.server_video_inputs(inputs({'source_video': [descriptor(source, drive)]}), {}, VIDEO_FIELDS) as uploads:
+            upload = uploads['source_video'][0]
+            assert await upload.read(chunk_size) == b'a' * chunk_size
+            source.write_bytes(b'z' * (2 * chunk_size))
+            assert await upload.read(chunk_size) == b'z' * chunk_size
+            assert await upload.read(chunk_size) == b''
+    asyncio.run(run())
+
+
+def test_truncated_open_file_still_fails_incomplete_copy(drive):
+    chunk_size = 1024 * 1024
+    source = make_file(drive, content=b'a' * (2 * chunk_size))
+    async def run():
+        async with media.server_video_inputs(inputs({'source_video': [descriptor(source, drive)]}), {}, VIDEO_FIELDS) as uploads:
+            upload = uploads['source_video'][0]
+            assert len(await upload.read(chunk_size)) == chunk_size
+            source.write_bytes(b'')
+            with pytest.raises(HTTPException) as error:
+                await upload.read(chunk_size)
+            assert error.value.status_code == 409 and 'copied completely' in error.value.detail
+    asyncio.run(run())
+
+
+def test_stale_smaller_descriptor_cannot_bypass_actual_upload_limit(drive, tmp_path):
+    from routes.h3_video_routes import _store_uploads
+    source = make_file(drive, content=b'a')
+    selected = descriptor(source, drive)
+    source.write_bytes(b'z' * 2048)
+    stage = tmp_path / 'job'
+    stage.mkdir()
+    async def run():
+        async with media.server_video_inputs(inputs({'source_video': [selected]}), {}, VIDEO_FIELDS) as uploads:
+            await _store_uploads(stage, uploads, 1024)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(run())
+    assert error.value.status_code == 413
 
 
 @pytest.mark.parametrize('change', [

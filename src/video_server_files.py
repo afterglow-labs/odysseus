@@ -179,10 +179,6 @@ def _windows_final_path(file):
     return Path(value)
 
 
-def _signature(info):
-    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
-
-
 def list_server_videos(*, root='e', path='', offset=0, limit=200, search='', kind='video'):
     if not isinstance(kind, str) or kind not in MEDIA_KINDS:
         raise HTTPException(400, 'Choose video, image, or audio files')
@@ -244,20 +240,18 @@ class ServerVideoUpload(UploadFile):
     def __init__(self, file, *, filename, info):
         super().__init__(file, filename=filename, size=info.st_size,
                          headers=Headers({'content-type': 'application/octet-stream'}))
-        self._source_signature = _signature(info)
         self._bytes_read = 0
 
     def check_unchanged(self):
-        if _signature(os.fstat(self.file.fileno())) != self._source_signature:
-            raise HTTPException(409, 'A selected server file changed. Refresh and select it again.')
+        # Preview callers need a complete response, not a listing timestamp.
+        # The current handle establishes its size when opened; reject only an
+        # actual size change before streaming, never timestamp differences.
+        if os.fstat(self.file.fileno()).st_size != self.size:
+            raise HTTPException(409, 'The selected server file cannot be read completely. Retry this file.')
 
     def _read(self, size):
-        # Check in the same thread as the read. An edited source must not become
-        # an accepted job with a mixture of old and new input bytes.
-        self.check_unchanged()
         data = self.file.read(size)
         self._bytes_read += len(data)
-        self.check_unchanged()
         if not data and self._bytes_read != self.size:
             raise HTTPException(409, 'A selected server file could not be copied completely. Select it again.')
         return data
@@ -307,8 +301,8 @@ def _open_selection(value, roots, extensions=VIDEO_EXTENSIONS):
         info = os.fstat(file.fileno())
         if not stat.S_ISREG(info.st_mode):
             raise HTTPException(400, 'Choose a regular media file')
-        if info.st_size != value['size'] or str(info.st_mtime_ns) != value['mtime_ns']:
-            raise HTTPException(409, 'A selected server file changed. Refresh and select it again.')
+        if info.st_size <= 0:
+            raise HTTPException(400, 'Choose a nonempty server file')
         result = ServerVideoUpload(file, filename=parts[-1], info=info)
         file = None
         return result

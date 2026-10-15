@@ -106,13 +106,11 @@ def test_server_media_cannot_cross_attachment_field_types(drive, field, filename
 
 
 @pytest.mark.parametrize('field,filename', [('reference_images', 'image.webp'), ('reference_audio', 'audio.opus')])
-@pytest.mark.parametrize('change,status', [('version', 409), ('symlink', 400), ('traversal', 400)])
-def test_nonvideo_selections_keep_version_and_safe_path_checks(drive, tmp_path, field, filename, change, status):
+@pytest.mark.parametrize('change', ['symlink', 'traversal'])
+def test_nonvideo_selections_keep_safe_path_checks(drive, tmp_path, field, filename, change):
     source = make_file(drive, filename)
     selected = descriptor(source, drive)
-    if change == 'version':
-        os.utime(source, ns=(source.stat().st_atime_ns, source.stat().st_mtime_ns + 10_000_000))
-    elif change == 'symlink':
+    if change == 'symlink':
         outside = tmp_path / 'outside'
         outside.write_bytes(b'video-content')
         source.unlink()
@@ -121,10 +119,24 @@ def test_nonvideo_selections_keep_version_and_safe_path_checks(drive, tmp_path, 
         selected['path'] = '../' + filename
     async def run():
         async with media.server_video_inputs(inputs({field: [selected]}), {}, h3.UPLOAD_EXTENSIONS):
-            pytest.fail('Stale/escaped media accepted')
+            pytest.fail('Escaped media accepted')
     with pytest.raises(HTTPException) as error:
         asyncio.run(run())
-    assert error.value.status_code == status
+    assert error.value.status_code == 400
+
+
+@pytest.mark.parametrize('field,filename', [('reference_images', 'image.webp'), ('reference_audio', 'audio.opus'),
+                                           ('reference_audio', 'voice.mka')])
+def test_nonvideo_selections_accept_current_file_after_listing_metadata_changes(drive, field, filename):
+    source = make_file(drive, filename)
+    selected = descriptor(source, drive)
+    source.write_bytes(b'updated media bytes')
+    os.utime(source, ns=(source.stat().st_atime_ns, source.stat().st_mtime_ns + 10_000_000))
+    async def run():
+        async with media.server_video_inputs(inputs({field: [selected]}), {}, h3.UPLOAD_EXTENSIONS) as uploads:
+            assert uploads[field][0].size == len(b'updated media bytes')
+            assert await uploads[field][0].read() == b'updated media bytes'
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize('filename', ['image.png', 'audio.wav', 'audio.mka'])
@@ -136,13 +148,21 @@ def test_video_preview_remains_video_only(backend, drive, filename):
     assert response.status_code == 400
 
 
-def test_h3_job_snapshots_mixed_local_and_server_companions_in_order(backend, drive):
+@pytest.mark.parametrize('stale_listing', [False, True])
+def test_h3_job_snapshots_mixed_local_and_server_companions_in_order(backend, drive, stale_listing):
     server_video = make_file(drive, 'context.mp4', b'context video')
     server_image = make_file(drive, 'reference.png', image())
     server_audio = make_file(drive, 'voice.wav', b'server audio')
     selections = {'reference_videos': [descriptor(server_video, drive, 1)],
                   'reference_images': [descriptor(server_image, drive)],
                   'reference_audio': [descriptor(server_audio, drive, 1)]}
+    current_video, current_audio = b'context video', b'server audio'
+    if stale_listing:
+        current_video, current_audio = b'current context video', b'current server audio'
+        server_video.write_bytes(current_video)
+        server_audio.write_bytes(current_audio)
+        os.utime(server_image, ns=(server_image.stat().st_atime_ns,
+                                  server_image.stat().st_mtime_ns + 10_000_000))
     response = backend.client().post('/api/video/h3/jobs',
         data={'config': json.dumps(backend.configs['h3']), 'server_inputs': json.dumps(selections)},
         files=[('reference_videos', ('primary.mp4', b'primary video', 'video/mp4')),
@@ -150,15 +170,15 @@ def test_h3_job_snapshots_mixed_local_and_server_companions_in_order(backend, dr
     assert response.status_code == 201, response.text
     directory = backend.managers['h3'].directory(response.json()['id'])
     manifest = h3._read(directory / 'manifest.json')
-    expected = {'reference_videos': [b'primary video', b'context video'],
-                'reference_images': [image()], 'reference_audio': [b'phone audio', b'server audio']}
+    expected = {'reference_videos': [b'primary video', current_video],
+                'reference_images': [image()], 'reference_audio': [b'phone audio', current_audio]}
     assert manifest['input_names']['reference_audio'] == ['phone.wav', 'voice.wav']
     assert manifest['input_names']['reference_videos'] == ['primary.mp4', 'context.mp4']
     for field, values in expected.items():
         assert [Path(path).read_bytes() for path in manifest[field]] == values
         assert all(Path(path).parent == directory for path in manifest[field])
     server_audio.write_bytes(b'changed after submission')
-    assert Path(manifest['reference_audio'][1]).read_bytes() == b'server audio'
+    assert Path(manifest['reference_audio'][1]).read_bytes() == current_audio
     assert len(backend.calls) == 1
 
 
