@@ -89,7 +89,7 @@
     },
     "frames": {
       "title": "Frames at 24 fps",
-      "body": "Sampling length: frames ÷ 24 gives seconds. H3 uses counts of 5 + 17×n. Automatic video batches select a supported count per clip. This is independent of sampling steps."
+      "body": "Sampling length: frames ÷ 24 gives seconds. H3 uses counts of 5 + 17×n. In Hunter Preview mode this controls each short candidate, independently of the final output length. In single-pass and Scout batches, automatic length selects a supported count per clip. This is independent of sampling steps."
     },
     "steps": {
       "title": "Sampling steps",
@@ -157,7 +157,11 @@
     },
     "preview_seconds": {
       "title": "Preview seconds",
-      "body": "Apply duration converts seconds at 24 fps into the next supported H3 frame count. Automatic video batches calculate their own lengths per input."
+      "body": "Changing this value immediately sets each candidate's duration to the next supported H3 frame count at 24 fps. For example, 4 seconds selects 107 frames, about 4.46 seconds. Three candidates each use this length. Automatic final-length matching does not lengthen the previews."
+    },
+    "final_frames": {
+      "title": "Final output length",
+      "body": "The final video's frame count at 24 fps, separate from the short preview duration. Automatic matching chooses a supported count covering the primary reference video or chosen section. If this differs from the preview, the final job generates a full-length candidate using the selected seed and saved preview settings before spatial upscale and refinement. The result can differ from the short audition. Matching lengths reuse its exact saved latent."
     },
     "sampler": {
       "title": "Sampler",
@@ -415,7 +419,7 @@
     },
     "auto_video_length": {
       "title": "Automatically match each video’s length",
-      "body": "Choose a supported generation length per video. Short clips use their detected duration; long reference videos use up to 15 seconds unless you choose a section. Continuation, image/audio batches and draft copies retain the chosen generation length."
+      "body": "In Hunter Preview mode, match the final output length to each primary reference video while keeping every preview at the chosen short duration. In single-pass and Scout batches, match the generation length itself. Long references use up to 15 seconds unless you choose a section. Continuation, image/audio batches and draft copies retain their chosen generation length."
     },
     "reference_start": {
       "title": "Reference section start",

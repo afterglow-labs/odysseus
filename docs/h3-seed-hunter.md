@@ -17,8 +17,14 @@ The classic editor remains available. **Cookbook → Launch → Build Pipeline**
    the base seed, base + 1000, and base + 2000. The model loads once per job.
 3. Play the results and select a candidate. Selection only opens the refinement
    editor; it does not enqueue anything.
-4. Choose the final dimensions, steps, sampler, scheduler, denoise and LoRAs,
-   then submit refinement explicitly.
+4. Choose the final length, dimensions, steps, sampler, scheduler, denoise and
+   LoRAs, then submit the final render explicitly. Reference-video duration
+   matching applies to this final target, independently of the short previews.
+
+Preview duration is the duration of **each** candidate; selecting three
+candidates does not triple it. The seconds control applies immediately and
+shows the supported frame length actually used (for example, requesting
+4 seconds selects 107 frames, about 4.46 seconds).
 
 Saved jobs are paged in groups of 10 on desktop and iOS. Candidate videos load
 when played. Page changes do not change a selected refinement or the rendering
@@ -42,11 +48,16 @@ Fresh Scout drafts use 20 full-schedule steps, 3 seed choices, previews after st
 Seed Hunter's completed-preview/upscale workflow and Seed Scout's partial-schedule continuation are distinct operations.
 
 The preview's denoised video/audio latent and original conditioning are stored
-as a safetensors file plus typed JSON. Refinement uses the learned 3D latent
-upscaler on video and retains the audio latent. It does not start from a new
-empty video. Each child job owns its snapshot, so deleting a parent cannot
-break a queued child. Final jobs retain the original prompt, encoder, model,
-codecs, frame count and inputs; rendering parameters and LoRAs remain editable.
+as a safetensors file plus typed JSON. When final and preview lengths match,
+refinement uses that exact saved latent, applies the learned 3D spatial upscaler
+to video and retains the audio latent. When lengths differ, the final job first
+generates a candidate at the target duration and preview resolution using the
+selected seed, original preview sampling settings and saved inputs. It then
+upscales and refines that full-length latent. A longer generation can differ
+from the short audition; this is not an exact continuation of its frames.
+Each child job owns its snapshot and inputs, so deleting a parent cannot
+break a queued child. Final jobs retain the original prompt, encoder, model
+and codecs; length, rendering parameters and LoRAs remain editable.
 
 ## Other branches
 
@@ -105,13 +116,16 @@ older draft/import values outside that range are capped when opened. Scout's
 separate seed-choice limit is unchanged. Reference audio supports Matroska
 audio (`.mka`) as well as WAV, MP3, FLAC, M4A, AAC, OGG and Opus.
 
-Reference video lengths are automatic by default. Each row shows its source
-duration and supported output length; **Choose a section** enables optional
-manual trimming. Preview and single-pass output lengths use the Seed Hunter
-73–362 frame range. Continuation keeps the configured additional generation
+Reference video lengths are detected automatically by default. In Hunter
+Preview mode this selects the **final** output length and leaves every
+candidate at the explicitly chosen preview length. Single-pass batches match
+their generation length to the source as before. Each row shows its source
+duration and supported target length; **Choose a section** enables optional
+manual trimming. Preview and final lengths use the Seed Hunter 73–362 frame
+range independently. Continuation keeps the configured additional generation
 length and overlap instead of matching the duration of its source. Dialogue
-keeps its configured generation length. Final refinement remains tied to one
-selected preview and its saved conditioning.
+keeps its configured generation length. Final rendering remains tied to one
+selected preview, its seed and its saved inputs.
 
 Server jobs keep rendering while more batches are added. Each batch retains
 its own prompt and settings, so editing a new draft does not alter accepted

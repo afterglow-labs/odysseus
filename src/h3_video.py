@@ -375,6 +375,8 @@ def validate_config(raw, components, gpus, uploads):
         raise ValueError(f"Dimensions must be multiples of 32, up to {bounds['max_pixels']:,} pixels")
     if (config["frames"] - 5) % 17:
         raise ValueError("H3 frame count must be 17 × n + 5 (124, 141, 158 … 362)")
+    if hunt and options["stage"] == "final":
+        options["final_frames"] = config["frames"]
     first_lora_name = by_id.get(adapters[0]["id"], {}).get("name", "") if adapters else ""
     first_lora_profile = by_id.get(adapters[0]["id"], {}).get("lora_profile") if adapters else None
     lora_low, lora_high = lora_strength_bounds(first_lora_name, first_lora_profile)
@@ -790,9 +792,11 @@ class H3JobManager:
         result["revision"] = manifest.get("revision", 0)
         result["submission_id"] = state.get("submission_id") if isinstance(state.get("submission_id"), str) else None
         length = manifest.get("batch_video_length")
-        if (manifest.get("revision", 0) == 0 and isinstance(length, dict)
-                and isinstance(config, dict) and length.get("frames") == config.get("frames")):
-            result["batch_video_length"] = length
+        if manifest.get("revision", 0) == 0 and isinstance(length, dict) and isinstance(config, dict):
+            length_frames = (config.get("seed_hunter", {}).get("final_frames")
+                             if length.get("target") == "final" else config.get("frames"))
+            if length.get("frames") == length_frames:
+                result["batch_video_length"] = length
         if state["status"] == "queued" and queue_positions is None:
             waiting = [path.name for path, row in _queue_entries(self.root) if row["status"] == "queued"]
             queue_positions = {identifier: index + 1 for index, identifier in enumerate(waiting)}

@@ -120,8 +120,7 @@ def save_snapshot(path, *, latent, positive, config, seed):
     _worker().atomic_json(path.with_suffix(".json"), document)
 
 
-def load_snapshot(spec, config, *, nested_factory=None):
-    from safetensors.torch import load_file
+def snapshot_metadata(spec, config, *, allow_frame_change=False):
     metadata = Path(spec["metadata"])
     if metadata.stat().st_size > 16 * 1024 * 1024:
         raise ValueError("Candidate metadata exceeds the safe size limit")
@@ -133,16 +132,44 @@ def load_snapshot(spec, config, *, nested_factory=None):
         raise ValueError("Only preview candidates can be refined")
     # LoRAs, seed and final sampling controls may change; text, reference
     # conditioning, transformer and codecs remain those of the selected result.
-    for key in ("model", "encoder", "video_vae", "audio_vae", "prompt", "frames"):
+    for key in ("model", "encoder", "video_vae", "audio_vae", "prompt") + (() if allow_frame_change else ("frames",)):
         if original.get(key) != config.get(key):
             raise ValueError(f"Candidate {key} differs from the refinement job")
     if config["width"] < original["width"] or config["height"] < original["height"]:
         raise ValueError("The learned latent upscaler cannot reduce candidate dimensions")
+    return document
+
+
+def load_snapshot(spec, config, *, nested_factory=None):
+    from safetensors.torch import load_file
+    document = snapshot_metadata(spec, config)
     tensors = load_file(str(spec["latent"]), device="cpu")
     result = _decode_tree(document["tree"], tensors, nested_factory)
     if not isinstance(result, dict) or not isinstance(result.get("latent"), dict) or "positive" not in result:
         raise ValueError("Candidate snapshot is missing its latent or conditioning")
     return result["positive"], result["latent"]
+
+
+def full_length_candidate_config(document, config):
+    """Recreate one selected seed using its original short-preview recipe."""
+    original = document["config"]
+    seed = document.get("seed")
+    if type(seed) is not int or not 0 <= seed <= 2**53 - 1:
+        raise ValueError("The saved preview has no valid selected seed")
+    return {**original, "frames": config["frames"], "seed": seed,
+            "gpu": config["gpu"], "vae_gpu": config.get("vae_gpu"),
+            "seed_hunter": {**original["seed_hunter"], "stage": "preview", "preview_count": 1}}
+
+
+def model_settings_match(first, second):
+    # Sampling length, dimensions, seed and schedule do not change loaded weights.
+    keys = ("model", "encoder", "video_vae", "audio_vae", "loras", "lora", "lora_scale",
+            "shift_video", "shift_audio")
+    options = ("shift_enabled", "attention_backend", "sparse_method", "sparse_keep_percent",
+               "sparse_start", "sparse_end", "sparse_min_tokens", "sparse_extra_tokens",
+               "sparse_sink_conditioning", "ff_chunk_size", "ff_chunk_threshold", "low_vram_chunks")
+    return (all(first.get(k) == second.get(k) for k in keys)
+            and all(first["seed_hunter"].get(k) == second["seed_hunter"].get(k) for k in options))
 
 
 def _load_module(path, name):
@@ -319,17 +346,53 @@ def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
     folder.mkdir(parents=True, exist_ok=True)
     progress = worker.Progress(manifest["status_path"], config["steps"])
     progress.details.update(recipe="seed_hunter", stage=options["stage"], candidate_count=options["preview_count"])
+    initial_config = config
+    regenerate = False
+    if options["stage"] == "final":
+        document = snapshot_metadata(manifest["seed_hunter_input"], config, allow_frame_change=True)
+        regenerate = document["config"]["frames"] != config["frames"]
+        progress.details.update(preview_frames=document["config"]["frames"], final_frames=config["frames"],
+                                regeneration_required=regenerate)
+        if regenerate:
+            initial_config = full_length_candidate_config(document, config)
+            _check_optional(manifest, initial_config, media)
     progress("initializing_runtime")
     runtime = runtime_factory(manifest["runtime_path"])
     progress("preparing_media")
-    prepared = prepare_media(manifest, config, media, media_loader, folder)
+    prepared = prepare_media(manifest, initial_config, media, media_loader, folder)
     import torch
     candidates = []
     with torch.inference_mode():
-        model, clip, vae, audio_vae = runtime.load(config, progress)
-        model = patch_model(runtime, config, model, manifest["runtime_path"])
+        model, clip, vae, audio_vae = runtime.load(initial_config, progress)
+        model = patch_model(runtime, initial_config, model, manifest["runtime_path"])
         if options["stage"] == "final":
-            positive, latent = load_snapshot(manifest["seed_hunter_input"], config)
+            if regenerate:
+                progress("encoding_full_length_reference", 0)
+                positive, latent, base_positive = condition(runtime, initial_config, prepared, clip, vae, audio_vae)
+                progress.total_steps = initial_config["steps"]
+                progress.details.update(source_seed=initial_config["seed"])
+                def regeneration_progress(phase, step=None, **extra):
+                    progress("regenerating_full_length_candidate", step, **extra)
+                regeneration_progress("sampling", 0)
+                generated, latent = sample_candidate(runtime, initial_config, model, positive, latent, regeneration_progress)
+                del generated
+                positive = base_positive
+                if not model_settings_match(initial_config, config):
+                    # The full-length base pass uses the original LoRAs and patches.
+                    # Release its model before loading edited refinement weights.
+                    runtime.release_conditioning()
+                    runtime.cleanup_model_state()
+                    runtime.model_management.unload_all_models()
+                    del model, clip, vae, audio_vae
+                    import gc
+                    gc.collect()
+                    runtime.model_management.soft_empty_cache()
+                    progress("loading_refinement_model", 0)
+                    model, clip, vae, audio_vae = runtime.load(config, progress)
+                    model = patch_model(runtime, config, model, manifest["runtime_path"])
+                progress.total_steps = config["steps"]
+            else:
+                positive, latent = load_snapshot(manifest["seed_hunter_input"], config)
             runtime.release_conditioning()
             latent = upscale_latent(manifest, config, latent, progress)
             base_positive = positive

@@ -161,7 +161,11 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
   const sizeTools = make('div', 'h3-video-actions'), aspect = make('select', 'cookbook-field-input'), megapixels = make('input', 'cookbook-field-input'), applySize = button('Apply preview size');
   aspect.setAttribute('aria-label', 'Preview aspect ratio'); for (const value of ['1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9', '21:9']) aspect.add(new Option(value, value)); aspect.value = '9:16';
   megapixels.type = 'number'; megapixels.value = '0.4'; megapixels.min = '0.1'; megapixels.max = '4'; megapixels.step = '0.1'; megapixels.setAttribute('aria-label', 'Preview megapixels'); sizeTools.append(megapixels, aspect, applySize); form.append(sizeTools);
-  const seconds=make('input','cookbook-field-input'),applyDuration=button('Apply duration');seconds.type='number';seconds.min='3';seconds.max='15';seconds.step='.1';seconds.value='3';seconds.setAttribute('aria-label','Preview seconds');sizeTools.append(seconds,applyDuration);applyDuration.onclick=()=>{fields.frames.value=seedHunterFrames(seconds.value);changed();};
+  const seconds=make('input','cookbook-field-input'),applyDuration=button('Apply duration');seconds.type='number';seconds.min='3';seconds.max='15.083';seconds.step='any';seconds.setAttribute('aria-label','Preview seconds');sizeTools.append(seconds,applyDuration);
+  function syncDuration() {const frames=Number(fields.frames.value);if(Number.isFinite(frames)&&frames>0)seconds.value=String(Number((frames/24).toFixed(3)));}
+  function applyDurationValue() {if(!seconds.value||!seconds.validity.valid)return;fields.frames.value=seedHunterFrames(seconds.value);changed();}
+  seconds.addEventListener('input',applyDurationValue);seconds.addEventListener('blur',()=>{if(seconds.validity.valid)syncDuration();});applyDuration.onclick=applyDurationValue;
+  fields.frames.addEventListener('input',syncDuration);
   applySize.onclick = () => { try { const size = seedHunterResolution(megapixels.value, ...aspect.value.split(':')); fields.width.value = size.width; fields.height.value = size.height; changed(); } catch (e) { fail(e); } };
   const advanced = group(form, 'Sampling and optional controls');
   if (scout) { select(advanced,'scout_mode','Scout mode',[['interactive','Choose a seed and continue'],['scout','Partial previews only'],['final','Single full pass']],options);number(advanced,'scout_timeout','Selection timeout (seconds; 0 waits)',0,0,86400,1,options); }
@@ -210,12 +214,14 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
   const finalSection = make('section', 'h3-seed-hunter-final'); finalSection.hidden = true; const finalTitle = make('h3'), finalDescription = make('p', 'h3-video-muted'), finalForm = make('form'), finalGrid = make('div', 'h3-video-grid');
   finalForm.append(finalGrid); finalSection.append(finalTitle, finalDescription, finalForm); scroll.append(finalSection);
   select(finalGrid, 'latent_upscaler', 'Latent upscaler', [], finalFields); number(finalGrid, 'width', 'Final width', 1088, 64, 4096, 32, finalFields); number(finalGrid, 'height', 'Final height', 1952, 64, 4096, 32, finalFields);
+  select(finalGrid,'frames','Final output length',Array.from({length:18},(_,index)=>73+17*index).filter(frames=>frames<=362).map(frames=>[String(frames),`${(frames/24).toFixed(2)} seconds · ${frames} frames`]),finalFields);
+  finalFields.frames.prepend(new Option('Choose final output length',''));finalFields.frames.required=true;
   number(finalGrid, 'steps', 'Refinement steps', 2, 1, 100, 1, finalFields); number(finalGrid, 'seed', 'Refinement seed', 42, 0, Number.MAX_SAFE_INTEGER, 1, finalFields); number(finalGrid, 'denoise', 'Denoise', .4, 0, 1, .05, finalFields);
   select(finalGrid, 'sampler', 'Refinement sampler', [['er_sde','ER-SDE'],['euler','Euler'],['res_multistep','RES multistep']], finalFields); select(finalGrid, 'scheduler', 'Refinement scheduler', [['linear_quadratic','Linear quadratic'],['beta','Beta'],['simple','Simple'],['normal','Normal']], finalFields);
   const finalLoras = createH3LoraEditor({ idPrefix: 'seed-hunter-final', onChange: () => { finalRequest = null; save(); } }); finalForm.append(finalLoras.node);
   const finalActions = make('div', 'h3-video-actions'), finalSubmit = button('Render selected preview'), finalReroll = button('Randomize refinement seed'), cancelSelection = button('Clear selection'); finalSubmit.dataset.seedHunterHelpAction = 'refine_preview'; finalSubmit.type = 'submit'; finalSubmit.className = 'cookbook-btn'; finalActions.append(finalSubmit, finalReroll, cancelSelection); finalForm.append(finalActions);
   finalReroll.onclick = () => { finalFields.seed.value = randomSeed(); finalRequest = null; save(); }; cancelSelection.onclick = () => { selecting++; selection = null; finalRequest = null; finalSection.hidden = true; save(); renderJobs(); };
-  finalForm.addEventListener('input', () => { finalRequest = null; save(); }); finalForm.addEventListener('change', () => { finalRequest = null; save(); });
+  finalForm.addEventListener('input', () => { finalRequest = null; describeRefinement();update();save(); }); finalForm.addEventListener('change', () => { finalRequest = null; describeRefinement();update();save(); });
   const jobToolbar = make('div', 'h3-video-toolbar'), refreshJobs = button('Refresh jobs'); jobToolbar.append(make('h3', '', `${title} jobs`), refreshJobs); const jobStatus = make('p', 'h3-video-muted'), jobList = make('div', 'h3-video-jobs'); scroll.append(jobToolbar, jobStatus, jobList);
   jobPager = createVideoJobPager({ container: scroll, beforeNode: jobList, request: (path, options) => request(path.startsWith('/jobs?') ? path + (scout ? '&stage=scout' : '&stage=not_scout') : path, options), recipe: 'seed_hunter', isClosed: () => closed,
     onData: async data => {
@@ -251,7 +257,15 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
     return { ...value, reference_video_ranges: referenceVideoRanges(uploads.reference_videos) };
   }
   function currentUploads() { return Object.fromEntries(Object.entries(uploads).filter(([key]) => (key !== 'source_video' || stage.value === 'continuation') && (key !== 'first_frame' || options.first_frame_guide.checked) && (key !== 'last_frame' || options.last_frame_guide.checked)).map(([key, state]) => [key, [...state.files]])); }
-  function finalConfig() { return { ...Object.fromEntries(Object.entries(finalFields).map(([key, n]) => [key, n.type === 'number' ? Number(n.value) : n.value])), loras: finalLoras.getValue() }; }
+  function finalConfig() { return { ...Object.fromEntries(Object.entries(finalFields).filter(([key])=>key!=='frames'||inventory?.seed_hunter?.features?.separate_final_length===true).map(([key, n]) => [key, n.type === 'number'||key==='frames' ? Number(n.value) : n.value])), loras: finalLoras.getValue() }; }
+  function describeRefinement() {
+    if(!selection)return;
+    const preview=selection.frames,frames=inventory?.seed_hunter?.features?.separate_final_length?Number(finalFields.frames.value)||preview:preview;
+    if(inventory?.seed_hunter?.features?.separate_final_length&&!finalFields.frames.value){finalDescription.textContent='Choose a final output length before rendering. '+(selection.final_length?.error||'The source video duration could not be determined.');return;}
+    finalDescription.textContent=frames!==preview
+      ? `Preview: ${(preview/24).toFixed(2)} seconds. Final output: ${(frames/24).toFixed(2)} seconds. The selected seed is rendered at the final length before upscaling and refinement, using the saved prompt and references.`
+      : `Preview and final output: ${(preview/24).toFixed(2)} seconds. Reuses the selected preview’s latent and saved inputs.`;
+  }
   function save() { if (jobEditor?.active) return; try { localStorage.setItem(storageKey, JSON.stringify({ config: config(), dialogue_text: dialogueText.value, dialogue_tone: dialogueTone.value, dialogue_template: dialogueTemplate.value, enhancer: enhancer[Number(enhancerSelect.value)] ? {model:enhancer[Number(enhancerSelect.value)].model,endpoint_id:enhancer[Number(enhancerSelect.value)].endpoint_id} : null, selected: selection && { job_id: selection.job_id, index: selection.index }, final_config: finalConfig(), final_request: finalRequest })); } catch {} }
   function changed() { revision++; error.hidden = true; update(); save(); }
   function restore(values, inputFiles = {}, retained = {}) {
@@ -277,10 +291,12 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
     const formIssue=videoFormIssue(form);if(formIssue)throw new Error(formIssue);
     const issue=batchIssue();if(issue)throw new Error(issue);
     const field=batchQueue.inputField;
-    return {config:seedHunterBatchConfig(config(),batchQueue.autoVideoLength),videoField:field,autoVideoLength:batchQueue.autoVideoLength,
+    const automatic=batchQueue.autoVideoLength&&(stage.value!=='preview'||inventory?.seed_hunter?.features?.separate_final_length===true);
+    return {config:seedHunterBatchConfig(config(),automatic),videoField:field,autoVideoLength:automatic,
       uploads:Object.fromEntries(Object.entries(currentUploads()).filter(([key])=>key!==field))};
   }
   function update() {
+    batchQueue?.setLengthContext(stage.value==='preview'?{label:'Match final output length to each video',automaticHelp:'Previews keep the preview length above. The selected final output matches each source video.',manualHelp:'Previews keep the preview length above. Choose the final output length when selecting a preview.',notice:inventory&&!inventory.seed_hunter?.features?.separate_final_length?'Update the Odysseus server to match final output length automatically. This server will keep the short preview length.':''}:{});
     batchQueue?.setInputChoices(seedHunterBatchChoices(stage.value));
     batchQueue?.setCompanionFields?.([{field:'reference_audio',label:'Audio for this job'},{field:'reference_images',label:'Images for this job'},{field:'reference_videos',label:'Extra videos for this job'},...(options.first_frame_guide.checked?[{field:'first_frame',label:'First-frame guide for this job'}]:[]),...(options.last_frame_guide.checked?[{field:'last_frame',label:'Last-frame guide for this job'}]:[])]);
     const batchBusy=!!batchQueue?.busy, batching=!!batchQueue?.active&&!jobEditor?.active&&stage.value!=='final',locked=busy||batchBusy;
@@ -306,10 +322,13 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
     dialoguePanel.parentElement.hidden = stage.value !== 'dialogue'; audioPanel.parentElement.hidden = false; continuationPanel.parentElement.hidden = stage.value !== 'continuation'; uploads.source_video.wrap.hidden = stage.value !== 'continuation';
     const choiceCount = scout ? Math.max(1,Math.min(32,Number(options.scout_count.value)||3)) : single ? 1 : Math.max(1,Math.min(3,Number(options.preview_count.value)||1));
     fields.seed.max = Number.MAX_SAFE_INTEGER - (scout ? 1 : 1000) * (choiceCount - 1);
-    duration.textContent = `${(Number(fields.frames.value) / 24).toFixed(2)} seconds · seeds ${Array.from({ length: choiceCount }, (_, i) => Number(fields.seed.value) + i * (scout ? 1 : 1000)).join(', ')}`;
+    duration.textContent = `${stage.value==='preview'?'Preview length: ':''}${(Number(fields.frames.value) / 24).toFixed(2)} seconds · seeds ${Array.from({ length: choiceCount }, (_, i) => Number(fields.seed.value) + i * (scout ? 1 : 1000)).join(', ')}`;
     fields.shift_video.disabled = fields.shift_audio.disabled = locked || !options.shift_enabled.checked;
-    fields.frames.disabled ||= batching&&batchQueue.autoVideoLength;
-    if(batching&&batchQueue.autoVideoLength)duration.textContent='Automatic: each batch video gets its own generation length after detection.';
+    const automaticGenerationLength=batching&&batchQueue.autoVideoLength&&stage.value!=='preview';
+    fields.frames.disabled ||= automaticGenerationLength;
+    seconds.disabled=applyDuration.disabled=locked||enhancing||finalEdit||automaticGenerationLength;seconds.min=stage.value==='continuation'?'0.2':'3';
+    if(document.activeElement!==seconds)syncDuration();
+    if(batching&&batchQueue.autoVideoLength&&stage.value!=='preview')duration.textContent='Automatic: each batch video gets its own generation length after detection.';
     if(batching&&uploads[batchQueue.inputField]){const state=uploads[batchQueue.inputField];state.wrap.hidden=true;state.input.disabled=true;state.rangeEditors.forEach(editor=>editor.setDisabled(true));}
     fields.frames.min = stage.value === 'continuation' ? '5' : '73'; fields.width.min = fields.height.min = stage.value === 'dialogue' ? '64' : '256';
     loras.setDisabled(locked || loading || enhancing); loras.setLibraryAvailable(inventory?.lora_library === true && !jobEditor?.active);
@@ -324,7 +343,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
     const batchBlock=busy||loading||enhancing||finalBusy||!!jobEditor?.active||!!jobEditor?.loading||!inventory?.runtime_ready;
     const batchReason=batchBlock?'Finish the current operation before adding a batch.':batchIssue();
     batchQueue?.setEnabled(!batchReason,batchReason,{snapshotEnabled:!batchBlock,snapshotReason:batchReason});
-    queue?.setBlocked(locked || loading || finalBusy || !!jobEditor?.active); finalSubmit.disabled = finalBusy || !selection || !finalFields.latent_upscaler.value || features.latent_upscaler !== true; finalLoras.setDisabled(finalBusy); for(const n of Object.values(finalFields))n.disabled=finalBusy;finalReroll.disabled=cancelSelection.disabled=finalBusy;
+    queue?.setBlocked(locked || loading || finalBusy || !!jobEditor?.active); finalSubmit.disabled = finalBusy || !selection || !finalFields.latent_upscaler.value || features.latent_upscaler !== true || features.separate_final_length===true&&!finalFields.frames.value; finalLoras.setDisabled(finalBusy); for(const n of Object.values(finalFields))n.disabled=finalBusy;finalFields.frames.disabled||=features.separate_final_length!==true;finalFields.frames.parentElement.hidden=features.separate_final_length!==true;finalReroll.disabled=cancelSelection.disabled=finalBusy;
   }
   function fill(n, items, selected, blank = false) { n.replaceChildren(); if (blank) n.add(new Option('Use model GPU', '')); for (const item of items) n.add(new Option(displayName(item), item.id)); if(selected!==undefined&&selected!==null){if(![...n.options].some(o=>o.value===String(selected)))n.add(new Option('Choose an available component',selected));n.value=selected;} }
   async function loadInventory() {
@@ -370,11 +389,12 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
     try {
       status.textContent = 'Loading saved preview settings…'; const data = await request(`/jobs/${encodeURIComponent(job.id)}/seed-hunter`); if (closed || token !== selecting) return;
       const source = data.config, size = seedHunterResolution(inventory.seed_hunter?.final_defaults?.megapixels || 2, source.width, source.height);
-      selection = { job_id: job.id, index: candidate.index, seed: candidate.seed, width:source.width, height:source.height }; finalRequest = remembered ? saved.final_request || null : null;
-      const defaults = seedHunterRefinementDefaults(source, { ...size, latent_upscaler:source.latent_upscaler||finalFields.latent_upscaler.value, steps: 2, seed: randomSeed(), sampler: 'er_sde', scheduler: 'linear_quadratic', denoise: .4, ...(inventory.seed_hunter?.final_defaults || {}) }, remembered ? saved.final_config || {} : {});
+      selection = { job_id: job.id, index: candidate.index, seed: candidate.seed, width:source.width, height:source.height,frames:source.frames,final_length:data.final_length }; finalRequest = remembered ? saved.final_request || null : null;
+      const defaults = seedHunterRefinementDefaults(source, { ...size, latent_upscaler:source.latent_upscaler||finalFields.latent_upscaler.value, steps: 2, seed: candidate.seed, sampler: 'er_sde', scheduler: 'linear_quadratic', denoise: .4, ...(inventory.seed_hunter?.final_defaults || {}),...(data.refinement_defaults||{}),frames:data.refinement_defaults?.frames??source.seed_hunter?.final_frames??source.frames }, remembered ? saved.final_config || {} : {});
       for (const [key, n] of Object.entries(finalFields)) if (defaults[key] !== undefined) n.value = defaults[key];
+      if(data.final_length?.requires_manual&&!remembered)finalFields.frames.value='';
       finalComponents = h3LoraComponents(inventory.components, data.lora_components); finalLoras.setInventory(finalComponents); finalLoras.setValue(remembered && saved.final_config?.loras ? saved.final_config.loras : h3LoraStack(source));
-      finalTitle.textContent = `Refine preview ${candidate.index} · seed ${candidate.seed}`; finalDescription.textContent = `Saved job ${job.id}. Reuses this preview’s latent and inputs; the draft above is separate.`; finalSection.hidden = false;
+      finalTitle.textContent = `Refine preview ${candidate.index} · seed ${candidate.seed}`;describeRefinement();finalSection.hidden = false;
       status.textContent = 'Preview selected. Review refinement settings before rendering.'; update(); save(); renderJobs(); if (!remembered) { pipeline?.select('refine'); finalSection.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
     } catch (e) { fail(e); }
   }

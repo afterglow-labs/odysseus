@@ -140,6 +140,11 @@ def select_batch_video_length(config, uploads):
     if ranges:
         metadata.update(source_duration_seconds=probe["duration_seconds"],
                         reference_video_range=ranges[0])
+    if hunter and config.get("seed_hunter", {}).get("stage", "preview") == "preview":
+        # Choosing the source duration is a target for the later selected
+        # final, never a reason to render every scouting preview at full length.
+        metadata.update(target="final", preview_frames=config["frames"])
+        return {**config, "seed_hunter": {**config["seed_hunter"], "final_frames": frames}}, metadata
     return {**config, "frames": frames}, metadata
 
 

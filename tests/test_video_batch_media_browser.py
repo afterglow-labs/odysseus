@@ -28,7 +28,7 @@ def test_per_row_audio_images_server_files_and_optional_trims(tmp_path, workflow
                     reference_size='match', loras=[])
     inventory = dict(runtime_ready=True, components=components, gpus=[{'id': 'GPU-5090', 'name': 'RTX 5090', 'nvfp4': True}],
                      defaults=defaults, batch_jobs=True, batch_auto_video_length=True, server_video_files=True,
-                     seed_hunter={'features': {'seed_scout': True, 'force_audio': True, 'guides': True, 'latent_upscaler': True},
+                     seed_hunter={'features': {'separate_final_length': True, 'seed_scout': True, 'force_audio': True, 'guides': True, 'latent_upscaler': True},
                                   'defaults': defaults, 'scout_defaults': defaults})
     errors, submissions, kinds = [], [], []
 

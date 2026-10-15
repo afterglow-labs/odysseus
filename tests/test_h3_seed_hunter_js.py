@@ -21,6 +21,8 @@ def run_js(script):
 def test_author_workflow_rounds_duration_up_and_preserves_selected_aspect():
     run_js("""
 assert.equal(seedHunterFrames(3), 73);
+assert.equal(seedHunterFrames(4),107);
+for(let frames=73;frames<=362;frames+=17)assert.equal(seedHunterFrames(Number((frames/24).toFixed(3))),frames);
 assert.equal(seedHunterFrames(6), 158);
 assert.equal(seedHunterFrames(15), 362);
 assert.deepEqual(seedHunterResolution(.4,9,16), {width:480,height:864});

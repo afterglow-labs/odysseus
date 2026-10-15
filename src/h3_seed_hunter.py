@@ -33,6 +33,7 @@ def capabilities(project, runtime, components, gpus=()):
         "features": {"latent_upscaler": (extras / "latent-upscaler").is_dir()
                      and any(c.get("role") == "latent_upscaler" for c in components),
                      "guides": True, "force_audio": True, "continuation": True, "dialogue": True,
+                     "separate_final_length": True,
                      "seed_scout": (runtime.parent / "seed-scout/nodes.py").is_file(),
                      "attention_backend": True, "sparse_attention": True,
                      "refmods": (extras / "refmods/core.py").is_file(),
@@ -80,6 +81,7 @@ def summary(directory, config, state):
     options = config.get("seed_hunter", {})
     result = {"stage": options.get("stage", "preview"),
               **{key: config.get(key) for key in ("width", "height", "frames")}, "candidates": []}
+    result["final_frames"] = options.get("final_frames")
     saved = _read(Path(directory) / "candidates.json")
     rows = saved.get("candidates", [])
     for row in rows[:3] if isinstance(rows, list) else []:
@@ -108,8 +110,36 @@ def summary(directory, config, state):
         result["candidates"].append(public)
     provenance = _read(Path(directory) / "manifest.json").get("seed_hunter_source", {})
     if isinstance(provenance, dict):
-        result.update({key: provenance[key] for key in ("source_job_id", "source_candidate") if key in provenance})
+        result.update({key: provenance[key] for key in ("source_job_id", "source_candidate", "source_seed", "preview_frames", "regeneration_required") if key in provenance})
+        if type(provenance.get("preview_frames")) is int:
+            result["regeneration_required"] = config["frames"] != provenance["preview_frames"]
     return result
+
+
+def final_length(directory, manifest):
+    """Resolve final duration independently from the inexpensive preview length."""
+    from src.h3_video import UPLOAD_EXTENSIONS
+    from src.h3_video_length import select_batch_video_length
+    from src.video_job_edit import _inputs
+    config = manifest["config"]
+    preview_frames = config["frames"]
+    frames = config.get("seed_hunter", {}).get("final_frames")
+    metadata = {}
+    if frames is not None:
+        basis = "configured"
+        saved = _read(Path(directory) / "submission.json").get("batch_video_length", {})
+        if isinstance(saved, dict) and saved.get("target") == "final" and saved.get("frames") == frames:
+            metadata, basis = saved, "source"
+    elif manifest.get("uploads", manifest).get("reference_videos") and config.get("mode") == "ref2va":
+        inputs = _inputs(directory, manifest, UPLOAD_EXTENSIONS)
+        paths = {field: [item["path"] for item in values] for field, values in inputs.items()}
+        _, metadata = select_batch_video_length(config, paths)
+        frames, basis = metadata["frames"], "source"
+    else:
+        frames, basis = preview_frames, "preview"
+    return {**metadata, "frames": frames, "selected_seconds": frames / 24, "target": "final",
+            "preview_frames": preview_frames, "basis": basis,
+            "regeneration_required": frames != preview_frames}
 
 
 def detail(manager, job_id, owner):
@@ -123,8 +153,16 @@ def detail(manager, job_id, owner):
     if data is None:
         raise FileNotFoundError("Seed Hunter job not found")
     inventory = manager.submission_inventory()
-    return {"config": _draft(config, inventory, "h3"), "seed_hunter": data,
-            "lora_components": frozen_components(config, inventory)}
+    result = {"config": _draft(config, inventory, "h3"), "seed_hunter": data,
+              "lora_components": frozen_components(config, inventory)}
+    if data["stage"] == "preview":
+        try:
+            length = final_length(directory, manifest)
+        except (ValueError, FileNotFoundError):
+            length = {"frames": None, "requires_manual": True,
+                      "error": "Could not read the source duration. Choose the final output length manually."}
+        result.update(final_length=length, refinement_defaults={"frames": length["frames"] or config["frames"]})
+    return result
 
 
 def clone_snapshot(source_directory, destination, snapshot):
@@ -144,9 +182,9 @@ def clone_snapshot(source_directory, destination, snapshot):
     return result
 
 
-FINAL_EDIT_SETTINGS = {"width", "height", "steps", "seed", "sampler", "scheduler", "gpu", "vae_gpu",
+FINAL_EDIT_SETTINGS = {"width", "height", "frames", "steps", "seed", "sampler", "scheduler", "gpu", "vae_gpu",
                        "loras", "lora", "lora_scale", "latent_upscaler", "seed_hunter", "shift_video", "shift_audio"}
-FINAL_OPTIONS = {"denoise", "output_fps", "upscaler_chunking", "upscaler_force_unload", "shift_enabled",
+FINAL_OPTIONS = {"denoise", "output_fps", "final_frames", "upscaler_chunking", "upscaler_force_unload", "shift_enabled",
                  "attention_backend", "sparse_method", "sparse_keep_percent", "sparse_start", "sparse_end",
                  "sparse_min_tokens", "sparse_extra_tokens", "sparse_sink_conditioning",
                  "ff_chunk_size", "ff_chunk_threshold", "low_vram_chunks"}
@@ -163,7 +201,7 @@ def guard_edit(original, updated):
     if old["stage"] == "final":
         allowed = FINAL_EDIT_SETTINGS | {"lora_profiles"}
         if any(original.get(k) != updated.get(k) for k in original.keys() | updated.keys() if k not in allowed):
-            raise ValueError("Saved-latent refinement keeps its source prompt, model, encoder, frames, and inputs")
+            raise ValueError("Seed Hunter refinement keeps its source prompt, model, encoder, and inputs")
         if any(old.get(k) != new.get(k) for k in old.keys() | new.keys() if k not in FINAL_OPTIONS):
             raise ValueError("Saved-latent refinement keeps its source conditioning")
 
@@ -220,6 +258,14 @@ def prepare_final(manager, source_id, owner, body, directory, submission_id):
             raise ValueError("Choose an available saved preview")
         inventory = frozen_inventory(config, current)
         raw = _draft(config, inventory, "h3")
+        chosen = next(row for row in data["candidates"] if row["index"] == candidate)
+        selected_seed = _read(artifact(source, candidate, "metadata")).get("seed", chosen["seed"])
+        raw["seed"] = selected_seed
+        if "frames" not in patch:
+            try:
+                raw["frames"] = final_length(source, manifest)["frames"]
+            except (ValueError, FileNotFoundError) as error:
+                raise ValueError("Could not read the source duration. Choose the final output length manually.") from error
         changes = patch.get("seed_hunter", {})
         if not isinstance(changes, dict) or changes.keys() - FINAL_OPTIONS:
             raise ValueError("Unsupported refinement option")
@@ -250,7 +296,9 @@ def prepare_final(manager, source_id, owner, body, directory, submission_id):
         saved["seed_hunter_input"] = clone_snapshot(source, directory, {
             "candidate": candidate, "latent": str(artifact(source, candidate, "latent")),
             "metadata": str(artifact(source, candidate, "metadata"))})
-        saved["seed_hunter_source"] = {"source_job_id": source_id, "source_candidate": candidate}
+        saved["seed_hunter_source"] = {"source_job_id": source_id, "source_candidate": candidate,
+            "source_seed": selected_seed, "preview_frames": config["frames"],
+            "regeneration_required": resolved["frames"] != config["frames"]}
         _write(directory / "submission.json", {"submission_id": submission_id, "input_names": names,
                                                 "source_name": manifest.get("source_name")})
         return resolved, saved

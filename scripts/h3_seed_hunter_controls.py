@@ -5,7 +5,7 @@ RECIPE = "seed_hunter"
 SAMPLERS = ("euler", "res_multistep", "er_sde")
 SCHEDULERS = ("simple", "normal", "beta", "linear_quadratic")
 DEFAULTS = {
-    "stage": "preview", "preview_count": 3, "denoise": .4,
+    "stage": "preview", "preview_count": 3, "denoise": .4, "final_frames": None,
     "shift_enabled": False, "first_frame_guide": False, "last_frame_guide": False,
     "force_audio": False, "continuation_overlap": 22, "output_fps": 24,
     "attention_backend": "comfy kitchen attention", "sparse_method": "none",
@@ -39,7 +39,7 @@ def validate_options(raw):
                 "upscaler_chunking", "upscaler_force_unload"):
         if type(result[key]) is not bool:
             raise ValueError(f"{key} must be true or false")
-    ranges = {"preview_count": (1, 3, True), "denoise": (0., 1., False),
+    ranges = {"preview_count": (1, 3, True), "denoise": (0., 1., False), "final_frames": (73, 362, True),
               "scout_count": (1, 32, True), "scout_step": (1, 100, True), "scout_timeout": (0, 86400, True),
               "sparse_keep_percent": (1., 100., False), "sparse_start": (0., 1., False),
               "sparse_end": (0., 1., False), "sparse_min_tokens": (0, 1000000, True),
@@ -49,11 +49,13 @@ def validate_options(raw):
               "audio_start_seconds": (0., 3600., False), "audio_end_seconds": (0., 3600., False)}
     for key, (low, high, integer) in ranges.items():
         value = result[key]
-        if value is None and key in {"source_end_seconds", "audio_end_seconds"}:
+        if value is None and key in {"source_end_seconds", "audio_end_seconds", "final_frames"}:
             continue
         if (isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high
                 or not math.isfinite(value) or integer and type(value) is not int):
             raise ValueError(f"Invalid Seed Hunter {key}")
+    if result["final_frames"] is not None and (result["final_frames"] - 5) % 17:
+        raise ValueError("Final H3 frame count must be 17 × n + 5 (73, 90, 107 … 362)")
     for prefix in ("source", "audio"):
         end = result[prefix + "_end_seconds"]
         if end is not None and end <= result[prefix + "_start_seconds"]:

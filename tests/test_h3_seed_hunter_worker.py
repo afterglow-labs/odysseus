@@ -180,6 +180,80 @@ def test_final_uses_saved_conditioning_without_reencoding_or_reloading_media(man
     assert calls == ["release_encoder", "upscale", "sample"]
 
 
+@pytest.mark.parametrize('changed_lora', [False, True])
+def test_longer_final_regenerates_only_selected_seed_at_original_settings_before_refinement(
+        manifest, monkeypatch, tmp_path, changed_lora):
+    from copy import deepcopy
+    original, _ = worker.validate_job(manifest)
+    original['loras'] = []
+    candidate = tmp_path / 'original.safetensors'
+    hunter.save_snapshot(candidate, latent={'samples': torch.tensor(999.)},
+                         positive=[[torch.tensor(999.), {}]], config=original, seed=1042)
+    manifest['seed_hunter_input'] = {'latent': str(candidate), 'metadata': str(candidate.with_suffix('.json'))}
+    manifest['config'].update(width=960, height=1728, frames=311, seed=123, steps=2,
+                             scheduler='linear_quadratic', loras=[], seed_hunter={'stage': 'final'})
+    if changed_lora:
+        adapter = tmp_path / 'refinement_lora.safetensors'
+        adapter.touch()
+        manifest['config']['loras'] = [{'path': str(adapter), 'strength': .75}]
+    calls, loaded, sampled, statuses = [], [], [], []
+    class Runtime:
+        def __init__(self, *_):
+            self.model_management = SimpleNamespace(
+                unload_all_models=lambda: calls.append('unload_all'),
+                soft_empty_cache=lambda: calls.append('empty_cache'))
+        def load(self, config, _progress):
+            calls.append('load')
+            loaded.append(deepcopy(config))
+            return (object(),) * 4
+        def release_conditioning(self): pass
+        def cleanup_model_state(self): pass
+        def decode(self, samples, *_):
+            assert samples['samples'].item() == 30
+            return torch.zeros((311, 4, 4, 3)), {}
+    def media_loader(_media, config):
+        calls.append('media')
+        assert config['frames'] == 311 and config['width'] == 480
+        return {'full_reference': True}
+    def condition(_runtime, config, prepared, *_):
+        calls.append('condition')
+        assert config['frames'] == 311 and prepared['full_reference']
+        return [[torch.tensor(5.), {}]], {'samples': torch.tensor(0.)}, [[torch.tensor(6.), {}]]
+    def sample(_runtime, config, _model, positive, latent, progress):
+        sampled.append(deepcopy(config))
+        if len(sampled) == 1:
+            assert config['seed'] == 1042  # Actual selected branch, not base 42 or edited 123.
+            assert config['steps'] == 6 and config['scheduler'] == 'beta' and config['sampler'] == 'er_sde'
+            assert config['width'] == 480 and config['frames'] == 311 and config['loras'] == []
+            assert config['seed_hunter']['preview_count'] == 1 and config['seed_hunter']['stage'] == 'preview'
+            assert positive[0][0].item() == 5
+            progress('sampling', 1)
+            statuses.append(json.loads(Path(manifest['status_path']).read_text()))
+            return {'samples': torch.tensor(10.)}, {'samples': torch.tensor(20.)}
+        assert config['seed'] == 123 and config['steps'] == 2 and config['scheduler'] == 'linear_quadratic'
+        assert config['frames'] == 311 and config['width'] == 960
+        assert positive[0][0].item() == 6 and latent['samples'].item() == 21
+        return {'samples': torch.tensor(29.)}, {'samples': torch.tensor(30.)}
+    def upscale(_manifest, config, latent, _progress):
+        calls.append('upscale')
+        assert config['frames'] == 311 and latent['samples'].item() == 20
+        return {'samples': torch.tensor(21.)}
+    monkeypatch.setattr(hunter, 'patch_model', lambda _r, _c, m, _p: m)
+    monkeypatch.setattr(hunter, 'condition', condition)
+    monkeypatch.setattr(hunter, 'sample_candidate', sample)
+    monkeypatch.setattr(hunter, 'upscale_latent', upscale)
+    worker.run_job(manifest, runtime_factory=Runtime, media_loader=media_loader,
+                   muxer=lambda path, *_: Path(path).write_bytes(b'mp4'))
+    assert len(sampled) == 2 and calls.count('condition') == 1
+    assert len(loaded) == (2 if changed_lora else 1)
+    if changed_lora:
+        assert calls.index('unload_all') < calls.index('load', calls.index('load') + 1)
+        assert loaded[1]['loras'][0]['strength'] == .75
+    assert statuses[0]['phase'] == 'regenerating_full_length_candidate'
+    assert statuses[0]['total_steps'] == 6 and statuses[0]['source_seed'] == 1042
+    assert json.loads(Path(manifest['status_path']).read_text())['frames'] == 311
+
+
 def test_continuation_overlap_is_graphs_constant_half_blend():
     source = torch.full((5, 2, 2, 3), .8)
     generated = torch.full((22, 2, 2, 3), .2)

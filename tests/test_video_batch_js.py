@@ -270,6 +270,7 @@ assert.equal(value.config.frames,124);assert.equal(value.uploads.reference_video
 assert.equal(videoBatchLengthLabel({batch_video_length:{duration_seconds:8,selected_seconds:8.708333,frames:209}}),'8.00s source → 8.71s · 209 frames');
 assert.match(videoBatchLengthLabel({batch_video_length:{duration_seconds:8,selected_seconds:8.708333,frames:209,preserve_source_duration:true}}),/preserves source length/);
 assert.equal(videoBatchLengthLabel({}), '');
+assert.equal(videoBatchLengthLabel({batch_video_length:{target:'final',duration_seconds:12.262,selected_seconds:311/24,frames:311,preview_frames:107}}),'12.26s source → 12.96s final · 4.46s previews');
 ''')
 
 

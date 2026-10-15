@@ -62,7 +62,11 @@ def test_seed_hunter_auto_length_uses_its_available_frame_choices(monkeypatch, s
                         {"duration_seconds": duration, "source_frames": round(duration * 24)})
     config = {"recipe": "seed_hunter", "seed_hunter": {"stage": stage}, "mode": "ref2va", "frames": 73}
     chosen, info = length.select_batch_video_length(config, {"reference_videos": ["clip.mp4"]})
-    assert chosen["frames"] == frames and chosen["seed_hunter"] == config["seed_hunter"]
+    if stage == "preview":
+        assert chosen["frames"] == 73 and chosen["seed_hunter"]["final_frames"] == frames
+        assert info["target"] == "final" and info["preview_frames"] == 73
+    else:
+        assert chosen["frames"] == frames and chosen["seed_hunter"] == config["seed_hunter"]
     assert info["duration_seconds"] == duration
 
 
@@ -95,7 +99,9 @@ def test_primary_batch_video_determines_length_without_probing_companion(monkeyp
     uploads = {"reference_videos": ["primary.mp4", "short-context.mp4", "long-context.mp4"]}
     before = copy.deepcopy((config, uploads))
     chosen, info = length.select_batch_video_length(config, uploads)
-    assert chosen["frames"] == 175 and info["duration_seconds"] == 7
+    assert chosen["frames"] == (362 if stage == "preview" else 175) and info["duration_seconds"] == 7
+    if stage == "preview":
+        assert chosen["seed_hunter"]["final_frames"] == 175
     assert probes == ["primary.mp4"] and (config, uploads) == before
 
 
@@ -256,7 +262,10 @@ def test_seed_hunter_batch_submission_persists_its_short_clip_frame_count(backen
     assert response.status_code == 201, response.text
     directory = backend.managers["h3"].directory(response.json()["id"])
     manifest = h3._read(directory / "manifest.json")
-    assert manifest["config"]["frames"] == 90
+    assert manifest["config"]["frames"] == (73 if stage == "preview" else 90)
+    if stage == "preview":
+        assert manifest["config"]["seed_hunter"]["final_frames"] == 90
+        assert response.json()["batch_video_length"]["target"] == "final"
     assert manifest["config"]["seed_hunter"]["stage"] == stage
     assert {key: manifest["config"]["seed_hunter"][key] for key in ("scout_count", "scout_step", "scout_timeout")} == {"scout_count": 5, "scout_step": 2, "scout_timeout": 11}
     assert response.json()["batch_video_length"]["duration_seconds"] == 3.461

@@ -2,6 +2,7 @@
 import json
 import shutil
 import uuid
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -20,7 +21,7 @@ def hunter(backend):
     inventory['components'] = h3.discover_components([path.parent])
     inventory['seed_hunter'] = {'features': {'latent_upscaler': True, 'sparse_attention': True}}
     config = backend.configs['h3']
-    config.update(recipe='seed_hunter', seed_hunter={'stage': 'preview', 'preview_count': 3},
+    config.update(recipe='seed_hunter', seed_hunter={'stage': 'preview', 'preview_count': 3, 'final_frames': 73},
                   width=480, height=864, frames=73, steps=6, sampler='er_sde', scheduler='beta')
     config['latent_upscaler'] = next(c['id'] for c in inventory['components'] if c['role'] == 'latent_upscaler')
     return backend
@@ -37,7 +38,7 @@ def preview(hunter, completed=True):
         h3._write(directory / 'state.json', {**state, 'status': 'completed'})
     for i in (1, 2, 3):
         (directory / f'candidate-{i}.mp4').write_bytes(f'video{i}'.encode())
-        (directory / f'candidate-{i}.json').write_text(json.dumps({'chosen': i,
+        (directory / f'candidate-{i}.json').write_text(json.dumps({'chosen': i, 'seed': i * 1000,
             'config': h3._read(directory / 'manifest.json')['config']}))
         weights(directory / f'candidate-{i}.safetensors')
     h3._write(directory / 'candidates.json', {'version': 1, 'candidates': [
@@ -69,6 +70,82 @@ def test_preview_detail_and_video_are_owned_and_never_enqueue(hunter):
     assert len(hunter.calls) == 1
 
 
+def test_older_preview_defaults_final_to_primary_source_without_changing_preview(hunter, monkeypatch):
+    from src import h3_video_length
+    hunter.configs['h3']['seed_hunter'].pop('final_frames')
+    monkeypatch.setattr(h3_video_length, 'probe_video', lambda *a, **k:
+                        {'duration_seconds': 12.3, 'source_frames': 295})
+    job, directory = preview(hunter)
+    prefix = f"/api/video/h3/jobs/{job['id']}/seed-hunter"
+    data = hunter.client().get(prefix).json()
+    assert data['config']['frames'] == 73
+    assert data['refinement_defaults']['frames'] == 311
+    assert data['final_length']['regeneration_required'] is True
+    assert data['final_length']['basis'] == 'source'
+    body = final_body(hunter)
+    body['config'].pop('seed')
+    response = hunter.client().post(prefix + '/finalize', json=body)
+    assert response.status_code == 201, response.text
+    final = h3._read(hunter.managers['h3'].directory(response.json()['id']) / 'manifest.json')
+    assert final['config']['frames'] == final['config']['seed_hunter']['final_frames'] == 311
+    assert final['config']['seed'] == final['seed_hunter_source']['source_seed'] == 2000
+    assert h3._read(directory / 'manifest.json')['config']['frames'] == 73
+
+
+def test_unreadable_legacy_source_requires_explicit_final_length(hunter, monkeypatch):
+    from src import h3_video_length
+    hunter.configs['h3']['seed_hunter'].pop('final_frames')
+    def unavailable(*a, **k):
+        raise ValueError('private source unreadable')
+    monkeypatch.setattr(h3_video_length, 'probe_video', unavailable)
+    job, _ = preview(hunter)
+    prefix = f"/api/video/h3/jobs/{job['id']}/seed-hunter"
+    data = hunter.client().get(prefix).json()
+    assert data['final_length']['requires_manual'] is True
+    response = hunter.client().post(prefix + '/finalize', json=final_body(hunter))
+    assert response.status_code == 400 and 'manually' in response.text
+    response = hunter.client().post(prefix + '/finalize', json=final_body(hunter, frames=311))
+    assert response.status_code == 201, response.text
+
+
+def test_final_length_survives_parent_deletion_queued_edit_and_rerun(hunter):
+    job, source = preview(hunter)
+    response = hunter.client().post(f"/api/video/h3/jobs/{job['id']}/seed-hunter/finalize",
+                                   json=final_body(hunter, frames=311))
+    assert response.status_code == 201, response.text
+    identifier = response.json()['id']
+    manager = hunter.managers['h3']
+    directory = manager.directory(identifier)
+    shutil.rmtree(source)
+    url = f'/api/video/h3/jobs/{identifier}'
+    draft = hunter.client().get(url + '/edit').json()['config']
+    assert draft['seed_hunter']['final_frames'] == 311
+    draft['frames'] = 277
+    response = hunter.client().patch(url, data={'config': json.dumps(draft), 'revision': '0'})
+    assert response.status_code == 200, response.text
+    saved = h3._read(directory / 'manifest.json')
+    assert saved['config']['seed_hunter']['final_frames'] == 277
+    rerun_jobs(manager, 'corey', 'h3', [{'id': identifier, 'revision': 1}],
+                       {'frames': 345}, str(uuid.uuid4()))
+    # The rerun owns source inputs and the original short candidate after deletion.
+    rerun = next(path for path in manager.root.glob('*/manifest.json')
+                 if path.parent.name != identifier)
+    manifest = h3._read(rerun)
+    assert manifest['config']['frames'] == manifest['config']['seed_hunter']['final_frames'] == 345
+    assert h3._read(manifest['seed_hunter_input']['metadata'])['config']['frames'] == 73
+    assert all(Path(path).is_file() for path in manifest['reference_videos'])
+
+
+@pytest.mark.parametrize('frames', [None, 73, 311, 362])
+def test_final_target_is_portable_and_nullable(hunter, frames):
+    config = {**hunter.configs['h3'], 'seed_hunter': {'stage': 'preview', 'final_frames': frames}}
+    # Component IDs are omitted by the portable workflow settings interface.
+    from src.video_workflow import specification
+    settings, _, _ = specification('h3', config)
+    portable = {key: value for key, value in config.items() if key in settings}
+    assert portable_config(portable, 'h3')['seed_hunter']['final_frames'] == frames
+
+
 def test_finalize_is_idempotent_copies_exact_candidate_and_survives_parent_deletion(hunter):
     job, directory = preview(hunter)
     body = final_body(hunter)
@@ -91,7 +168,7 @@ def test_finalize_is_idempotent_copies_exact_candidate_and_survives_parent_delet
     assert len(hunter.calls) == 2
 
 
-@pytest.mark.parametrize('patch', [{'prompt': 'change it'}, {'frames': 362}, {'encoder': '/etc/passwd'},
+@pytest.mark.parametrize('patch', [{'prompt': 'change it'}, {'frames': 74}, {'encoder': '/etc/passwd'},
                                   {'seed_hunter': {'stage': 'preview'}}, {'latent_upscaler': '/etc/passwd'}])
 def test_final_rejects_replacing_saved_conditioning_or_path_injection(hunter, patch):
     job, _ = preview(hunter)
@@ -132,7 +209,7 @@ def test_final_rerun_preserves_latent_and_rejects_prompt_edits(hunter):
     selected = [{'id': final['id'], 'revision': 0}]
     with pytest.raises(ValueError, match='source prompt'):
         rerun_jobs(manager, 'corey', 'h3', selected, {'prompt': 'Nope'}, str(uuid.uuid4()))
-    result = rerun_jobs(manager, 'corey', 'h3', selected, {'steps': 4, 'seed_hunter': {'denoise': .3}}, str(uuid.uuid4()))
+    rerun_jobs(manager, 'corey', 'h3', selected, {'steps': 4, 'seed_hunter': {'denoise': .3}}, str(uuid.uuid4()))
     assert len(hunter.calls) == 3
     reruns = [m for p in manager.root.iterdir() if p.is_dir() and (m := h3._read(p/'manifest.json')).get('config', {}).get('steps') == 4]
     assert len(reruns) == 1
