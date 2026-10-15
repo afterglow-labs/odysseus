@@ -182,6 +182,7 @@ def test_missing_and_escaped_saved_files_fail_without_serving_cached_private_dat
 def test_oversized_playback_copy_is_removed_and_not_published(saved, monkeypatch):
     from src import video_media_metadata
     monkeypatch.setattr(video_media_metadata, 'get_open_video_metadata', lambda *a: {'duration_seconds': 3})
+    monkeypatch.setattr(proxy, '_playback_ffmpeg', lambda: imageio_ffmpeg.get_ffmpeg_exe())
     def fake_convert(command, **kwargs):
         assert '-t' not in command
         assert int(command[command.index('-fs') + 1]) > proxy.MAX_CACHE_BYTES

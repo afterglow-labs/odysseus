@@ -1,6 +1,7 @@
 """Small, disposable phone-compatible previews of allowlisted server videos."""
 import hashlib
 import errno
+from functools import lru_cache
 import json
 import math
 import os
@@ -22,6 +23,39 @@ MAX_CACHE_BYTES = 256 * 1024 * 1024
 MAX_AGE_SECONDS = 3600
 _ENCODERS = threading.BoundedSemaphore(2)
 _CACHE_LOCK = threading.Lock()
+
+
+@lru_cache(maxsize=8)
+def _playback_encoders(executable, size, modified):
+    """Check the installed binary once; app FFmpeg builds may omit libx264."""
+    try:
+        result = subprocess.run([executable, '-hide_banner', '-encoders'], capture_output=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    encoders = {parts[1] for line in result.stdout.decode(errors='replace').splitlines()
+                if len(parts := line.split()) >= 2}
+    return result.returncode == 0 and {'libx264', 'aac'}.issubset(encoders)
+
+
+def _playback_ffmpeg():
+    # The wheel's local binary includes the codecs this browser proxy needs.
+    # Prefer it over the app's general media runtime, which can omit libx264.
+    candidates = []
+    try:
+        import imageio_ffmpeg
+        candidates.append(imageio_ffmpeg.get_ffmpeg_exe())
+    except (ImportError, OSError, RuntimeError):
+        pass
+    candidates.append(shutil.which('ffmpeg'))
+    for executable in dict.fromkeys(candidates):
+        if executable:
+            try:
+                info = Path(executable).stat()
+            except OSError:
+                continue
+            if _playback_encoders(executable, info.st_size, info.st_mtime_ns):
+                return executable
+    raise HTTPException(503, 'Video playback requires an installed FFmpeg with libx264 and AAC encoders.')
 
 
 class _CachedPreviewUpload(ServerVideoUpload):
@@ -139,10 +173,7 @@ def _get_open_video_preview(upload, selection, *, start_seconds, duration_second
         if source_duration is not None and start_seconds >= source_duration:
             raise HTTPException(400, 'The preview start is past the end of this video')
         offset = start_seconds + metadata.get('video_start_offset_seconds', 0)
-        executable = shutil.which('ffmpeg')
-        if executable is None:
-            import imageio_ffmpeg
-            executable = imageio_ffmpeg.get_ffmpeg_exe()
+        executable = _playback_ffmpeg()
         temporary = CACHE_ROOT / (key + '.' + uuid.uuid4().hex + '.partial.mp4')
         input_path = f'/proc/self/fd/{upload.file.fileno()}' if os.name == 'posix' and Path('/proc/self/fd').is_dir() else 'pipe:0'
         command = [executable, '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',

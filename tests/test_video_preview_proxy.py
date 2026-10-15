@@ -110,6 +110,7 @@ def test_proxy_timeout_closes_source_releases_slot_and_removes_partial(source, m
     from src import video_media_metadata
     monkeypatch.setattr(video_media_metadata, 'get_open_video_metadata',
                         lambda *args: {'duration_seconds': 6, 'video_start_offset_seconds': 0})
+    monkeypatch.setattr(proxy, '_playback_ffmpeg', lambda: imageio_ffmpeg.get_ffmpeg_exe())
     handles = []
     original = proxy.open_server_video_preview
     def record(selection):
@@ -133,3 +134,31 @@ def test_proxy_timeout_closes_source_releases_slot_and_removes_partial(source, m
     if second:
         proxy._ENCODERS.release()
     assert first and second
+
+
+def test_playback_prefers_installed_codec_capable_binary_over_app_ffmpeg(tmp_path, monkeypatch):
+    bundled, application = tmp_path / 'bundled-ffmpeg', tmp_path / 'app-ffmpeg'
+    bundled.touch(); application.touch()
+    calls = []
+    monkeypatch.setattr(imageio_ffmpeg, 'get_ffmpeg_exe', lambda: str(bundled))
+    monkeypatch.setattr(proxy.shutil, 'which', lambda _: str(application))
+    def encoders(command, **kwargs):
+        calls.append(command[0])
+        output = b' V..... libx264 H.264\n A..... aac AAC\n' if command[0] == str(bundled) else b' V..... hevc HEVC\n'
+        return subprocess.CompletedProcess(command, 0, stdout=output, stderr=b'')
+    monkeypatch.setattr(proxy.subprocess, 'run', encoders)
+    assert proxy._playback_ffmpeg() == str(bundled)
+    assert proxy._playback_ffmpeg() == str(bundled)
+    assert calls == [str(bundled)]
+
+
+def test_playback_fallback_checks_required_codecs_and_fails_clearly(tmp_path, monkeypatch):
+    executable = tmp_path / 'ffmpeg'
+    executable.touch()
+    monkeypatch.setattr(imageio_ffmpeg, 'get_ffmpeg_exe', lambda: str(tmp_path / 'missing'))
+    monkeypatch.setattr(proxy.shutil, 'which', lambda _: str(executable))
+    monkeypatch.setattr(proxy.subprocess, 'run', lambda command, **kwargs:
+        subprocess.CompletedProcess(command, 0, stdout=b' A..... aac AAC\n', stderr=b''))
+    with pytest.raises(HTTPException) as error:
+        proxy._playback_ffmpeg()
+    assert error.value.status_code == 503 and 'libx264' in error.value.detail
