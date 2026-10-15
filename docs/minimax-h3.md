@@ -24,6 +24,10 @@ jobs returns to the latest results. Counts describe the whole workflow list,
 not just the visible page. Desktop output media loads when Play is pressed.
 Paging does not pause rendering or narrow the scope of bulk queue actions.
 
+The same Previous/Next controls and page counter appear above and below the
+results. Both locations navigate the same page and stay synchronized while
+loading or refreshing, including in Build Pipeline.
+
 **Queue controls** appears above the recent jobs in both H3 and BFS panels.
 **Pause queue** lets the current render finish and holds your waiting H3 and BFS
 jobs until **Resume queue**. The pause is saved on the server and survives closing

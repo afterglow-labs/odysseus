@@ -452,7 +452,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
       {id:'prepare',title:'Prompt',parent:form,nodes:[prompt.parentElement,enhancerBar,enhancerInfo,dialoguePanel.parentElement,continuationPanel.parentElement,audioPanel.parentElement]},
       {id:'setup',title:'Model setup',parent:form,nodes:[componentGrid,loras.node]},
       {id:'generate',title:'Generate',parent:form,nodes:[dimensions,sizeTools,advanced.parentElement]},
-      {id:'review',title:scout?'Choose seed / Results':'Review',parent:scroll,nodes:[jobToolbar,jobStatus,jobPager.node,jobList]},
+      {id:'review',title:scout?'Choose seed / Results':'Review',parent:scroll,nodes:[jobToolbar,jobStatus,jobPager.node,jobList,jobPager.bottomNode]},
       ...(!scout?[{id:'refine',title:'Refine',parent:scroll,nodes:[finalSection]}]:[]),
     ],actions:[actions],queueNodes:[queueContainer],
     getInputs:()=>Object.values(uploads).filter(state=>!state.wrap.hidden).flatMap(state=>[...state.retained,...state.files]),

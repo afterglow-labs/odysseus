@@ -38,19 +38,29 @@ export function createVideoJobPageState({ pageSize = 10, recipe = '' } = {}) {
 
 export function createVideoJobPager({ container, beforeNode, request, recipe = '', onData, onError, isClosed = () => false }) {
   const state = createVideoJobPageState({ recipe });
-  const node = document.createElement('nav'); node.className = 'video-job-pager'; node.setAttribute('aria-label', 'Job history pages');
-  const previous = document.createElement('button'), next = document.createElement('button'), label = document.createElement('span');
-  for (const button of [previous, next]) { button.type = 'button'; button.className = 'memory-toolbar-btn'; }
-  previous.textContent = 'Previous'; previous.setAttribute('aria-label', 'Previous page of jobs');
-  next.textContent = 'Next'; next.setAttribute('aria-label', 'Next page of jobs');
-  label.className = 'h3-video-muted'; label.setAttribute('role', 'status'); label.setAttribute('aria-live', 'polite');
-  node.append(previous, label, next); container.insertBefore(node, beforeNode || null);
+  function controls(bottom = false) {
+    const node = document.createElement('nav'); node.className = 'video-job-pager';
+    node.setAttribute('aria-label', bottom ? 'Job history pages below results' : 'Job history pages');
+    const previous = document.createElement('button'), next = document.createElement('button'), label = document.createElement('span');
+    for (const button of [previous, next]) { button.type = 'button'; button.className = 'memory-toolbar-btn'; }
+    previous.textContent = 'Previous'; previous.setAttribute('aria-label', 'Previous page of jobs');
+    next.textContent = 'Next'; next.setAttribute('aria-label', 'Next page of jobs');
+    label.className = 'h3-video-muted'; label.setAttribute('role', 'status'); label.setAttribute('aria-live', 'polite');
+    previous.onclick = () => load({ page: state.page - 1 }); next.onclick = () => load({ page: state.page + 1 });
+    node.append(previous, label, next);
+    return { node, previous, next, label };
+  }
+  const top = controls(), bottom = controls(true), pagers = [top, bottom];
+  container.insertBefore(top.node, beforeNode || null);
+  container.insertBefore(bottom.node, beforeNode?.nextSibling || null);
   let pending = null, task = null, destroyed = false;
   const alive = () => !destroyed && !isClosed();
   function render() {
-    label.textContent = state.label;
-    previous.disabled = !!task || state.page <= 1; next.disabled = !!task || state.page >= state.totalPages;
-    node.setAttribute('aria-busy', String(!!task));
+    for (const { node, previous, next, label } of pagers) {
+      label.textContent = state.label;
+      previous.disabled = !!task || state.page <= 1; next.disabled = !!task || state.page >= state.totalPages;
+      node.setAttribute('aria-busy', String(!!task));
+    }
   }
   function load(options = {}) {
     if (!alive()) return Promise.resolve();
@@ -72,9 +82,8 @@ export function createVideoJobPager({ container, beforeNode, request, recipe = '
     }).finally(() => { task = null; if (alive()) render(); });
     render(); return task;
   }
-  previous.onclick = () => load({ page: state.page - 1 }); next.onclick = () => load({ page: state.page + 1 });
   render();
-  return { node, load, get counts() { return state.counts; }, get total() { return state.total; }, destroy() { destroyed = true; pending = null; } };
+  return { node: top.node, bottomNode: bottom.node, load, get counts() { return state.counts; }, get total() { return state.total; }, destroy() { destroyed = true; pending = null; } };
 }
 
 export async function observePagedVideoJobEditor(editor, jobs, request, isClosed = () => false) {

@@ -672,7 +672,7 @@ export function showBfsVideo({ preferred = null, layout = 'classic' } = {}, anch
       {id:'prepare',title:'Prompt',parent:form,nodes:[prompt.parentElement]},
       {id:'setup',title:'Model setup',parent:form,nodes:[componentsTitle,componentGrid,missing,parameterGrid]},
       {id:'generate',title:'Generate',parent:form,nodes:[dynamicControls]},
-      {id:'review',title:'Review',parent:scroll,nodes:[jobsHeader,jobsStatus,jobPager.node,jobList]},
+      {id:'review',title:'Review',parent:scroll,nodes:[jobsHeader,jobsStatus,jobPager.node,jobList,jobPager.bottomNode]},
       {id:'export',title:'Save / Import',parent:scroll,nodes:[transferBar]},
     ],actions:[actions],queueNodes:[queueContainer],
     getInputs:()=>[...files.values()].filter(state=>state.allowed).flatMap(state=>[state.retained,state.file].filter(Boolean)),

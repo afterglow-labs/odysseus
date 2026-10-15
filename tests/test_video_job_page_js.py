@@ -84,6 +84,39 @@ pager.destroy();await pager.load();assert.equal(calls.length,4);
 ''')
 
 
+def test_top_and_bottom_controls_share_navigation_pending_state_and_page_clamping():
+    run_js(DOM + r'''
+const container=new Element('div'),jobs=new Element('section'),footer=new Element('footer');
+container.append(jobs,footer);jobs.nextSibling=footer;
+let finish;const calls=[],seen=[];
+const pager=createVideoJobPager({container,beforeNode:jobs,
+ request:path=>{calls.push(path);return new Promise(resolve=>finish=resolve)},
+ onData:data=>seen.push(data.jobs),onError:error=>{throw error}});
+assert.deepEqual(container.children,[pager.node,jobs,pager.bottomNode,footer]);
+const top=pager.node.children,bottom=pager.bottomNode.children;
+const respond=(page,total=21)=>finish({jobs:[{id:`page-${page}`}],pagination:{page,total,total_pages:Math.max(1,Math.ceil(total/10)),before:123}});
+const initial=pager.load();await flush();respond(1);await initial;
+assert.equal(top[1].textContent,bottom[1].textContent);
+assert.equal(top[0].disabled,true);assert.equal(bottom[0].disabled,true);
+const forward=bottom[2].onclick();
+assert.ok([top[0],top[2],bottom[0],bottom[2]].every(button=>button.disabled));
+assert.equal(pager.node.getAttribute('aria-busy'),'true');assert.equal(pager.bottomNode.getAttribute('aria-busy'),'true');
+await flush();assert.match(calls.at(-1),/page=2&page_size=10.*before=123/);
+respond(2);await forward;
+assert.equal(top[1].textContent,'11–20 of 21 jobs · Page 2 of 3');
+assert.equal(top[1].textContent,bottom[1].textContent);
+assert.ok([top[0],top[2],bottom[0],bottom[2]].every(button=>!button.disabled));
+const polling=pager.load();await flush();assert.match(calls.at(-1),/page=2.*before=123/);respond(2);await polling;
+const previous=top[0].onclick();await flush();assert.match(calls.at(-1),/page=1.*before=123/);respond(1);await previous;
+const last=pager.load({page:3});await flush();respond(3);await last;
+assert.equal(top[2].disabled,true);assert.equal(bottom[2].disabled,true);
+const afterDelete=pager.load();await flush();respond(1,4);await afterDelete;
+assert.equal(top[1].textContent,'1–4 of 4 jobs · Page 1 of 1');assert.equal(top[1].textContent,bottom[1].textContent);
+assert.ok([top[0],top[2],bottom[0],bottom[2]].every(button=>button.disabled));
+assert.equal(calls.length,6);assert.equal(seen.length,6);
+''')
+
+
 def test_only_open_off_page_editor_fetches_detail_and_blocks_deleted_job():
     run_js(r'''
 const seen=[],calls=[],editor={active:{id:'older'},observe:jobs=>seen.push(jobs)};
