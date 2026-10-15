@@ -31,6 +31,19 @@ when played. Page changes do not change a selected refinement or the rendering
 queue; refresh the list to return to the newest jobs. An opened iOS job remains
 available independently of the current results page.
 
+Original input videos are playable directly above the generated previews, in
+both classic and Pipeline job cards and the iPhone job detail. Each player
+shows its filename and reference number; multiple videos remain separate and
+in attachment order. A saved reference section plays that section and labels
+its start and duration. Otherwise playback covers the whole original video,
+independently of the short generated-preview length.
+
+Media loads only after **Play original video**. Viewing history or refreshing
+status does not download or convert source videos, select a seed, or queue a
+render. The server prepares a cached, browser-compatible H.264/AAC copy when
+needed; the stored original and generation inputs remain unchanged. Source
+playback is available only to the job's owner and stops when its player closes.
+
 Defaults follow the saved graph: 0.4 MP at 9:16 (480 × 864), 73 frames at 24 fps,
 6 steps, ER SDE with beta scheduling. Refinement defaults to about 2 MP at the
 preview's actual aspect ratio (1088 × 1952), 2 steps, ER SDE,

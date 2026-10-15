@@ -235,7 +235,10 @@ def test_refinement_clones_selected_candidate_with_native_idempotent_api(hunter,
         final_id = step(run, "refine")["job_id"]
         final = hunter.managers["h3"].directory(final_id)
         saved = h3._read(final / "manifest.json")
-        assert saved["seed_hunter_source"] == {"source_job_id": source_id, "source_candidate": 2}
+        assert saved["seed_hunter_source"] == {
+            "source_job_id": source_id, "source_candidate": 2, "source_seed": 2000,
+            "preview_frames": 73, "regeneration_required": False,
+        }
         assert h3._read(final / "source-latent.json")["chosen"] == 2
         assert saved["config"]["prompt"] == config["prompt"]
         assert saved["config"]["seed_hunter"]["stage"] == "final"

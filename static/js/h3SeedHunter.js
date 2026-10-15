@@ -1,5 +1,6 @@
 import { createVideoJobPager, observePagedVideoJobEditor } from './videoJobPage.js';
 import { createVideoJobMedia, releaseVideoJobMedia } from './videoJobMedia.js';
+import { createVideoJobSources } from './videoJobSources.js';
 import { bindMenuDismiss, dismissOrRemove } from './escMenuStack.js';
 import { bindSeedHunterHelp } from './seedHunterHelp.js';
 import { topPortalZ } from './toolWindowZOrder.js';
@@ -421,13 +422,15 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
         const card = make('article', 'h3-video-job'), heading = make('h4'), line = make('p', 'h3-video-muted'), tools = make('div', 'h3-video-job-actions'), stop = button('Stop'), retry = button('Retry'), edit = button('Edit queued job'), editRerun = button('Edit & rerun'), remove = button('Delete job');
         const jobError = make('p', 'h3-video-error'), candidates = make('div', 'h3-seed-hunter-candidates'), output = make('div', 'h3-video-output'), details = make('details'), log = make('pre', 'h3-video-log'), promptDetails = make('details'), usedPrompt = make('pre', 'h3-video-prompt-used');
         card.dataset.jobId = job.id;
-        details.append(make('summary','','Runtime log'), log); promptDetails.append(make('summary','','Prompt used'),usedPrompt); tools.append(stop,retry,edit,editRerun,remove); card.append(heading,line,tools,jobError,candidates,output,promptDetails,details); jobList.append(card);
+        const originals = createVideoJobSources();
+        details.append(make('summary','','Runtime log'), log); promptDetails.append(make('summary','','Prompt used'),usedPrompt); tools.append(stop,retry,edit,editRerun,remove); card.append(heading,line,tools,jobError,originals.node,candidates,output,promptDetails,details); jobList.append(card);
         const deletion = make('div','h3-video-delete-confirmation'), keep = button('Keep job'), confirm = button('Delete permanently'); deletion.hidden = true; deletion.append(make('p','','Delete this job and its saved previews, latents and outputs?'),keep,confirm); card.append(deletion);
-        nodes = {card,heading,line,stop,retry,edit,editRerun,remove,jobError,candidates,output,log,usedPrompt,previews:new Map(),deletion}; jobNodes.set(job.id,nodes);
+        nodes = {card,heading,line,stop,retry,edit,editRerun,remove,jobError,originals,candidates,output,log,usedPrompt,previews:new Map(),deletion}; jobNodes.set(job.id,nodes);
         stop.onclick = () => stopJob(job); retry.onclick = () => reruns.run(jobs.find(j => j.id===job.id)||job); edit.onclick = () => jobEditor.open(job.id); editRerun.onclick = () => queue.openRerun(job.id,async(source,patch)=>{const result=await reruns.run(source,patch,true);return {result,...reruns.state(source)};});
         remove.onclick=()=>{deletion.hidden=false;};keep.onclick=()=>{deletion.hidden=true;};confirm.onclick=async()=>{confirm.disabled=true;try{const result=await request(`/jobs/${job.id}/record`,{method:'DELETE'});if(!result.deleted)throw new Error('Deletion was not confirmed.');if(selection?.job_id===job.id){selection=null;finalSection.hidden=true;save();}await loadJobs();}catch(e){fail(e);}finally{confirm.disabled=false;}};
       }
       if (jobList.children[index] !== nodes.card) jobList.insertBefore(nodes.card, jobList.children[index] || null);
+      nodes.originals.update(job.input_videos);
       if (isSeedScoutJob(job)) { if (!nodes.scout) { nodes.scout = createSeedScoutPreviews(job.id, { select: seed => request(`/jobs/${encodeURIComponent(job.id)}/scout/select`, { method: 'POST', headers: {'Content-Type':'application/json'}, body:JSON.stringify({seed}) }), onError:fail }); nodes.candidates.append(nodes.scout.node); } nodes.scout.update(job); }
       const stageName=job.seed_hunter?.stage||'preview'; nodes.heading.textContent=`${stageName} · ${job.status} · ${job.id}`;nodes.line.textContent=[job.phase,job.total_steps?`Step ${job.step||0}/${job.total_steps}`:''].filter(Boolean).join(' · ');
       const state=reruns.state(job);nodes.retry.hidden=nodes.editRerun.hidden=state.hidden;nodes.retry.disabled=nodes.editRerun.disabled=state.disabled;nodes.retry.textContent=state.label;nodes.edit.hidden=job.status!=='queued';nodes.stop.hidden=!ACTIVE.has(job.status);nodes.remove.hidden=!TERMINAL.has(job.status);

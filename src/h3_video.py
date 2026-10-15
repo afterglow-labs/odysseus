@@ -814,6 +814,8 @@ class H3JobManager:
             result["error"] = _redact(result["error"])
         if isinstance(config, dict) and config.get("recipe") == "seed_hunter":
             from src.h3_seed_hunter import summary
+            from src.video_job_inputs import input_videos
+            result["input_videos"] = input_videos(job_id, manifest)
             result.update(recipe="seed_hunter", seed_hunter=summary(directory, config, state))
             if config.get("seed_hunter", {}).get("stage") == "scout":
                 from src.h3_seed_scout import summary as scout_summary

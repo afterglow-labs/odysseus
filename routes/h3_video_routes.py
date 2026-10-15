@@ -287,4 +287,6 @@ def setup_h3_video_routes(manager=None):
     add_seed_hunter_routes(router, manager, _owner)
     from routes.h3_seed_scout_routes import add_seed_scout_routes
     add_seed_scout_routes(router, manager, _owner)
+    from routes.video_job_input_routes import add_job_input_routes
+    add_job_input_routes(router, manager, _owner)
     return router

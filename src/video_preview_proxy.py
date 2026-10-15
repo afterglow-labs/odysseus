@@ -1,5 +1,6 @@
 """Small, disposable phone-compatible previews of allowlisted server videos."""
 import hashlib
+import errno
 import json
 import math
 import os
@@ -35,8 +36,23 @@ class _CachedPreviewUpload(ServerVideoUpload):
 
 def open_server_video_proxy(selection, *, start_seconds=0, duration_seconds=30):
     """Hold the cache inode before responding so eviction cannot break a seek."""
+    return _open_cached_preview(lambda: get_server_video_preview(
+        selection, start_seconds=start_seconds, duration_seconds=duration_seconds))
+
+
+def open_owned_video_proxy(opener, identity, *, start_seconds=0, duration_seconds=None):
+    """Convert an authenticated job handle without silently limiting its duration."""
+    if (type(start_seconds) not in (int, float) or not math.isfinite(start_seconds) or start_seconds < 0
+            or duration_seconds is not None and (type(duration_seconds) not in (int, float)
+                or not math.isfinite(duration_seconds) or duration_seconds <= 0)):
+        raise HTTPException(400, "The saved video section is invalid")
+    return _open_cached_preview(lambda: _get_open_video_preview(
+        opener(), identity, start_seconds=start_seconds, duration_seconds=duration_seconds))
+
+
+def _open_cached_preview(build):
     for _ in range(2):
-        path = get_server_video_preview(selection, start_seconds=start_seconds, duration_seconds=duration_seconds)
+        path = build()
         with _CACHE_LOCK:
             try:
                 descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
@@ -94,13 +110,17 @@ def get_server_video_preview(selection, *, start_seconds=0, duration_seconds=30)
             or type(duration_seconds) not in (int, float) or not math.isfinite(duration_seconds)
             or not .25 <= duration_seconds <= 30):
         raise HTTPException(400, 'Choose a preview start at zero or later and a length up to 30 seconds')
-    upload = open_server_video_preview(selection)
+    return _get_open_video_preview(open_server_video_preview(selection), selection,
+                                   start_seconds=start_seconds, duration_seconds=duration_seconds)
+
+
+def _get_open_video_preview(upload, selection, *, start_seconds, duration_seconds):
     acquired = False
     temporary = None
     try:
         info = os.fstat(upload.file.fileno())
-        identity = [2, selection, info.st_dev, info.st_ino, info.st_ctime_ns,
-                    float(start_seconds), float(duration_seconds)]
+        identity = [3, selection, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns,
+                    float(start_seconds), None if duration_seconds is None else float(duration_seconds)]
         key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
         CACHE_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
         target = CACHE_ROOT / (key + '.mp4')
@@ -127,13 +147,15 @@ def get_server_video_preview(selection, *, start_seconds=0, duration_seconds=30)
         input_path = f'/proc/self/fd/{upload.file.fileno()}' if os.name == 'posix' and Path('/proc/self/fd').is_dir() else 'pipe:0'
         command = [executable, '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
                    '-protocol_whitelist', 'file,pipe', '-threads', '2', '-filter_threads', '2', '-ss', str(offset), '-i', input_path,
-                   '-t', str(duration_seconds), '-map', '0:v:0', '-map', '0:a:0?',
+                   *(['-t', str(duration_seconds)] if duration_seconds is not None else []),
+                   '-map', '0:v:0', '-map', '0:a:0?',
                    '-vf', 'scale=640:360:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1,fps=24',
                    '-af', 'aresample=48000:async=1:first_pts=0', '-c:v', 'libx264', '-preset', 'ultrafast',
                    '-crf', '27', '-maxrate', '2M', '-bufsize', '4M', '-pix_fmt', 'yuv420p',
                    '-profile:v', 'baseline', '-level', '3.0', '-threads', '2',
                    '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-ar', '48000',
-                   '-map_metadata', '-1', '-movflags', '+faststart', str(temporary)]
+                   '-map_metadata', '-1', '-movflags', '+faststart',
+                   '-fs', str(MAX_CACHE_BYTES + 1024 * 1024), str(temporary)]
         kwargs = {'pass_fds': (upload.file.fileno(),)} if input_path.startswith('/proc/') else {'stdin': upload.file}
         try:
             result = subprocess.run(command, capture_output=True, timeout=90, **kwargs)
@@ -142,12 +164,20 @@ def get_server_video_preview(selection, *, start_seconds=0, duration_seconds=30)
         except OSError as exc:
             raise HTTPException(503, 'The video preview converter is unavailable') from exc
         upload.check_unchanged()
+        if temporary.is_file() and temporary.stat().st_size > MAX_CACHE_BYTES:
+            raise HTTPException(507, 'The original video is too large for a playback copy. Choose a shorter source section; no truncated preview was saved.')
         if result.returncode or not temporary.is_file() or temporary.stat().st_size < 512:
+            if b'No space left on device' in result.stderr:
+                raise HTTPException(507, 'There is not enough disk space to prepare this playback copy.')
             raise HTTPException(422, 'This section could not be previewed. The source may be unreadable or have no video here.')
         os.replace(temporary, target)
         temporary = None
         _prune(CACHE_ROOT, keep=target)
         return target
+    except OSError as exc:
+        if exc.errno == errno.ENOSPC:
+            raise HTTPException(507, 'There is not enough disk space to prepare this playback copy.') from exc
+        raise HTTPException(503, 'The video playback cache is unavailable. Retry playback.') from exc
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
