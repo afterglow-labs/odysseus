@@ -191,3 +191,113 @@ approval().checked=true;approval().onchange();await submit();
 assert.deepEqual(calls[1].body.jobs,[{id:'preview',revision:1}]);
 assert.deepEqual(calls[1].body.patch,{steps:6});
 ''')
+
+
+def test_history_snapshot_all_pages_chunk_progress_and_safe_retry_while_uploads_block_queue():
+    script = DOM.replace("family:'h3',", "family:'h3', historyFilter:{recipe:'seed_hunter',stage:'scout'},", 1)
+    run_js(script + r'''
+controls.setBlocked(true);
+assert.equal(find('delete').disabled,true);assert.equal(find('delete-history').disabled,false);
+let chunks=0, fail=true;
+handler=async(path,options)=>{
+ if(path==='/history/delete-preview')return{snapshot_id:'exact-selection',count:23,counts:{completed:20,failed:2,stopped:1},preserved_active:3};
+ if(path==='/history/delete'){
+   if(fail){fail=false;throw Error('Lost response')}
+   chunks++;
+   return chunks===1?{snapshot_id:'exact-selection',done:false,processed:10,total:23,deleted:10,pending:13,skipped:0,errors:[],preserved_active:3}
+    :{snapshot_id:'exact-selection',done:true,processed:23,total:23,deleted:22,pending:0,skipped:0,errors:[{id:'last',error:'Disk busy'}],preserved_active:3};
+ }
+};
+await find('delete-history').onclick();
+assert.deepEqual(calls[0],{path:'/history/delete-preview',body:{scope:'workflow',recipe:'seed_hunter',stage:'scout'}});
+assert.equal(find('confirm').disabled,false);assert.match(find('confirm').textContent,/23 finished/);
+assert.ok(elements.some(n=>String(n.textContent).includes('20 completed, 2 failed, 1 stopped')));
+await find('confirm').onclick();assert.match(find('confirm').textContent,/Retry/);
+const snapshot=calls.at(-1).body;assert.deepEqual(snapshot,{snapshot_id:'exact-selection',confirm:true});
+await find('confirm').onclick();
+assert.deepEqual(calls.slice(1).map(c=>c.body),[snapshot,snapshot,snapshot]);
+assert.match(find('confirm').textContent,/Retry failed/);assert.equal(reloads,1);
+assert.ok(elements.some(n=>String(n.textContent).includes('Disk busy')));
+handler=async()=>({snapshot_id:'exact-selection',done:true,processed:23,total:23,deleted:23,pending:0,skipped:0,errors:[],preserved_active:3});
+await find('confirm').onclick();assert.deepEqual(calls.at(-1).body,{...snapshot,retry_errors:true});
+assert.equal(reloads,2);assert.ok(elements.some(n=>String(n.textContent).includes('23 finished jobs deleted')));
+assert.equal(find('delete-history').disabled,false);
+''')
+
+
+def test_history_zero_count_is_visible_and_never_deletes_or_expands_scope():
+    run_js(DOM + r'''
+handler=async()=>({snapshot_id:'none',count:0,preserved_active:8,counts:{}});
+const scope=elements.find(n=>n.attributes['aria-label']==='Job history deletion scope');scope.value='all';
+await find('delete-history').onclick();assert.deepEqual(calls,[{path:'/history/delete-preview',body:{scope:'all'}}]);
+assert.ok(elements.some(n=>String(n.textContent).includes('No finished jobs to delete')));
+assert.ok(elements.some(n=>String(n.textContent).includes('8 queued or running jobs kept')));
+''')
+
+
+def test_queued_delete_shows_pending_then_real_receipt_and_keeps_failed_confirmation_actionable():
+    run_js(DOM + r'''
+let resolve;handler=()=>new Promise(r=>{resolve=r});
+find('delete').onclick();const pending=find('confirm').onclick();
+assert.match(find('confirm').textContent,/Deleting queued jobs/);assert.equal(find('confirm').disabled,true);
+assert.equal(find('keep').disabled,true);resolve({deleted:200,queue:{...queue,queued:0}});await pending;
+assert.ok(elements.some(n=>String(n.textContent).includes('200 jobs deleted')));
+controls.update(queue);handler=async()=>{throw Error('Server unavailable')};
+find('delete').onclick();await find('confirm').onclick();assert.match(find('confirm').textContent,/Retry deleting/);
+assert.equal(find('confirm').disabled,false);assert.ok(elements.some(n=>n.textContent==='Server unavailable'));
+''')
+
+
+def test_history_busy_response_keeps_exact_selection_for_safe_resume():
+    run_js(DOM + r'''
+let busy=true;
+handler=async(path)=>{
+ if(path==='/history/delete-preview')return{snapshot_id:'busy-selection',count:12,preserved_active:1,counts:{failed:12}};
+ if(busy){busy=false;throw Object.assign(Error('Deletion is already in progress. Retry shortly.'),{status:423});}
+ return{snapshot_id:'busy-selection',done:true,deleted:12,processed:12,total:12,pending:0,skipped:0,errors:[],preserved_active:1};
+};
+await find('delete-history').onclick();await find('confirm').onclick();
+assert.match(find('confirm').textContent,/Retry job history deletion/);
+assert.ok(elements.some(n=>String(n.textContent).includes('Retry shortly')));
+await find('confirm').onclick();
+assert.deepEqual(calls.filter(c=>c.path==='/history/delete').map(c=>c.body),[
+ {snapshot_id:'busy-selection',confirm:true},{snapshot_id:'busy-selection',confirm:true}]);
+assert.equal(calls.filter(c=>c.path==='/history/delete-preview').length,1);
+''')
+
+
+def test_queued_zero_receipt_explains_where_canceled_jobs_can_be_deleted():
+    run_js(DOM + r'''
+handler=async()=>({deleted:0,message:'No queued jobs to delete. Cancelled jobs are stopped history; use Delete all job history to remove those jobs and their files.',queue:{...queue,queued:0}});
+find('delete').onclick();await find('confirm').onclick();
+assert.ok(elements.some(n=>String(n.textContent).includes('0 jobs deleted. No queued jobs to delete.')));
+assert.ok(elements.some(n=>String(n.textContent).includes('use Delete all job history')));
+''')
+
+
+def test_history_malformed_success_never_claims_deletion_or_discards_snapshot():
+    run_js(DOM + r'''
+handler=async(path)=>path==='/history/delete-preview'?{snapshot_id:'incomplete-selection',count:2,preserved_active:1,counts:{failed:2}}:{};
+await find('delete-history').onclick();await find('confirm').onclick();
+assert.ok(elements.some(n=>String(n.textContent).includes('incomplete deletion receipt')));
+assert.match(find('confirm').textContent,/Retry job history deletion/);assert.equal(reloads,0);
+assert.ok(!elements.some(n=>String(n.textContent).includes('0 finished jobs deleted')));
+handler=async()=>({snapshot_id:'incomplete-selection',done:true,deleted:2,skipped:0,errors:[],processed:2,total:2,pending:0,preserved_active:1});
+await find('confirm').onclick();assert.equal(reloads,1);
+assert.deepEqual(calls.filter(c=>c.path==='/history/delete').map(c=>c.body),[
+ {snapshot_id:'incomplete-selection',confirm:true},{snapshot_id:'incomplete-selection',confirm:true}]);
+''')
+
+
+def test_history_stalled_chunk_stops_loop_and_keeps_reviewed_selection():
+    run_js(DOM + r'''
+handler=async(path)=>path==='/history/delete-preview'?{snapshot_id:'stalled-selection',count:23,preserved_active:1,counts:{failed:23}}
+ :{snapshot_id:'stalled-selection',done:false,deleted:10,skipped:0,errors:[],processed:10,total:23,pending:13,preserved_active:1};
+await find('delete-history').onclick();await find('confirm').onclick();
+assert.ok(elements.some(n=>String(n.textContent).includes('stopped making progress')));
+assert.equal(calls.filter(c=>c.path==='/history/delete').length,2);assert.equal(reloads,0);
+assert.match(find('confirm').textContent,/Retry job history deletion/);
+handler=async()=>({snapshot_id:'stalled-selection',done:true,deleted:23,skipped:0,errors:[],processed:23,total:23,pending:0,preserved_active:1});
+await find('confirm').onclick();assert.equal(reloads,1);
+assert.equal(calls.at(-1).body.snapshot_id,'stalled-selection');
+''')

@@ -274,6 +274,17 @@
 .video-queue-targets summary { cursor:pointer; }
 .video-queue-targets ul { max-height:170px; overflow:auto; overflow-wrap:anywhere; padding-left:20px; }
 .video-queue-message { white-space:pre-wrap; overflow-wrap:anywhere; }
+.video-history-actions { flex:1 1 100%; min-width:0; }
+.video-history-actions .h3-video-job-actions { margin:4px 0; }
+.video-history-actions .cookbook-field-input { flex:1 1 200px; min-width:0; max-width:320px; }
+.video-history-actions button { min-height:40px; white-space:normal; }
+.video-queue-confirmation { box-sizing:border-box; width:min(560px,calc(100vw - 32px)); max-height:calc(100dvh - 32px); padding:24px; border:1px solid var(--border,#544c60); border-radius:12px; background:var(--panel,#25232c); color:var(--fg,#eee); box-shadow:0 16px 70px #0009; overflow:auto; overflow-wrap:anywhere; }
+.video-queue-confirmation::backdrop { background:#0009; }
+.video-queue-confirmation h3 { margin:0 0 16px; }
+.video-queue-confirmation p { line-height:1.6; }
+.video-queue-confirmation .h3-video-error { white-space:pre-wrap; max-height:30dvh; overflow:auto; }
+.video-queue-confirmation .h3-video-job-actions { justify-content:flex-end; margin-top:20px; }
+.video-queue-confirmation button { min-height:44px; white-space:normal; }
 @media (max-width:600px) {
   .video-queue-fields { grid-template-columns:minmax(0,1fr); }
   .video-queue-panel button { min-height:40px; white-space:normal; }

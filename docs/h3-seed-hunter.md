@@ -31,6 +31,13 @@ when played. Page changes do not change a selected refinement or the rendering
 queue; refresh the list to return to the newest jobs. An opened iOS job remains
 available independently of the current results page.
 
+**Delete all job history**, beside **Refresh jobs**, removes finished job
+records and their saved inputs, candidate previews, latents, final videos and
+Gallery entries after reviewing and confirming the count. Its scope covers
+every page of this workflow, or all your H3 and BFS workflows when selected.
+Running and queued jobs are preserved. Progress and individual errors remain
+visible, and a retry uses the same reviewed selection.
+
 Original input videos are playable directly above the generated previews, in
 both classic and Pipeline job cards and the iPhone job detail. Each player
 shows its filename and reference number; multiple videos remain separate and

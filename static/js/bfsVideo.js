@@ -562,7 +562,7 @@ export function showBfsVideo({ preferred = null, layout = 'classic' } = {}, anch
   form.addEventListener('change', () => { save(); updateReady(); });
   refresh.onclick = () => loadInventory(); refreshJobs.onclick = () => loadJobs({ reset: true });
   const onKey = event => {
-    if (document.querySelector('.video-workflow-export-overlay, .video-server-files-overlay')) return;
+    if (document.querySelector('.video-queue-confirmation[open], .video-workflow-export-overlay, .video-server-files-overlay')) return;
     if (event.key === 'Escape') {
       event.preventDefault(); event.stopImmediatePropagation();
       const confirming = [...jobNodes.values()].find(nodes => !nodes.deletion.hidden);
@@ -623,7 +623,7 @@ export function showBfsVideo({ preferred = null, layout = 'classic' } = {}, anch
     onChange: () => { if (!closed) { editRevision++; updateReady(); } },
   });
   queueControls = createVideoQueueControls({
-    container: queueContainer, family: 'bfs', request, reload: loadJobs, onChange: updateReady, isClosed: () => closed,
+    container: queueContainer, historyContainer: jobsHeader, family: 'bfs', request, reload: loadJobs, onChange: updateReady, isClosed: () => closed,
     getFields: savedConfig => {
       const descriptors = [videoQueueField('prompt', 'Prompt', prompt), videoQueueField('gpu', 'GPU', gpu)];
       const definitions = new Map(), componentDefinitions = new Map();

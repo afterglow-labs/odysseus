@@ -1107,7 +1107,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic' } = {}, 
   form.addEventListener('change', () => { save(); updateReady(); renderGpuUsage(); });
   refresh.onclick = () => loadInventory(); refreshJobs.onclick = () => loadJobs({ reset: true });
   const onKey = event => {
-    if (document.querySelector('.video-workflow-export-overlay, .video-server-files-overlay, .h3-lora-library-overlay')) return;
+    if (document.querySelector('.video-queue-confirmation[open], .video-workflow-export-overlay, .video-server-files-overlay, .h3-lora-library-overlay')) return;
     if (event.key === 'Escape') {
       event.preventDefault(); event.stopImmediatePropagation();
       const confirming = [...jobNodes.values()].find(nodes => !nodes.deletion.hidden);
@@ -1176,7 +1176,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic' } = {}, 
     onChange: () => { if (!closed) { editRevision++; updateReady(); } },
   });
   queueControls = createVideoQueueControls({
-    container: queueContainer, family: 'h3', request, reload: loadJobs, onChange: updateReady, isClosed: () => closed,
+    container: queueContainer, historyContainer: jobsHeader, family: 'h3', request, reload: loadJobs, onChange: updateReady, isClosed: () => closed,
     getFields: (savedConfig, savedJob) => [...SETTINGS, 'prompt'].filter(key => key !== 'mode').map(key => {
       let control = fields[key];
       const label = control.closest('label')?.querySelector('span')?.textContent || (key === 'prompt' ? 'Prompt' : key.replaceAll('_', ' '));

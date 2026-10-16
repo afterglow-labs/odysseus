@@ -31,12 +31,13 @@ export function videoQueueField(key, label, control, numeric = false) {
   return { key, label, control, numeric };
 }
 
-export function createVideoQueueControls({ container, family, request, getFields, reload, onChange = () => {}, isClosed = () => false, filterJobs = () => true, targetName = null }) {
+export function createVideoQueueControls({ container, family, request, getFields, reload, onChange = () => {}, isClosed = () => false, filterJobs = () => true, targetName = null, historyContainer = null, historyFilter = {} }) {
   const familyName = family === 'h3' ? 'H3' : 'BFS';
   const selectedName = targetName || familyName;
   let queue = null, busy = false, blocked = false, dead = false, mode = null, targets = [], rows = [];
   let requestKey = '', requestId = '', selectionVersion = 0, retryRerun = false;
   let singleJob = null, singleSubmit = null;
+  let historySnapshot = null, historyRetryErrors = false, historyOperation = false, confirmationTrigger = null;
   const panel = el('section', 'video-queue-panel'); panel.setAttribute('aria-label', `${familyName} queue controls`);
   const heading = el('div', 'h3-video-toolbar'), title = el('h3', '', 'Queue controls');
   const pause = button('Pause queue', 'pause'); heading.append(title, pause); panel.appendChild(heading);
@@ -51,9 +52,21 @@ export function createVideoQueueControls({ container, family, request, getFields
   const edit = button('Edit queued parameters', 'edit'), rerun = button('Run again with new parameters', 'rerun'); edits.append(edit, rerun); panel.appendChild(edits);
   const message = el('p', 'h3-video-muted video-queue-message'); message.setAttribute('role', 'status'); message.hidden = true; panel.appendChild(message);
   const errors = el('p', 'h3-video-error'); errors.hidden = true; errors.setAttribute('role', 'alert'); panel.appendChild(errors);
-  const confirmation = el('section', 'h3-video-delete-confirmation'); confirmation.hidden = true;
-  const confirmationText = el('p'), confirmationActions = el('div', 'h3-video-job-actions');
-  const keep = button('Keep queued jobs', 'keep'), confirm = button('Confirm', 'confirm'); confirmationActions.append(keep, confirm); confirmation.append(confirmationText, confirmationActions); panel.appendChild(confirmation);
+  const history = el('section', 'video-history-actions'); history.setAttribute('aria-label', 'Delete job history');
+  const historyActions = el('div', 'h3-video-job-actions');
+  const historyScope = el('select', 'cookbook-field-input'); historyScope.setAttribute('aria-label', 'Job history deletion scope');
+  historyScope.add(new Option(`${selectedName} job history`, 'workflow')); historyScope.add(new Option('All H3 and BFS job history', 'all'));
+  const deleteHistory = button('Delete all job history', 'delete-history'); deleteHistory.classList.add('h3-video-delete-button');
+  historyActions.append(historyScope, deleteHistory);
+  const historyMessage = el('p', 'h3-video-muted video-queue-message'); historyMessage.hidden = true; historyMessage.setAttribute('role', 'status');
+  const historyError = el('p', 'h3-video-error'); historyError.hidden = true; historyError.setAttribute('role', 'alert');
+  history.append(historyActions, historyMessage, historyError); (historyContainer || panel).appendChild(history);
+  const confirmation = el('dialog', 'video-queue-confirmation'); confirmation.hidden = true;
+  const confirmationTitle = el('h3'), confirmationText = el('p'), confirmationActions = el('div', 'h3-video-job-actions');
+  const confirmationProgress = el('p', 'h3-video-muted video-queue-message'); confirmationProgress.hidden = true; confirmationProgress.setAttribute('role', 'status');
+  const confirmationError = el('p', 'h3-video-error'); confirmationError.hidden = true; confirmationError.setAttribute('role', 'alert');
+  const keep = button('Keep queued jobs', 'keep'), confirm = button('Confirm', 'confirm'); confirmationActions.append(keep, confirm); confirmation.append(confirmationText, confirmationActions); (document.body || panel).appendChild(confirmation);
+  confirm.classList.add('h3-video-delete-button'); confirmation.replaceChildren(confirmationTitle, confirmationText, confirmationProgress, confirmationError, confirmationActions);
   const editor = el('form', 'video-queue-editor'); editor.hidden = true;
   const editorTitle = el('h3'); editor.appendChild(editorTitle);
   const editorHelp = el('p', 'h3-video-muted'); editor.appendChild(editorHelp);
@@ -74,19 +87,30 @@ export function createVideoQueueControls({ container, family, request, getFields
   const abandon = button('Close parameter editor', 'close-editor'), apply = button('Apply', 'apply'); apply.type = 'submit';
   editActions.append(abandon, apply); editor.appendChild(editActions); panel.appendChild(editor); container.appendChild(panel);
   function alive() { return !dead && !isClosed(); }
-  function error(text = '') { errors.textContent = text; errors.hidden = !text; }
-  function notice(text = '') { message.textContent = text; message.hidden = !text; }
+  function error(text = '') {
+    errors.textContent = text; errors.hidden = !text;
+    confirmationError.textContent = text; confirmationError.hidden = !text;
+    if (historyOperation) { historyError.textContent = text; historyError.hidden = !text; }
+  }
+  function notice(text = '') {
+    message.textContent = text; message.hidden = !text;
+    confirmationProgress.textContent = text; confirmationProgress.hidden = !text;
+    if (historyOperation) { historyMessage.textContent = text; historyMessage.hidden = !text; }
+  }
   function count() { return Number(scope.value === 'all' ? queue?.total_queued : queue?.queued) || 0; }
   function render() {
     const locked = busy || blocked;
     panel.setAttribute('aria-busy', String(busy));
     pause.textContent = queue?.paused ? 'Resume queue' : 'Pause queue'; pause.disabled = locked || !queue;
     pause.setAttribute('aria-pressed', String(!!queue?.paused));
-    if (queue) state.textContent = `${queue.paused ? 'Paused' : 'Queue running'} · ${queue.queued || 0} ${familyName} queued · ${queue.total_queued || 0} queued across H3 and BFS · ${queue.total_running || 0} rendering`;
+    if (queue) state.textContent = `${queue.paused ? 'Paused' : 'Queue running'} · ${queue.queued || 0} ${familyName} queued · ${queue.total_queued || 0} queued across H3 and BFS · ${queue.total_running || 0} rendering${blocked ? ' · Queue changes are unavailable while another workflow operation is in progress.' : ''}`;
     scope.disabled = locked || !confirmation.hidden;
+    historyScope.disabled = deleteHistory.disabled = busy || !!mode || !confirmation.hidden;
+    history.setAttribute('aria-busy', String(busy && historyOperation));
+    confirmation.setAttribute('aria-busy', String(busy));
     cancel.disabled = remove.disabled = locked || !!mode || !queue || !count();
     edit.disabled = locked || !!mode || !queue?.queued; rerun.disabled = locked || !!mode;
-    keep.disabled = confirm.disabled = locked;
+    keep.disabled = confirm.disabled = busy || (blocked && !historyOperation);
     targetScope.disabled = refreshSelection.disabled = locked || retryRerun; abandon.disabled = busy;
     approve.disabled = locked || !targets.length;
     for (const row of rows) {
@@ -100,16 +124,16 @@ export function createVideoQueueControls({ container, family, request, getFields
       || ((mode === 'edit' || (singleJob && !retryRerun)) && !rows.some(row => row.check.checked));
   }
   function updateQueue(value) { if (value && typeof value.paused === 'boolean') queue = value; render(); }
-  async function run(operation) {
-    if (busy || blocked || !alive()) return;
+  async function run(operation, allowBlocked = false) {
+    if (busy || (blocked && !allowBlocked) || !alive()) return;
     busy = true; error(); render(); onChange();
     try { return await operation(); }
     catch (e) { if (alive()) error(e.message || String(e)); return { error: e.message || String(e) }; }
-    finally { busy = false; if (alive()) { render(); onChange(); } }
+    finally { busy = false; if (alive()) { render(); onChange(); if (!confirmation.hidden && confirmationProgress.hidden) keep.focus(); } }
   }
   function receipt(result, verb) {
     const changed = Number(result.succeeded ?? result.updated ?? result.rerun ?? result.canceled ?? result.deleted ?? 0);
-    notice(`${changed} ${changed === 1 ? 'job' : 'jobs'} ${verb}.`);
+    notice(`${changed} ${changed === 1 ? 'job' : 'jobs'} ${verb}.${result.message ? ` ${result.message}` : ''}`);
     const failed = Number(result.failed || 0), details = result.errors || [];
     const texts = Array.isArray(details) ? details.map(item => typeof item === 'string' ? item : `${item.id || item.job_id || 'Job'}: ${item.error || item.message || item.reason || 'Could not complete action'}`) : [String(details)];
     if (failed || texts.length) error(`${failed || texts.length} ${failed === 1 ? 'job was' : 'jobs were'} not changed.\n${texts.join('\n')}`);
@@ -122,20 +146,94 @@ export function createVideoQueueControls({ container, family, request, getFields
   });
   function confirmAction(action) {
     if (busy || blocked) return;
+    historyOperation = false; historySnapshot = null; historyRetryErrors = false;
     const noun = scope.value === 'all' ? 'H3 and BFS' : familyName;
-    confirmation.hidden = false; confirmation.dataset.action = action;
+    confirmation.dataset.action = action;
+    confirmationTitle.textContent = action === 'delete' ? 'Delete queued jobs?' : 'Cancel queued jobs?';
     confirmationText.textContent = action === 'delete'
       ? `Permanently delete all ${noun} jobs that are still queued (currently ${count()}), including their saved input files and prompts? This cannot be undone. Running and finished jobs are kept.`
       : `Cancel all ${noun} jobs that are still queued (currently ${count()})? Their records and inputs are kept so you can run them again. The current render continues.`;
     confirm.textContent = action === 'delete' ? 'Delete queued jobs permanently' : 'Cancel all queued jobs';
-    render(); keep.focus();
+    keep.textContent = 'Keep queued jobs'; openConfirmation(action === 'delete' ? remove : cancel);
   }
+  function openConfirmation(trigger) {
+    confirmationTrigger = trigger; error(); notice(); confirmation.hidden = false;
+    confirmation.setAttribute('aria-label', confirmationTitle.textContent);
+    confirmation.showModal?.(); render(); keep.focus();
+  }
+  function closeConfirmation() {
+    confirmation.close?.(); confirmation.hidden = true; render(); confirmationTrigger?.focus();
+  }
+  confirmation.addEventListener('cancel', event => { event.preventDefault(); if (!busy) closeConfirmation(); });
+  const onConfirmationKey = event => {
+    if (!confirmation.hidden && event.key === 'Escape') {
+      event.preventDefault(); event.stopImmediatePropagation(); if (!busy) closeConfirmation();
+    }
+  };
+  // Run before the application's document-level Escape arbiter, which otherwise
+  // dismisses the underlying workflow and loses its draft.
+  globalThis.window?.addEventListener('keydown', onConfirmationKey, true);
+  deleteHistory.onclick = () => run(async () => {
+    historyOperation = true; historyRetryErrors = false; historySnapshot = null; error(); notice('Counting finished jobs across every page…');
+    const body = historyScope.value === 'all' ? { scope: 'all' } : { scope: 'workflow', ...historyFilter };
+    const snapshot = await post('/history/delete-preview', body); if (!alive()) return;
+    if (!snapshot.snapshot_id || !Number.isInteger(snapshot.count) || snapshot.count < 0) throw new Error('Could not confirm which jobs would be deleted. Refresh jobs and try again.');
+    if (!snapshot.count) { notice(`No finished jobs to delete in this scope. ${Number(snapshot.preserved_active || 0)} queued or running jobs kept.`); return; }
+    historySnapshot = snapshot; confirmation.dataset.action = 'history'; confirmationTitle.textContent = 'Delete all job history?';
+    const counts = snapshot.counts || {}, scopeName = historyScope.value === 'all' ? 'all H3 and BFS workflows' : selectedName;
+    confirmationText.textContent = `Permanently delete ${snapshot.count} finished ${snapshot.count === 1 ? 'job' : 'jobs'} from ${scopeName}, across every page? ${Number(counts.completed || 0)} completed, ${Number(counts.failed || 0)} failed, ${Number(counts.stopped || 0)} stopped. This removes their saved inputs, previews, output videos and gallery entries. This cannot be undone. ${Number(snapshot.preserved_active || 0)} queued or running jobs are kept.`;
+    keep.textContent = 'Keep job history'; confirm.textContent = `Delete ${snapshot.count} finished jobs permanently`;
+    openConfirmation(deleteHistory);
+  }, true);
   cancel.onclick = () => confirmAction('cancel'); remove.onclick = () => confirmAction('delete');
-  keep.onclick = () => { confirmation.hidden = true; render(); };
+  keep.onclick = () => { if (!busy) closeConfirmation(); };
   confirm.onclick = () => run(async () => {
-    const action = confirmation.dataset.action, result = await post(`/queue/${action}`, { scope: scope.value }); if (!alive()) return;
-    confirmation.hidden = true; receipt(result, action === 'delete' ? 'deleted' : 'canceled'); await reload();
-  });
+    if (confirmation.dataset.action === 'history') {
+      if (!historySnapshot) throw new Error('The deletion selection is unavailable. Close this confirmation and select Delete all job history again.');
+      const snapshot = historySnapshot; confirm.textContent = 'Deleting job history…'; keep.textContent = 'Close';
+      notice(`Deleting finished job history… 0 / ${snapshot.count} checked. Queued and running jobs are kept.`);
+      try {
+        let retryErrors = historyRetryErrors, previousProcessed = 0;
+        while (alive()) {
+          historyRetryErrors = false;
+          const result = await post('/history/delete', { snapshot_id: snapshot.snapshot_id, confirm: true, ...(retryErrors ? { retry_errors: true } : {}) });
+          retryErrors = false; if (!alive()) return;
+          if (!result || result.snapshot_id !== snapshot.snapshot_id || result.total !== snapshot.count
+            || !['total', 'processed', 'pending', 'deleted', 'skipped'].every(key => Number.isInteger(result[key]) && result[key] >= 0)
+            || typeof result.done !== 'boolean' || !Array.isArray(result.errors)
+            || !result.errors.every(item => item && typeof item.id === 'string' && typeof item.error === 'string')
+            || result.processed + result.pending !== result.total || result.done !== (result.pending === 0)
+            || result.deleted + result.skipped + result.errors.length !== result.processed) {
+            throw new Error('The server returned an incomplete deletion receipt. Retry this same selection to check its progress safely.');
+          }
+          const { deleted, skipped, errors: details, processed } = result;
+          if (!result.done && processed <= previousProcessed) throw new Error('Deletion stopped making progress. Retry this same selection shortly.');
+          previousProcessed = processed;
+          notice(`${deleted} finished ${deleted === 1 ? 'job' : 'jobs'} deleted · ${processed} / ${result.total} checked.${skipped ? ` ${skipped} changed or unavailable jobs skipped.` : ''} ${Number(result.preserved_active ?? snapshot.preserved_active ?? 0)} queued or running jobs kept.`);
+          if (!result.done) continue;
+          historyRetryErrors = details.length > 0;
+          if (historyRetryErrors) {
+            error(`${details.length} jobs could not be deleted. Retry failed deletions, or close and try again later.\n${details.map(item => `${item.id || 'Job'}: ${item.error || 'Could not delete job'}`).join('\n')}`);
+            confirm.textContent = 'Retry failed deletions';
+          } else { historySnapshot = null; closeConfirmation(); }
+          await reload(); return;
+        }
+      } catch (failure) {
+        confirm.textContent = 'Retry job history deletion';
+        notice('Deletion was interrupted. Retry this same selection safely; jobs already deleted will not be deleted again.');
+        throw failure;
+      }
+      return;
+    }
+    historyOperation = false;
+    const label = confirmation.dataset.action === 'delete' ? 'Deleting queued jobs…' : 'Canceling queued jobs…'; notice(label); confirm.textContent = label;
+    const action = confirmation.dataset.action;
+    let result;
+    try { result = await post(`/queue/${action}`, { scope: scope.value }); }
+    catch (failure) { confirm.textContent = action === 'delete' ? 'Retry deleting queued jobs' : 'Retry canceling queued jobs'; throw failure; }
+    if (!alive()) return;
+    closeConfirmation(); receipt(result, action === 'delete' ? 'deleted' : 'canceled'); await reload();
+  }, historyOperation);
   function buildFields(savedConfig = null, savedJob = null) {
     rows = []; fieldGrid.replaceChildren();
     const seen = new Set();
@@ -188,7 +286,7 @@ export function createVideoQueueControls({ container, family, request, getFields
   function closeEditor() { selectionVersion++; retryRerun = false; requestKey = ''; requestId = ''; singleJob = null; singleSubmit = null; mode = null; targets = []; editor.hidden = true; approve.checked = false; render(); onChange(); }
   function openEditor(action) {
     run(async () => {
-      mode = action; editor.hidden = false; confirmation.hidden = true; notice(); targetScope.value = 'finished'; buildFields();
+      mode = action; editor.hidden = false; closeConfirmation(); notice(); targetScope.value = 'finished'; buildFields();
       approveLabel.hidden = false; refreshSelection.hidden = false; targetNames.hidden = false;
       fieldHelp.textContent = 'Check only the parameters to change. Values start from your current draft or workflow defaults. Each job keeps its other settings, workflow, and saved images, videos and audio.';
       editorTitle.textContent = action === 'edit' ? `Edit queued ${selectedName} jobs` : `Run ${selectedName} jobs again`;
@@ -205,7 +303,7 @@ export function createVideoQueueControls({ container, family, request, getFields
       const job = result.jobs?.filter(filterJobs).find(item => item.id === id);
       if (!job || !Number.isInteger(job.revision) || !job.config || !['completed', 'failed', 'stopped'].includes(job.status)) throw new Error('This finished job is unavailable. Refresh jobs and retry.');
       singleJob = job; singleSubmit = submit; mode = 'rerun'; targets = [job]; retryRerun = false;
-      editor.hidden = false; confirmation.hidden = true; notice(); updateQueue(result.queue);
+      editor.hidden = false; closeConfirmation(); notice(); updateQueue(result.queue);
       targetLabel.hidden = approveLabel.hidden = refreshSelection.hidden = targetNames.hidden = true;
       editorTitle.textContent = `Edit & rerun · ${job.source_name || job.id}`;
       editorHelp.textContent = 'These are this job’s saved parameters. Edit them to queue a new copy; its existing result and your current draft stay unchanged.';
@@ -258,7 +356,7 @@ export function createVideoQueueControls({ container, family, request, getFields
     get busy() { return busy; }, get editing() { return !!mode; }, get blocked() { return blocked; },
     update(value) { if (!busy) updateQueue(value); },
     setBlocked(value) { blocked = !!value; render(); },
-    destroy() { dead = true; selectionVersion++; },
+    destroy() { dead = true; selectionVersion++; globalThis.window?.removeEventListener('keydown', onConfirmationKey, true); confirmation.close?.(); confirmation.remove?.(); },
     openRerun,
   };
 }

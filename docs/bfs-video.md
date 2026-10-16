@@ -28,6 +28,12 @@ shared with your H3 jobs and allows the current render to finish. Cancel keeps
 records and inputs; delete permanently removes the waiting jobs after confirmation.
 Cancel/delete can target just BFS or all your H3 and BFS queued jobs.
 
+**Delete all job history**, beside **Refresh jobs**, reviews completed, failed
+and cancelled jobs across every page. Choose this workflow or all your H3 and
+BFS workflows before confirming. Saved input copies, previews, final videos and
+Gallery entries are removed, with progress and any failures displayed. Running
+and queued jobs, original source files and installed models remain available.
+
 Bulk editing changes only checked parameters and retains each job's workflow,
 inputs and queue position. Parameters and components must be valid for every
 selected workflow. Rerunning creates new copies of finished, queued or all BFS

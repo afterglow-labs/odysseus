@@ -39,6 +39,17 @@ parameters and job records for rerunning. Delete cancels the waiting jobs and
 permanently removes their records and files after confirmation. Neither action
 changes a job that has already started rendering.
 
+**Delete all job history**, beside **Refresh jobs**, removes completed, failed
+and cancelled jobs across every history page. Choose the current workflow or
+all your H3 and BFS workflows, review the exact count, then confirm. Deletion
+includes saved input copies, generated previews, latents, final videos and their
+Gallery entries. Original source files on E: or F: and installed models remain
+available; running and queued jobs keep their place.
+
+The confirmation shows deletion progress and the result. An interrupted request
+can resume the same reviewed selection, and individual failures can be retried.
+Jobs created or finished after that selection are kept for a later review.
+
 **Edit queued parameters** updates the selected parameters on every queued job
 in this panel. Check each parameter you want to change; unchecked values, input
 files, workflow modes and queue positions stay as saved. Pause first if you want
