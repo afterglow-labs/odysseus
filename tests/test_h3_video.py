@@ -78,6 +78,19 @@ def test_inventory_discovers_nested_hub_and_linked_vae_without_gguf_or_remote_ro
     assert all(len(c["id"]) == 32 for c in components)
 
 
+def test_discovery_accepts_suffix_named_adapters(tmp_path):
+    directory = tmp_path / "models" / "loras"
+    expected = {"Anime2Realsim__H3.safetensors", "Style_h3.v2.safetensors",
+                "H3.safetensors", "H3-Person-Remover-V1.safetensors",
+                "h3-realism-people-t2v-i2v-r2v.safetensors"}
+    for name in expected | {"Style_h30.safetensors", "Style_h3x.safetensors", "Other.safetensors"}:
+        weights(directory / name, lora=True)
+    (directory / "Anime2Realsim__H3.safetensors:Zone.Identifier").write_text("Windows metadata")
+    components = h3.discover_components([directory])
+    assert {item["name"] for item in components} == expected
+    assert all(item["role"] == "lora" for item in components)
+
+
 @pytest.mark.parametrize("change", [
     {"model": "/etc/passwd"}, {"encoder": {}}, {"mode": []}, {"sampler": {}},
     {"scheduler": []}, {"reference_size": []}, {"gpu": 0}, {"width": 961},

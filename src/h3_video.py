@@ -194,10 +194,11 @@ def discover_components(roots):
                 if not name.lower().endswith(".safetensors"):
                     continue
                 profile = read_profile(path)
-                if not (profile or control or re.search(r"minimax.*h3|(?:/|_)h3(?:/|_)", text)):
+                named_h3 = bool(re.search(r"minimax.*h3|(?:^|[/_])h3(?:[/_.]|$)", text))
+                if not (profile or control or named_h3):
                     continue
                 adapter, _ = _safetensors_kind(path)
-                if not (profile and adapter or control or re.search(r"minimax.*h3|(?:/|_)h3(?:/|_)", text)):
+                if not (profile and adapter or control or named_h3):
                     continue
                 try:
                     resolved = path.resolve(strict=True)
