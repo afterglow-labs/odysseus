@@ -26,6 +26,15 @@ candidates does not triple it. The seconds control applies immediately and
 shows the supported frame length actually used (for example, requesting
 4 seconds selects 107 frames, about 4.46 seconds).
 
+On iOS, **H3 Seed Hunter → Preview settings** includes **Preview aspect ratio**
+and **Preview megapixels**. Choose a ratio and size, then use **Apply preview
+size** to update width and height. The eight presets match desktop, using
+1,048,576 pixels per megapixel and dimensions rounded to multiples of 32.
+Manual dimensions and imported drafts stay as saved until you apply a size.
+The final refinement has separate size controls and starts from the selected
+candidate's actual dimensions. Changing preview size or seconds does not
+rewrite an already selected candidate's final settings.
+
 Saved jobs are paged in groups of 10 on desktop and iOS. Candidate videos load
 when played. Page changes do not change a selected refinement or the rendering
 queue; refresh the list to return to the newest jobs. An opened iOS job remains
