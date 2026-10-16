@@ -24,6 +24,8 @@ def wait_for(read, predicate, timeout=15):
 
 @pytest.fixture
 def queue(tmp_path, monkeypatch):
+    from src import video_preview_proxy
+    monkeypatch.setattr(video_preview_proxy, "CACHE_ROOT", tmp_path / "video_previews")
     monkeypatch.setenv("DATABASE_URL", "sqlite:///" + str(tmp_path / "gallery.db"))
     monkeypatch.setenv("ODYSSEUS_DATA_DIR", str(tmp_path / "data"))
     worker = tmp_path / "fake_video_worker.py"

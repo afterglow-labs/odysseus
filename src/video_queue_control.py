@@ -212,4 +212,8 @@ def cancel_queued(manager, owner, targets=None, *, delete=False, scope="family")
             row.update(deleted=True)
         except (OSError, RuntimeError, ValueError) as exc:
             row.update(ok=False, error=h3._redact(exc))
-    return _receipt(results, manager, owner)
+    receipt = _receipt(results, manager, owner)
+    if delete and not results:
+        receipt["message"] = ("No queued jobs to delete. Cancelled jobs are stopped history; "
+                              "use Delete all job history to remove those jobs and their files.")
+    return receipt

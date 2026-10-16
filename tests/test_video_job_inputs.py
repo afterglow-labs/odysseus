@@ -157,6 +157,21 @@ def test_edit_during_conversion_rejects_old_reference_and_closes_handle(saved, m
     assert handles[0].closed
 
 
+def test_deleted_job_cannot_republish_an_inflight_playback_copy(saved, monkeypatch):
+    _, directory, _ = saved
+    original_run = proxy.subprocess.run
+    def delete_during_conversion(command, **kwargs):
+        result = original_run(command, **kwargs)
+        if '-i' in command:
+            proxy.delete_owned_previews(directory.name)
+        return result
+    monkeypatch.setattr(proxy.subprocess, 'run', delete_during_conversion)
+    reply = request(saved)
+    assert reply.status_code == 404
+    assert not list(proxy.CACHE_ROOT.glob('*.mp4'))
+    assert (directory / 'source.mkv').exists()
+
+
 @pytest.mark.parametrize('mutation', ['missing', 'symlink', 'outside', 'directory'])
 def test_missing_and_escaped_saved_files_fail_without_serving_cached_private_data(saved, tmp_path, mutation):
     _, directory, _ = saved

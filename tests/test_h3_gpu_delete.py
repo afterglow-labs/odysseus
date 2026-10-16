@@ -21,6 +21,8 @@ from src.bfs_video import BFSJobManager
 
 @pytest.fixture
 def db(tmp_path, monkeypatch):
+    from src import video_preview_proxy
+    monkeypatch.setattr(video_preview_proxy, "CACHE_ROOT", tmp_path / "video_previews")
     engine = create_engine("sqlite:///" + str(tmp_path / "gallery.db"), connect_args={"check_same_thread": False})
     database.Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine)

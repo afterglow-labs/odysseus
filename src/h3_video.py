@@ -44,6 +44,11 @@ DEFAULTS = {"mode": "t2va", "width": 960, "height": 544, "frames": 124,
             "shift_video": 12.0, "shift_audio": 3.0, "lora_scale": 1.0,
             "reference_size": "match", "gpu": "0", "vae_gpu": ""}
 TERMINAL = {"completed", "failed", "stopped"}
+
+
+class VideoJobChanged(RuntimeError):
+    """A reviewed history job changed and must not be deleted by that snapshot."""
+
 _GPU_TELEMETRY_LOCK = threading.Lock()
 _GPU_TELEMETRY_CACHE = {"expires": 0., "payload": None}
 UPLOAD_EXTENSIONS = {
@@ -948,7 +953,7 @@ class H3JobManager:
                 _write(directory / "state.json", state)
         return self.view(job_id, owner)
 
-    def delete(self, job_id, owner):
+    def delete(self, job_id, owner, *, expected_revision=None):
         """Remove only a terminal owned job whose complete process tree exited.
 
         Submission and job locks serialize deletion with queue/cancel operations.
@@ -962,6 +967,13 @@ class H3JobManager:
                 state = _read(directory / "state.json")
                 if not state or state.get("owner") != owner:
                     raise FileNotFoundError("Video job not found")
+                manifest = _read(directory / "manifest.json")
+                if expected_revision is not None:
+                    from src.video_job_edit import revision
+                    if revision(manifest) != expected_revision:
+                        raise VideoJobChanged("This job was edited after confirmation; it was left unchanged")
+                    if state.get("status") not in TERMINAL:
+                        raise VideoJobChanged("This job is now queued or running; it was left unchanged")
                 if state.get("status") not in TERMINAL:
                     raise RuntimeError("Stop the running or queued job before deleting it")
                 if _live_record(state.get("supervisor")) or _owned_workers(directory):
@@ -970,14 +982,17 @@ class H3JobManager:
                 if state.get("id") != job_id or state.get("filename") != expected:
                     raise RuntimeError("The saved video job has inconsistent output metadata")
                 self._delete_gallery(job_id, owner, expected)
+                from src.video_job_inputs import delete_input_video_previews
+                delete_input_video_previews(self, job_id)
                 try:
                     for entry in directory.iterdir():
-                        if entry.name in {"state.json", "job.lock"}:
+                        if entry.name in {"state.json", "manifest.json", "job.lock"}:
                             continue
                         if entry.is_dir() and not entry.is_symlink():
                             shutil.rmtree(entry)
                         else:
                             entry.unlink(missing_ok=True)
+                    (directory / "manifest.json").unlink(missing_ok=True)
                     (directory / "state.json").unlink()
                     (directory / "job.lock").unlink()
                     directory.rmdir()
@@ -986,6 +1001,8 @@ class H3JobManager:
                     # request can retry, and cannot reinterpret it as active.
                     if directory.is_dir() and not (directory / "state.json").exists():
                         _write(directory / "state.json", state)
+                    if directory.is_dir() and manifest and not (directory / "manifest.json").exists():
+                        _write(directory / "manifest.json", manifest)
                     raise RuntimeError("Could not remove all video job files; retry Delete") from exc
         return {"deleted": True, "id": job_id}
 

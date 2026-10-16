@@ -1,6 +1,8 @@
 """Original videos from owner-scoped, immutable job input snapshots."""
 import math
+import os
 from pathlib import Path
+import stat
 
 from fastapi import HTTPException
 
@@ -9,6 +11,37 @@ from src.video_job_edit import revision
 from src.video_server_files import MediaRoot, VIDEO_EXTENSIONS, _open_selection
 
 VIDEO_FIELDS = ("source_video", "reference_videos")
+
+
+def delete_input_video_previews(manager, job_id):
+    """Called under the terminal-job lock, before removing saved input files."""
+    from src.video_preview_proxy import _cache_key, delete_owned_previews
+    directory = manager.directory(job_id)
+    manifest = _read(directory / "manifest.json")
+    keys = []
+    for selected in input_videos(job_id, manifest):
+        field, index = selected["field"], selected["index"]
+        value = _videos(manifest, field)[index]
+        path = Path(value)
+        if path.parent != directory.absolute():
+            continue
+        try:
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        except FileNotFoundError:
+            continue
+        except OSError:
+            # Old malicious/missing symlink inputs cannot confer cache access.
+            if path.is_symlink():
+                continue
+            raise
+        try:
+            info = os.fstat(descriptor)
+            if stat.S_ISREG(info.st_mode):
+                identity = {"root": "job-input", "path": f"{job_id}/{selected['revision']}/{field}/{index}"}
+                keys.append(_cache_key(identity, info, selected["start_seconds"], selected["duration_seconds"]))
+        finally:
+            os.close(descriptor)
+    delete_owned_previews(job_id, keys)
 
 
 def _videos(manifest, field):
