@@ -124,6 +124,24 @@ def test_hub_cached_file_still_requires_space_for_copy_to_library(tmp_path, monk
     assert check_download_space("org/model", "*.gguf", "/already-cached/hub", local_dir=str(tmp_path)) == 0
 
 
+def test_preflight_explains_cached_copy_without_claiming_existing_stale_file_is_cached(tmp_path, monkeypatch, capsys):
+    def snapshot_download(*, repo_id, local_dir, allow_patterns, ignore_patterns, dry_run):
+        return [SimpleNamespace(will_download=False, file_size=17_310_000_000, filename="model.gguf")]
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(snapshot_download=snapshot_download))
+    from src import hf_download_space
+    monkeypatch.setattr(hf_download_space.shutil, "disk_usage", lambda _: SimpleNamespace(free=14_000_000_000_000))
+    assert check_download_space("org/model", "*.gguf", "/already-cached/hub", local_dir=str(tmp_path)) == 0
+    output = capsys.readouterr().out
+    assert "17.31 GB needed" in output
+    assert "will be copied to this folder" in output
+    assert "does not report byte progress during cached-file copies" in output
+    # Hub's dry run can also report will_download=False for an outdated
+    # existing file. Do not tell the user that this necessarily means a copy.
+    (tmp_path / "model.gguf").write_bytes(b"stale")
+    assert check_download_space("org/model", "*.gguf", "/already-cached/hub", local_dir=str(tmp_path)) == 0
+    assert "will be copied" not in capsys.readouterr().out
+
+
 def test_portable_probes_ignore_old_cached_copy_and_metadata(tmp_path):
     hub = tmp_path / "hub"
     old = hub / "models--org--model/snapshots/old"

@@ -30,6 +30,7 @@ HF_DOWNLOAD_SPACE_PROBE = (
       "code=check_download_space(sys.argv[1], pattern, effective_hf_cache(), local_dir=directory, preview_callback=lambda entries: preview.append(entries))\n"
       "expected={entry.filename:entry.file_size for entry in preview[0]} if directory and preview else None\n"
       "if code==0 and directory: prepare_directory_download(sys.argv[1],directory,pattern,expected)\n"
+      "if code==0: print('[odysseus] Starting model transfer or cached-file copy; completion will be verified afterward.',flush=True)\n"
       "sys.exit(code)\n"
 )
 

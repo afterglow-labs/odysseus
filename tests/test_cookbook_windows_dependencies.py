@@ -59,6 +59,7 @@ async def test_windows_client_can_install_on_supported_remote(install_endpoint, 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("package", [
     "mlx-lm", "mlx-vlm", "mflux", "sglang[all]", "vllm",
+    "mlx-lm[cuda12]>=0.32.2", "mlx-lm[cuda13]>=0.32.2", "mlx-lm[cpu]>=0.32.2",
     "git+https://github.com/xocialize/boogu-image-mlx.git",
 ])
 async def test_legacy_installer_rejects_unsupported_native_windows_packages(monkeypatch, package):

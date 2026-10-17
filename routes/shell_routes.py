@@ -27,6 +27,7 @@ from src.dependency_catalog import (
     is_native_windows, unsupported_windows_requirements,
 )
 from src.dependency_health import check_dependency_health
+from src.mlx_dependency import mlx_lm_recipe
 from src.hf_dependency_update import hub_environment_preflight_code, hub_install_source
 from src.dependency_index import check_latest_release
 from src.environment_packages import inspect_environment
@@ -441,7 +442,7 @@ def _package_status_note(name: str, probe: dict) -> str:
     if name == "mlx_lm":
         if _package_installed_from_probe(name, probe):
             return f"MLX LM {dists.get('mlx-lm', 'available')}"
-        return "MLX serving needs mlx-lm on an Apple Silicon Mac."
+        return "MLX serving needs mlx-lm with the selected Mac, Linux CUDA, or Linux CPU backend."
     if name == "mflux":
         if _package_installed_from_probe(name, probe):
             parts = []
@@ -565,10 +566,11 @@ def _package_probe_script(names: list[str], *, include_environment: bool = False
     names_lit = ",".join(repr(n) for n in names)
     # Run exactly the same metadata checker in the selected remote environment.
     # Its source is standalone and performs no imports of the optional packages.
-    from src import dependency_health
+    from src import dependency_health, mlx_dependency
     health_source = Path(dependency_health.__file__).read_text(encoding="utf-8")
+    mlx_source = Path(mlx_dependency.__file__).read_text(encoding="utf-8")
     specs = {p["name"]: requirement_specs(p) for p in dependency_catalog() if p["name"] in names}
-    return health_source + f"""
+    return health_source + "\n" + mlx_source + f"""
 import importlib.util
 import importlib.metadata as md
 import json
@@ -655,6 +657,8 @@ def dist_status(ds):
 
 def probe(n):
     mods = {{n: mod_status(n)}}
+    recipe = mlx_lm_recipe(sys.platform, version_fn=md.version) if n == 'mlx_lm' else None
+    requirements = [recipe['pip']] if recipe else health_specs.get(n, [])
     if n == 'diffusers':
         mods['torch'] = mod_status('torch')
     dists = dist_status(dist_names.get(n, [n]))
@@ -675,7 +679,7 @@ def probe(n):
                     break
             files[key] = found
     return {{'modules': mods, 'dists': dists, 'binaries': bins, 'files': files, 'python_executable': sys.executable,
-             'health': check_dependency_health(health_specs.get(n, []))}}
+             'mlx_recipe': recipe, 'health': check_dependency_health(requirements)}}
 
 def safe_probe(n):
     try:
@@ -1824,6 +1828,16 @@ def setup_shell_routes() -> APIRouter:
                 pkg["version"] = dists.get("huggingface_hub") or dists.get("huggingface-hub")
                 pkg["python_executable"] = probe.get("python_executable")
 
+            if pkg["name"] == "mlx_lm":
+                if on_remote or in_selected_local_env:
+                    # Both install buttons and repair findings must use the
+                    # exact backend checked inside the selected interpreter.
+                    recipe = probe.get("mlx_recipe") if isinstance(probe, dict) else None
+                    if isinstance(recipe, dict):
+                        pkg.update(recipe)
+                else:
+                    pkg.update(mlx_lm_recipe(sys.platform, version_fn=importlib_metadata.version))
+
             # Metadata catches missing sub-dependencies and version conflicts
             # even when a top-level module happens to import successfully.
             native_ready = bool(
@@ -2029,6 +2043,9 @@ def setup_shell_routes() -> APIRouter:
             "hdbscan",
             "vllm",
             "mlx-lm",
+            "mlx-lm[cuda12]>=0.32.2",
+            "mlx-lm[cuda13]>=0.32.2",
+            "mlx-lm[cpu]>=0.32.2",
         }
         if pip_name not in known:
             return {"ok": False, "error": f"Unknown package: {pip_name}"}

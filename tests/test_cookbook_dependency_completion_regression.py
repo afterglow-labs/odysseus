@@ -85,16 +85,15 @@ def test_background_poll_recovers_done_for_completed_download():
     """When the backend reports a finished model download as "stopped" (its
     tmux pane is gone after DOWNLOAD_OK, so the dead-session check can miss the
     landed snapshot), the reconciler must recover "done" from the terminal
-    DOWNLOAD_OK sentinel instead of downgrading the card to crashed. The
-    background poll keys off DOWNLOAD_OK only (not the "/snapshots/" path, which
-    can appear mid-stream for multi-file downloads)."""
+    DOWNLOAD_OK sentinel or final exit receipt instead of downgrading the card
+    to crashed. Snapshot paths can appear mid-stream for multi-file downloads."""
     source = _read("static/js/cookbookRunning.js")
 
     normalized = " ".join(source.split())
     assert (
         "const downloadDone = task.type === 'download' "
         "&& !task.payload?._dep "
-        "&& String(combinedOutput || '').includes('DOWNLOAD_OK');"
+        "&& _modelDownloadSucceeded(combinedOutput, exitCode);"
     ) in normalized
 
 

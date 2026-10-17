@@ -216,3 +216,71 @@ def test_remote_probe_isolates_a_broken_package_and_reports_its_environment(pack
     assert result["healthy"]["health"]["installed"] is True
     assert result["_environment"]["python_version"]
     assert result["_environment"]["supported_tags"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target", ["app", "venv", "ssh"])
+@pytest.mark.parametrize("backend", ["cuda13", "cuda12", "cpu"])
+async def test_mlx_install_and_repair_use_the_same_target_backend(
+    package_route, monkeypatch, capsys, target, backend,
+):
+    state, get = package_route
+    state["packages"] = [{"name": "mlx_lm", "pip": "mlx-lm", "target": "remote"}]
+    state["versions"] = {"mlx-lm": "0.32.2"}
+    if backend == "cpu":
+        state["versions"]["mlx-cpu"] = "0.32.2"
+    else:
+        state["versions"]["nvidia-cuda-runtime"] = f"{backend[4:]}.0.96"
+    state["requires"] = {"mlx-lm": [f'mlx[{backend}]>=0.32.2; extra == "{backend}"']}
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr("importlib.util.find_spec", lambda name: SimpleNamespace(
+        loader=object(), origin="fixture", submodule_search_locations=[],
+    ))
+    source = routes._package_probe_script(["mlx_lm"])
+    exec(compile(source, "target_mlx_probe.py", "exec"), {"__name__": "target_probe"})
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mlx_lm"]["mlx_recipe"]["pip"] == f"mlx-lm[{backend}]>=0.32.2"
+    if target == "venv":
+        monkeypatch.setattr(routes, "_probe_local_package_environment", AsyncMock(return_value=(
+            payload, {"executable": "/selected/bin/python", "python_version": "3.14.6"},
+        )))
+        kwargs = {"venv": "/selected"}
+    elif target == "ssh":
+        process = SimpleNamespace(communicate=AsyncMock(return_value=(json.dumps(payload).encode(), b"")), returncode=0)
+        monkeypatch.setattr(routes.asyncio, "create_subprocess_exec", AsyncMock(return_value=process))
+        kwargs = {"host": "tester@model-server", "platform": "linux"}
+    else:
+        kwargs = {}
+    if target != "app":
+        # The app's own CUDA metadata must not replace the checked target's.
+        state["versions"] = {"mlx-lm": "0.32.2", "nvidia-cuda-runtime": "12.9.0"}
+    row = (await get(**kwargs))["mlx_lm"]
+    assert row["pip"] == f"mlx-lm[{backend}]>=0.32.2"
+    assert row["needs_repair"] is True
+    assert row["installed"] is False
+    assert [(issue["name"], issue["requirement"]) for issue in row["dependency_issues"]] == [
+        ("mlx", f"mlx[{backend}]>=0.32.2"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requirement", [
+    "mlx-lm", "mlx-lm[cuda12]>=0.32.2", "mlx-lm[cuda13]>=0.32.2", "mlx-lm[cpu]>=0.32.2",
+])
+async def test_legacy_installer_accepts_exact_mlx_recipes_in_selected_python(monkeypatch, tmp_path, requirement):
+    python = tmp_path / "selected" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.touch()
+    monkeypatch.setattr(routes, "IS_WINDOWS", False)
+    monkeypatch.setattr(routes, "_require_admin", lambda request: None)
+    process = SimpleNamespace(returncode=0, communicate=AsyncMock(return_value=(b"fixture installed", b"")))
+    execute = AsyncMock(return_value=process)
+    monkeypatch.setattr(routes.asyncio, "create_subprocess_exec", execute)
+    endpoint = next(route.endpoint for route in routes.setup_shell_routes().routes
+                    if route.path == "/api/cookbook/packages/install")
+    request = AsyncMock()
+    request.json.return_value = {"pip": requirement, "venv": str(python.parent.parent)}
+    assert (await endpoint(request))["ok"] is True
+    assert execute.await_args_list[-1].args == (str(python), "-m", "pip", "install", requirement)
+    # Explicit plain requests keep their original semantics; no inferred rewrite.
+    assert execute.await_args_list[-1].kwargs["env"]["VIRTUAL_ENV"] == str(python.parent.parent)

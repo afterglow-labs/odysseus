@@ -8,6 +8,8 @@ from copy import deepcopy
 import re
 import shlex
 
+from src.mlx_dependency import mlx_lm_recipe
+
 DISTRIBUTION_ALIASES = {"krea_diffusers": "diffusers", "boogu_image_mlx": "boogu-image-mlx"}
 IMPORT_ALIASES = {"krea_diffusers": "diffusers"}
 
@@ -92,7 +94,7 @@ DEPENDENCIES = [
     {
         "name": "mlx_lm",
         "pip": "mlx-lm",
-        "desc": "Serve MLX-format models on Apple Silicon Macs",
+        "desc": "Serve MLX-format models on Apple Silicon Macs or Linux with a CUDA/CPU backend",
         "category": "LLM",
         "target": "remote",
     },
@@ -236,6 +238,10 @@ def dependency_catalog(*, local_platform="", target_platform=""):
             continue
         if pkg["name"] == "rembg" and platform in {"darwin", "macos", "mac"}:
             pkg["pip"] = "rembg[cpu]"
+        if pkg["name"] == "mlx_lm":
+            # The catalogue cannot assume the app's installed CUDA packages
+            # belong to the selected server. Its probe refines this recipe.
+            pkg.update(mlx_lm_recipe(platform, version_fn=lambda name: None))
         if pkg["name"] in {"vllm", "sglang"} and platform in {"darwin", "macos", "mac"}:
             pkg["install_supported"] = False
             pkg["install_hint"] = "This automatic install recipe requires a Linux model server. Select a Linux server, or use llama.cpp / MLX for native Mac inference."

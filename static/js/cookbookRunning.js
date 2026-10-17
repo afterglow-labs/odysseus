@@ -179,6 +179,15 @@ function _depInstallSucceeded(output) {
   return _processExitCode(output) === 0;
 }
 
+function _modelDownloadSucceeded(output, exitCode = _processExitCode(output)) {
+  const text = String(output || '');
+  if (text.includes('DOWNLOAD_FAILED') || (Number.isInteger(exitCode) && exitCode !== 0)) return false;
+  // Preflight and individual files can print 100%, cache paths and "Download
+  // complete" while the actual transfer is still running. Only the wrapper's
+  // completion marker or its final exit receipt completes the whole task.
+  return exitCode === 0 || text.includes('DOWNLOAD_OK');
+}
+
 function _shouldOfferCrashReport(task) {
   if (!task) return false;
   if (task._unreachable && task.type === 'serve') return true;
@@ -707,6 +716,7 @@ async function _startQueuedDownload(task) {
   {
     const _pre = _loadTasks();
     const _pt = _pre.find(t => t.sessionId === task.sessionId);
+    if (!_pt || _isTombstoned(task.sessionId)) return;
     if (_pt) {
       if (_pt.status === 'running' && _pt._startLaunched) return;  // already being started
       _pt.status = 'running';
@@ -733,6 +743,9 @@ async function _startQueuedDownload(task) {
       return;
     }
     const oldId = task.sessionId;
+    // A state GET begun before this POST completed can still contain the old
+    // queue entry. Retire that identity before saving its launched replacement.
+    if (oldId !== data.session_id) _tombstoneTask(oldId);
     const launchedTask = { ...task, sessionId: data.session_id, id: data.session_id, status: 'running' };
     const key = _downloadDedupeKey(launchedTask);
     let found = false;
@@ -928,6 +941,23 @@ function _mergeOutputTail(previous, incoming) {
   // Prefer the authoritative snapshot over inventing an append (and possibly
   // duplicating an entire log block). The foreground poll retains full captures.
   return tail;
+}
+
+function _mergeTaskOutputTail(task, incoming, { fullSnapshot = false } = {}) {
+  const previous = String(task?.output || '');
+  if (task?.type === 'download') {
+    const verified = task.payload?._dep ? _depInstallSucceeded(previous) : _modelDownloadSucceeded(previous);
+    // Foreground capture and background status can finish out of order. Once
+    // completion is verified, a stale preflight tail cannot erase its proof.
+    // A newer terminal failure still replaces it and is handled normally.
+    if (verified && _processExitCode(incoming) === null
+        && !/DOWNLOAD_OK|DOWNLOAD_FAILED/.test(String(incoming || ''))) {
+      return _redactStoredText(previous).slice(-5000);
+    }
+  }
+  // Foreground capture-pane is the complete visible snapshot; keep its full
+  // scrollback. Only persisted/background tails are merged and bounded.
+  return fullSnapshot ? String(incoming || '') : _mergeOutputTail(previous, incoming);
 }
 
 function _redactTaskForStorage(task) {
@@ -3196,18 +3226,6 @@ export function _renderRunningTab() {
     const targetBody = document.getElementById(serverBodyId);
     if (targetBody) targetBody.appendChild(el);
     else group.appendChild(el);
-
-    // Auto-attach the tmux output stream for any task whose underlying
-    // session could still be alive — not just 'running'. Scheduler-
-    // launched serves transition to 'ready' as soon as /v1/models
-    // responds; without this, the user opens the Running tab and sees
-    // only the placeholder ("Launched by scheduled task …") because
-    // _reconnectTask never fires for status 'ready'/'loading'/'warming'.
-    const _wrapForStream = el.querySelector('.cookbook-output-wrap');
-    const _streamExpanded = _wrapForStream && !_wrapForStream.classList.contains('cookbook-task-collapsed');
-    if (_isRunningTabVisible() && _streamExpanded && task.sessionId && ['serve', 'download'].includes(task.type || '')) {
-      _reconnectTask(el, task);
-    }
   }
 
   if (tasks.some(t => t.status === 'running')) _startWaveSync();
@@ -3232,12 +3250,27 @@ export function _renderRunningTab() {
     const chevron = hdr?.querySelector('.cookbook-section-chevron');
     if (chevron) { chevron.style.transform = 'rotate(-90deg)'; chevron.style.opacity = ''; }
   });
+  // Existing cards need to resume polling too after returning to Active.
+  // Attach only after restoring expansion state; _reconnectTask keeps one
+  // poller per card and leaves collapsed cards to the background monitor.
+  if (_isRunningTabVisible()) {
+    const cards = new Map([...group.querySelectorAll('.cookbook-task')].map(node => [node.dataset.taskId, node]));
+    for (const task of tasks) {
+      if (!['running', 'ready', 'loading', 'warming', 'starting'].includes(task.status)) continue;
+      if (!task.sessionId || !['serve', 'download'].includes(task.type || '')) continue;
+      const el = cards.get(task.sessionId);
+      if (el) _reconnectTask(el, task);
+    }
+  }
 }
 
 // ── Reconnect task (polling loop) ──
 
 async function _reconnectTask(el, task) {
   if (!el || !task) return;
+  // A queued POST may be in flight with status running, but it has no tmux
+  // session until the server returns its actual ID.
+  if (String(task.sessionId || '').startsWith('queue-')) return;
   const wrap = el.querySelector('.cookbook-output-wrap');
   if (!_isRunningTabVisible() || !wrap || wrap.classList.contains('cookbook-task-collapsed')) return;
   if (el._abort && !el._abort.signal?.aborted) return;
@@ -3256,10 +3289,12 @@ async function _reconnectTask(el, task) {
     try {
       const res = await fetch('/api/shell/exec', {
         method: 'POST', credentials: 'same-origin',
+        signal: controller.signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ command: _tmuxCmd(task, `capture-pane -t ${task.sessionId} -p -S -500`), timeout: 15 }),
       });
       const data = await res.json();
+      if (controller.signal.aborted) break;
 
       if (data.exit_code !== 0) {
         failCount++;
@@ -3308,8 +3343,7 @@ async function _reconnectTask(el, task) {
           if (badge) { badge.textContent = _statusLabel('error', task.type); badge.className = 'cookbook-task-status cookbook-task-error'; }
           _showCookbookNotif(true);
         } else {
-          const downloadLooksSuccessful = !lastOutput.includes('DOWNLOAD_FAILED')
-            && (lastOutput.includes('DONE') || lastOutput.includes('100%') || lastOutput.includes('/snapshots/') || lastOutput.includes('Download complete') || lastOutput.includes('DOWNLOAD_OK'));
+          const downloadLooksSuccessful = _modelDownloadSucceeded(lastOutput);
           // Pip install / reinstall tasks are launched via _launchServeTask (so
           // they show up in the Running tab + use tmux) but they aren't real
           // serves — the cmd is `python3 -m pip ...` and the runner records
@@ -3366,12 +3400,9 @@ async function _reconnectTask(el, task) {
               const isNetwork = /connection|timeout|timed out|incompleteread|chunkedencoding|reset by peer|protocolerror|all connection attempts failed/i.test(lastOutput);
               const progressMatch = String(lastOutput || '').match(/(\d+)%\|/);
               const nearDone = progressMatch && Number(progressMatch[1]) >= 80;
-              // Reconnect: most "crashed" downloads near the end are actually
-              // finished — we just missed the DOWNLOAD_OK / /snapshots/ marker
-              // because output rolled over, or the tmux session ended a tick
-              // before we polled. Probing has-session and re-attaching to
-              // capture-pane lets the existing _reconnectTask flow pick up
-              // the real state (running, finished, or truly dead).
+              // Reconnect can recover a missed final completion marker or a
+              // still-running transfer. Progress and cache paths alone do not
+              // prove that the whole download succeeded.
               const _reconnectFix = {
                 label: 'Reconnect tmux',
                 action: () => {
@@ -3425,15 +3456,10 @@ async function _reconnectTask(el, task) {
             }
             _showCookbookNotif(true);
           } else {
-            // Strong completion markers — `DOWNLOAD_OK` is emitted by our
-            // downloader wrapper AFTER the model snapshot is on disk, and
-            // `/snapshots/` only appears once HF has resolved the cached
-            // tree. Either is conclusive. Finalize as done immediately, skip
-            // the 30s debounce — the debounce only exists to guard against
-            // ambiguous markers (bare "100%" / "Download complete") which can
-            // appear mid-stream during multi-file downloads.
+            // Verified downloads/installs can finish immediately even if the
+            // tmux pane has gone away. Ambiguous progress never reaches here.
             const _strongDone = task.type === 'download'
-              && (lastOutput.includes('DOWNLOAD_OK') || lastOutput.includes('/snapshots/'));
+              && (task.payload?._dep ? depInstallSucceeded : downloadLooksSuccessful);
             if (_strongDone) {
               _updateTask(task.sessionId, { status: 'done', _doneConfirmAt: null, _lastStatusFlipAt: Date.now() });
               el.dataset.status = 'done';
@@ -3509,7 +3535,11 @@ async function _reconnectTask(el, task) {
         break;
       }
 
-      const snapshot = (data.stdout || '').trim();
+      const snapshot = _mergeTaskOutputTail(
+        _loadTasks().find(t => t.sessionId === task.sessionId) || task,
+        (data.stdout || '').trim(),
+        { fullSnapshot: true },
+      );
       if (snapshot) {
         // Only auto-scroll to bottom if the user was already there. When
         // they've scrolled up to read earlier output, leave their position
@@ -3519,6 +3549,10 @@ async function _reconnectTask(el, task) {
         const _atBottom = (output.scrollHeight - output.scrollTop - output.clientHeight) < 40;
         output.textContent = snapshot;
         if (_atBottom) output.scrollTop = output.scrollHeight;
+        // Completion/error branches below can break or remove the tmux pane.
+        // Retain their terminal proof before either operation so the next
+        // background poll cannot restore an older "0 bytes" snapshot.
+        _updateTask(task.sessionId, { output: snapshot.slice(-5000) });
 
         // Live status parsing for download tasks
         if (task.type === 'download') {
@@ -3556,13 +3590,14 @@ async function _reconnectTask(el, task) {
             const _fetchPctMatches = [...snapshot.matchAll(/Fetching\s+\d+\s+files:\s*(\d+)%/g)];
             const _fetchPct = _fetchPctMatches.length ? parseInt(_fetchPctMatches[_fetchPctMatches.length - 1][1]) : null;
             const isPipDep = !!(task.payload && task.payload._dep);
+            const terminalDownload = _processExitCode(snapshot) !== null || /DOWNLOAD_OK|DOWNLOAD_FAILED/.test(snapshot);
             const _startupStalled = !_bytes && ((_dlAgg === 0) || (_fetchPct === 0)) && curProgress === '0';
             const _STALE_TIMEOUT = _startupStalled ? STARTUP_STALE_PROGRESS_MS : STALE_PROGRESS_MS;
             if (!el._lastProgress) { el._lastProgress = curProgress; el._lastProgressTime = Date.now(); }
             if (curProgress !== el._lastProgress) {
               el._lastProgress = curProgress;
               el._lastProgressTime = Date.now();
-            } else if (!isPipDep && Date.now() - (el._lastProgressTime || 0) > _STALE_TIMEOUT && task._autoRestarted) {
+            } else if (!isPipDep && !terminalDownload && Date.now() - (el._lastProgressTime || 0) > _STALE_TIMEOUT && task._autoRestarted) {
               const mins = Math.floor((Date.now() - (el._lastProgressTime || 0)) / 60000);
               // Already auto-restarted once and stalled again — make the badge a
               // one-click retry (resumes from the cached partial files) so the
@@ -3575,7 +3610,7 @@ async function _reconnectTask(el, task) {
                 badge._retryBound = true;
                 badge.addEventListener('click', (e) => { e.stopPropagation(); _retryTask(el, task); });
               }
-            } else if (!isPipDep && Date.now() - (el._lastProgressTime || 0) > _STALE_TIMEOUT && !task._autoRestarted) {
+            } else if (!isPipDep && !terminalDownload && Date.now() - (el._lastProgressTime || 0) > _STALE_TIMEOUT && !task._autoRestarted) {
               task._autoRestarted = true;
               _updateTask(task.sessionId, { _autoRestarted: true });
               badge.textContent = _startupStalled ? '0% stall — retrying' : 'stale — restarting';
@@ -3726,7 +3761,7 @@ async function _reconnectTask(el, task) {
               _showCookbookNotif(true);
               break;
             }
-            if (snapshot.includes('DOWNLOAD_OK') || (snapshot.includes('/snapshots/') && completed >= totalFiles && totalFiles > 0)) {
+            if (task.payload?._dep ? _depInstallSucceeded(snapshot) : _modelDownloadSucceeded(snapshot)) {
               _clearDiagnosis(el);
               _dlRetryCount.delete(task.payload?.repo_id || task.name);
               badge.textContent = _statusLabel('done', task.type);
@@ -3744,6 +3779,7 @@ async function _reconnectTask(el, task) {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ command: _tmuxCmd(task, `kill-session -t ${task.sessionId}`) }),
               }).catch(() => {});
+              _renderRunningTab();
               _processQueue();
               break;
             }
@@ -3909,9 +3945,8 @@ async function _reconnectTask(el, task) {
           _showCookbookNotif();
         }
         // Detect process exit
-        if (snapshot.includes('=== Process exited with code')) {
-          const codeMatch = snapshot.match(/=== Process exited with code (\d+)/);
-          const code = codeMatch ? parseInt(codeMatch[1]) : -1;
+        const code = _processExitCode(snapshot);
+        if (code !== null) {
           // Serve tasks that exit without reaching ready state are always errors —
           // a serve process should run indefinitely
           const status = (task.type === 'serve' && !task._serveReady) ? 'error'
@@ -3921,9 +3956,9 @@ async function _reconnectTask(el, task) {
           if (badge) { badge.textContent = status; badge.className = `cookbook-task-status cookbook-task-${status}`; }
           _renderRunningTab();
         }
-        _updateTask(task.sessionId, { output: snapshot.slice(-5000) });
       }
     } catch {
+      if (controller.signal.aborted) break;
       failCount++;
       if (failCount > 10) break;
       await new Promise(r => setTimeout(r, 10000));
@@ -3933,6 +3968,7 @@ async function _reconnectTask(el, task) {
     failCount = 0;
     await new Promise(r => setTimeout(r, TASK_POLL_INTERVAL_MS));
   }
+  if (el._abort === controller) el._abort = null;
 }
 
 // ── Background monitor ──
@@ -4184,13 +4220,9 @@ export async function _selfHealStaleTasks(opts = {}) {
     // The runner keeps an interactive shell open after the command exits.
     // Shell liveness cannot revive a completed or failed command.
     if (_taskExitCode(t) !== null) return false;
-    // Finished downloads with strong completion markers (DOWNLOAD_OK or HF
-    // /snapshots/ resolution) are demonstrably done — do not flip them back
-    // to running just because the tmux session is still alive (e.g., a
-    // long-lived shell that hosted the download or a flapping SSH that
-    // reports the session as up). This was the main source of finished↔
-    // downloading oscillation on a flaky connection.
-    if (t.status === 'done' && /DOWNLOAD_OK|\/snapshots\//.test(t.output || '')) return false;
+    // Shell liveness also cannot undo the downloader's completion marker.
+    // A resolved cache path alone may have been printed before the transfer.
+    if (t.status === 'done' && !t.payload?._dep && _modelDownloadSucceeded(t.output)) return false;
     // Cooldown: never flip the same task more than once every 45s. A flapping
     // SSH connection used to drive the badge back-and-forth on every probe
     // cycle; this enforces a stable view between flaps.
@@ -4355,6 +4387,10 @@ async function _pollBackgroundStatus() {
       for (const live of tasks) {
         const sid = live?.session_id;
         if (!sid || localIds.has(sid) || _isTombstoned(sid)) continue;
+        // Queue placeholders come from saved state, never process discovery.
+        // A stale status response must not resurrect one after it was launched
+        // and replaced with its actual cookbook-* session ID.
+        if (sid.startsWith('queue-')) continue;
         const liveType = live.type || 'download';
         const liveStatus = live.status === 'completed' ? 'done' : (live.status || 'running');
         const name = live.model || sid;
@@ -4380,6 +4416,9 @@ async function _pollBackgroundStatus() {
         changed = true;
       }
       for (const task of localTasks) {
+        // A queued entry is a submission placeholder, not a launched process.
+        // Its absent tmux session must not turn it into a crashed download.
+        if (task.status === 'queued' || String(task.sessionId || '').startsWith('queue-')) continue;
         const live = statusById.get(task.sessionId);
         if (!live) continue;
         const updates = {};
@@ -4393,15 +4432,11 @@ async function _pollBackgroundStatus() {
         const depDone = !!task.payload?._dep && _depInstallSucceeded(combinedOutput);
         // A finished model download whose tmux pane is gone is also reported
         // "stopped" (the dead-session check can miss the landed snapshot).
-        // Recover "done" from the terminal `DOWNLOAD_OK` sentinel — emitted
-        // only after the runner exits 0 — so a completed download isn't
-        // downgraded to crashed. This background poll runs blind (no live
-        // stream to debounce against), so unlike the reconnect loop it keys
-        // off the conclusive exit sentinel only, never the `/snapshots/` path,
-        // which can be printed mid-stream for multi-file downloads.
+        // Recover only from the wrapper marker or a final exit-0 receipt,
+        // never from preflight progress or a resolved cache path.
         const downloadDone = task.type === 'download'
           && !task.payload?._dep
-          && String(combinedOutput || '').includes('DOWNLOAD_OK');
+          && _modelDownloadSucceeded(combinedOutput, exitCode);
         const serveReady = task.type === 'serve'
           && (live.status === 'ready' || (live.status === 'running' && _serveOutputLooksReady({ ...task, output: live.output_tail || task.output || '' })));
         const completedByOutput = !failedByExit && (depDone || downloadDone);
@@ -4432,7 +4467,7 @@ async function _pollBackgroundStatus() {
         if (live.exit_code != null && live.exit_code !== task.exit_code) updates.exit_code = live.exit_code;
         if (live.output_tail) {
           const previous = String(task.output || '');
-          const merged = _mergeOutputTail(previous, live.output_tail);
+          const merged = _mergeTaskOutputTail(task, live.output_tail);
           if (merged !== previous) updates.output = merged;
         }
         if (live.diagnosis && !task._diagnosisDismissed) {
@@ -4457,6 +4492,10 @@ async function _pollBackgroundStatus() {
         }
         completedDeps.forEach(t => _refreshDepsAfterInstall(t));
       }
+      // Completion must release the next queued download even when the
+      // previous card is collapsed or Cookbook is closed. The queue helper
+      // checks busy hosts and synchronously claims each launch before POST.
+      _processQueue();
     } catch (_) { /* non-fatal: background status should never break polling */ }
 
     const statusEl = document.getElementById('cookbook-bg-status');
@@ -4546,7 +4585,7 @@ async function _pollBackgroundStatus() {
       _showCookbookNotif(false);
     } else {
       _clearCookbookNotif();
-      _stopBackgroundMonitor();
+      if (!_hasLiveTasks()) _stopBackgroundMonitor();
     }
 
     if (statusEl) {

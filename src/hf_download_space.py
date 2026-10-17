@@ -10,6 +10,24 @@ DISK_FULL_EXIT = 28
 DOWNLOAD_RESERVE = 128 * 1024 * 1024
 
 
+def _preflight_progress_class():
+    """Silence only the metadata check, without changing transfer progress.
+
+    Hub creates byte bars even for ``dry_run=True`` and labels those empty
+    bars "Download complete". A per-call class avoids mutating Hub's global
+    progress state or the runner's explicit progress environment settings.
+    """
+    from tqdm.auto import tqdm
+
+    class PreflightProgress(tqdm):
+        def __init__(self, *args, **kwargs):
+            kwargs.pop("name", None)
+            kwargs["disable"] = True
+            super().__init__(*args, **kwargs)
+
+    return PreflightProgress
+
+
 def check_download_space(repo_id, pattern, cache_dir, *, local_dir=None, preview_callback=None):
     """Check only the selected, not-yet-cached files on the destination volume.
 
@@ -19,7 +37,8 @@ def check_download_space(repo_id, pattern, cache_dir, *, local_dir=None, preview
     """
     from huggingface_hub import snapshot_download
 
-    if "dry_run" not in inspect.signature(snapshot_download).parameters:
+    supported = inspect.signature(snapshot_download).parameters
+    if "dry_run" not in supported:
         print("[odysseus] Disk preflight unavailable in this huggingface_hub version; "
               "download errors will still be checked for a full disk.", flush=True)
         return 0
@@ -28,6 +47,8 @@ def check_download_space(repo_id, pattern, cache_dir, *, local_dir=None, preview
     if local_dir:
         destination["ignore_patterns"] = [".odysseus-model*"]
     print(f"[odysseus] Checking selected files and free space in {cache}...", flush=True)
+    if "tqdm_class" in supported:
+        destination["tqdm_class"] = _preflight_progress_class()
     preview = snapshot_download(
         repo_id=repo_id,
         **destination,
@@ -36,6 +57,8 @@ def check_download_space(repo_id, pattern, cache_dir, *, local_dir=None, preview
     )
     required = 0
     unknown = False
+    cached_copies = 0
+    cached_copy_bytes = 0
     for entry in preview:
         if not entry.will_download:
             if not local_dir:
@@ -47,6 +70,9 @@ def check_download_space(repo_id, pattern, cache_dir, *, local_dir=None, preview
                 target = cache / entry.filename
                 if target.is_file() and (entry.file_size is None or target.stat().st_size == entry.file_size):
                     continue
+                if not target.exists():
+                    cached_copies += 1
+                    cached_copy_bytes += entry.file_size or 0
             except OSError:
                 pass
         if entry.file_size is None:
@@ -73,6 +99,11 @@ def check_download_space(repo_id, pattern, cache_dir, *, local_dir=None, preview
               "disk space could only be checked for files with known sizes.", flush=True)
     print(f"[odysseus] Download destination: {cache} "
           f"({required / 1e9:.2f} GB needed, {free / 1e9:.2f} GB free)", flush=True)
+    print("[odysseus] File and space check complete. Model files have not been transferred by this check.", flush=True)
+    if cached_copies:
+        print(f"[odysseus] {cached_copies} selected file(s) already exist in the Hub cache "
+              f"({cached_copy_bytes / 1e9:.2f} GB with known sizes) and will be copied to this folder. "
+              "Hugging Face does not report byte progress during cached-file copies.", flush=True)
     if preview_callback is not None:
         preview_callback(preview)
     return 0

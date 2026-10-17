@@ -191,6 +191,7 @@ def main():
         if args.local_dir:
             expected = {entry.filename: entry.file_size for entry in preview[0]} if preview else None
             prepare_directory_download(args.repo_id, kwargs["local_dir"], args.include, expected)
+        print("[odysseus] Starting model transfer or cached-file copy; completion will be verified afterward.", flush=True)
         path = snapshot_download(**kwargs)
         if args.local_dir and finish_directory_download(args.repo_id, path, args.include):
             sys.exit(1)

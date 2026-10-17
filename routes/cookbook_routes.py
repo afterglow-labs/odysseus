@@ -4710,6 +4710,25 @@ def setup_cookbook_routes() -> APIRouter:
                 except HTTPException:
                     logger.warning(f"Skipping task with unsafe sshPort: {_tport!r}")
                     continue
+            if session_id.startswith("queue-") and (task.get("status") or "").lower() == "queued":
+                # Browser queues use placeholder IDs until launch assigns a
+                # real session. No process exists yet: probing this ID would
+                # report "stopped" and make a waiting download look crashed.
+                results.append({
+                    "session_id": session_id,
+                    "type": task_type,
+                    "model": model.split("/")[-1] if "/" in model else model,
+                    "status": "queued",
+                    "progress": "Waiting to start",
+                    "phase": "",
+                    "diagnosis": None,
+                    "output_tail": "",
+                    "exit_code": None,
+                    "cmd": _payload.get("_cmd") or "",
+                    "tps": None, "reqs": None, "pct": None,
+                    "remote": remote or "local",
+                })
+                continue
             if task_platform == "windows" and remote:
                 # Windows: check PID file + Get-Process, read log tail
                 sd = "$env:TEMP\\odysseus-sessions"

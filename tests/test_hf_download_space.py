@@ -1,6 +1,7 @@
 """Disk failures must stop before transfer and must never enter the retry loop."""
 
 import os
+import importlib
 import shlex
 import subprocess
 import sys
@@ -88,6 +89,52 @@ def test_unknown_sizes_are_reported_without_fabricating_disk_failure(monkeypatch
     assert "file sizes are unknown" in capsys.readouterr().out
 
 
+def test_real_hub_dry_run_is_quiet_but_subsequent_transfer_still_reports_progress(monkeypatch, tmp_path, capsys):
+    """Exercise the installed Hub's actual dry-run bars, with network I/O stubbed."""
+    import huggingface_hub
+    from huggingface_hub.file_download import DryRunFileInfo
+    from huggingface_hub.utils import are_progress_bars_disabled
+    from tqdm.auto import tqdm
+
+    hub_snapshot = importlib.import_module("huggingface_hub._snapshot_download")
+    revision = "a" * 40
+    monkeypatch.setenv("HF_HUB_DISABLE_PROGRESS_BARS", "0")
+    monkeypatch.setenv("HF_TOKEN", "do-not-log-this-token")
+    monkeypatch.setattr(hub_snapshot, "HfApi", lambda **kwargs: SimpleNamespace(
+        repo_info=lambda **kwargs: SimpleNamespace(sha=revision)))
+    monkeypatch.setattr(hub_snapshot, "read_tree_cache", lambda *args: {"model.gguf": None})
+    seen = []
+
+    def download(repo_id, *, filename, dry_run, tqdm_class, **kwargs):
+        seen.append(dry_run)
+        if dry_run:
+            return DryRunFileInfo(commit_hash=revision, file_size=100, filename=filename,
+                                  is_cached=False, local_path=str(tmp_path / filename), will_download=True)
+        with tqdm_class(total=100, unit="B") as progress:
+            progress.update_transfer(100)
+            progress.update(100)
+        return str(tmp_path / filename)
+
+    monkeypatch.setattr(hub_snapshot, "hf_hub_download", download)
+    disabled_before = are_progress_bars_disabled()
+    assert space.check_download_space("org/model", "*.gguf", str(tmp_path)) == 0
+    preflight = capsys.readouterr()
+    assert "File and space check complete" in preflight.out
+    assert "Download complete" not in preflight.out + preflight.err
+    assert "Downloading bytes" not in preflight.out + preflight.err
+    assert are_progress_bars_disabled() == disabled_before
+    assert os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] == "0"
+    # The next call has an ordinary progress class; preflight didn't patch it,
+    # change process-wide progress settings, or suppress the actual transfer.
+    huggingface_hub.snapshot_download(repo_id="org/model", cache_dir=str(tmp_path),
+        allow_patterns=["*.gguf"], tqdm_class=tqdm)
+    transfer = capsys.readouterr()
+    assert "Download complete" in transfer.err
+    assert "100" in transfer.err
+    assert "do-not-log-this-token" not in preflight.out + preflight.err + transfer.out + transfer.err
+    assert seen == [True, False]
+
+
 def run_retry_fixture(tmp_path, *, required, free, download_script, old_hub=False):
     stub = tmp_path / "huggingface_hub.py"
     signature = "repo_id, cache_dir, allow_patterns" if old_hub else "repo_id, cache_dir, allow_patterns, dry_run"
@@ -150,3 +197,5 @@ def test_success_exit_survives_tee(tmp_path):
     assert result.returncode == 0
     assert len(attempts) == 1
     assert "Download complete" in result.stdout
+    assert result.stdout.index("File and space check complete") < result.stdout.index("Starting model transfer")
+    assert result.stdout.index("Starting model transfer") < result.stdout.index("Download complete")

@@ -27,6 +27,15 @@ major release may therefore remain unavailable until those packages support it.
 The separate `hf-cli` agent skill is generated documentation and is not changed
 by this package update.
 
+MLX-LM supports Linux CUDA and CPU backends as well as Apple Silicon. On Linux,
+the recipe includes the backend extra: it preserves an installed MLX backend,
+otherwise matches CUDA 12 or 13 from the selected Python's installed runtime
+metadata, and defaults to upstream's CUDA 12 recipe when no backend is detected.
+The row explains the choice and driver requirements. Mac installs retain plain
+`mlx-lm`. The same standalone helper runs in local and remote probes, so install
+recipes and dependency repairs follow the same target-specific extras. These
+checks read metadata without loading GPU runtimes or modifying CUDA packages.
+
 Real-ESRGAN installation prepares verified compatibility wheels for BasicSR,
 GFPGAN, and facexlib using `scripts/build_realesrgan_wheels.py`. The native and
 Docker installers share the builder. It patches the older setup scripts' version
@@ -38,6 +47,13 @@ install and preserve its exit status.
 Task completion requires a successful exit marker. A live terminal shell does
 not turn a failed install back into an active download. Dependency retries replay
 the dependency command against its saved environment, then refresh package health.
+
+Model download preflight suppresses its own empty Hub progress bars and reports
+the check separately from the transfer. Cached-file copies can take time without
+network byte progress. Completion output must be retained before terminal cleanup;
+progress percentages and snapshot paths are not completion evidence. Background
+status reconciliation advances waiting downloads even when their cards are
+collapsed or hidden, and unlaunched queue placeholders are not process failures.
 
 Validation covers metadata fixtures, platform recipes, targeted popup actions,
 failed tasks, retries, local/remote checks, and isolated compatibility-wheel builds.
