@@ -169,6 +169,6 @@ def test_runner_checks_selected_python_before_pip_and_keeps_exit_status(
 
 def test_unrelated_pip_runner_remains_unchanged():
     lines = []
-    command = "python3 -m pip install huggingface_hub"
+    command = "python3 -m pip install requests"
     _append_pip_install_runner_lines(lines, command)
     assert lines == [command]

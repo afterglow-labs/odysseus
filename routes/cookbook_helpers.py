@@ -20,6 +20,7 @@ from src.sglang_runtime import (
     is_sglang_install_cmd, normalize_sglang_install_cmd,
     sglang_python_preflight_code,
 )
+from src.hf_dependency_update import hub_environment_preflight_code, hub_install_command, hub_requirements
 
 logger = logging.getLogger(__name__)
 
@@ -398,12 +399,15 @@ def _append_pip_install_runner_lines(
         install_args = shlex.split(cmd[python_match.end():]) if python_match else []
     except ValueError:
         install_args = []
+    check_hub_environment = bool(python_match and hub_requirements(install_args))
     prepare_realesrgan = bool(realesrgan_builder and any(
         re.match(r"^(?:realesrgan|basicsr|gfpgan|facexlib)(?:$|[<>=!~\[])", arg, re.IGNORECASE)
         for arg in install_args
     ))
-    if bootstrap or prepare_realesrgan or check_sglang_python:
+    if bootstrap or prepare_realesrgan or check_sglang_python or check_hub_environment:
         runner_lines.append("(")
+    if check_hub_environment:
+        runner_lines.append(f"{python_match.group(1)} -c {shlex.quote(hub_environment_preflight_code())} || exit $?")
     if check_sglang_python:
         # Execute this before pip bootstrap/resolution in exactly the Python
         # selected by the command. SSH targets need no local source imports.
@@ -445,6 +449,7 @@ def _append_pip_install_runner_lines(
             '  exit "$_odysseus_wheel_exit"',
             "}",
         ])
+    cmd = hub_install_command(cmd)
     without_break = _pip_install_command_without_break_system_packages(cmd)
     if "--break-system-packages" not in (cmd or "") or not help_check or without_break == cmd:
         runner_lines.append(cmd)
@@ -455,7 +460,7 @@ def _append_pip_install_runner_lines(
         runner_lines.append('  echo "[odysseus] pip does not support --break-system-packages; installing without it."')
         runner_lines.append(f"  {without_break}")
         runner_lines.append("fi")
-    if bootstrap or prepare_realesrgan or check_sglang_python:
+    if bootstrap or prepare_realesrgan or check_sglang_python or check_hub_environment:
         runner_lines.append(")")
 
 

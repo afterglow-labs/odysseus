@@ -19,6 +19,14 @@ does not disable installation; a source archive is not proof of build success.
 Git recipes remain unverified by the PyPI artifact check. Proven platform or
 release incompatibilities remain visible with an explanation.
 
+**Hugging Face Hub / hf CLI** appears in Tools with its installed version and
+selected Python executable. Its Update action upgrades `huggingface_hub`, which
+also provides the `hf` command. Updates use the selected isolated environment
+and retain active Hub requirements declared by installed packages; an upstream
+major release may therefore remain unavailable until those packages support it.
+The separate `hf-cli` agent skill is generated documentation and is not changed
+by this package update.
+
 Real-ESRGAN installation prepares verified compatibility wheels for BasicSR,
 GFPGAN, and facexlib using `scripts/build_realesrgan_wheels.py`. The native and
 Docker installers share the builder. It patches the older setup scripts' version

@@ -52,6 +52,11 @@ function maintenanceDialog(title, anchor, onClose = () => {}) {
 }
 
 const normalize = value => String(value || '').toLowerCase().replace(/[-_.]+/g, '-');
+export const isHuggingFaceHubPackage = value => normalize(value) === 'huggingface-hub';
+export const dependencyPackageLabel = pkg => isHuggingFaceHubPackage(pkg.name) ? 'Hugging Face Hub / hf CLI' : pkg.name;
+const packageSearchText = pkg => normalize([pkg.name, dependencyPackageLabel(pkg),
+  isHuggingFaceHubPackage(pkg.name) ? 'hf hf-cli huggingface-cli huggingface_hub Hugging Face' : '',
+].join(' '));
 
 // The target is captured when opened. Changing Cookbook's server selector
 // must never redirect an update from an already-open package inventory.
@@ -70,7 +75,7 @@ export function showEnvironmentPackages(target, onInstall, anchor = document.act
   const toolbar = element('div');
   toolbar.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;';
   const search = element('input', 'memory-search-input');
-  search.type = 'search'; search.placeholder = 'Search installed packages';
+  search.type = 'search'; search.placeholder = 'Search packages (e.g. hf, pip)';
   search.setAttribute('aria-label', 'Search installed packages');
   search.style.cssText = 'flex:1;min-width:140px;';
   const refresh = button('Refresh');
@@ -86,19 +91,26 @@ export function showEnvironmentPackages(target, onInstall, anchor = document.act
   const render = () => {
     list.innerHTML = '';
     const query = normalize(search.value).trim();
-    const shown = inventory.filter(pkg => normalize(pkg.name).includes(query));
+    const shown = inventory.filter(pkg => packageSearchText(pkg).includes(query));
     for (const pkg of shown) {
       const row = element('div');
       row.dataset.package = pkg.name;
       row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);';
       const detail = element('div'); detail.style.cssText = 'flex:1;min-width:0;overflow-wrap:anywhere;';
-      detail.appendChild(element('div', 'memory-item-title', pkg.name));
-      detail.appendChild(element('div', 'memory-item-meta', pkg.version
-        ? `${pkg.version}${pkg.update_available ? ` → ${pkg.latest_version}` : checked ? ' · Up to date' : ''}`
-        : 'Not installed'));
+      const label = dependencyPackageLabel(pkg);
+      detail.appendChild(element('div', 'memory-item-title', label));
+      if (isHuggingFaceHubPackage(pkg.name)) {
+        row.style.flexWrap = 'wrap'; detail.style.flexBasis = '260px';
+        detail.appendChild(element('div', 'memory-item-meta', 'Updates hf and huggingface_hub to the latest compatible version. The hf-cli agent skill is separate documentation.'));
+      }
+      const versionText = isHuggingFaceHubPackage(pkg.name) && pkg.version
+        ? `Installed: ${pkg.version}${pkg.latest_version ? ` · Latest release: ${pkg.latest_version} (compatibility checked on update)` : ''}`
+        : pkg.version ? `${pkg.version}${pkg.update_available ? ` → ${pkg.latest_version}` : checked ? ' · Up to date' : ''}` : 'Not installed';
+      detail.appendChild(element('div', 'memory-item-meta', versionText));
       row.appendChild(detail);
       const update = button(pkg.version ? 'Update' : 'Install');
-      update.setAttribute('aria-label', `${pkg.version ? 'Update' : 'Install'} ${pkg.name}`);
+      update.setAttribute('aria-label', `${pkg.version ? 'Update' : 'Install'} ${label}`);
+      if (isHuggingFaceHubPackage(pkg.name)) update.title = 'Update Hugging Face Hub and hf CLI to the latest compatible version in this Python environment';
       const repair = button('Repair');
       repair.setAttribute('aria-label', `Repair ${pkg.name}`);
       repair.title = 'Reinstall this version to restore missing or damaged package files';
@@ -145,10 +157,10 @@ export function showEnvironmentPackages(target, onInstall, anchor = document.act
       if (closed) return;
       checked = !!data.updates_checked;
       inventory = [...data.packages];
-      for (const name of ['pip', 'setuptools', 'wheel']) {
-        if (!inventory.some(pkg => normalize(pkg.name) === name)) inventory.push({ name, version: '' });
+      for (const name of ['huggingface_hub', 'pip', 'setuptools', 'wheel']) {
+        if (!inventory.some(pkg => normalize(pkg.name) === normalize(name))) inventory.push({ name, version: '' });
       }
-      const priority = name => ['pip', 'setuptools', 'wheel'].includes(normalize(name)) ? 0 : 1;
+      const priority = name => isHuggingFaceHubPackage(name) ? 0 : ['pip', 'setuptools', 'wheel'].includes(normalize(name)) ? 1 : 2;
       inventory.sort((a, b) => priority(a.name) - priority(b.name) || a.name.localeCompare(b.name));
       python.textContent = `Python ${data.python_version} · ${data.executable}`;
       status.textContent = data.check_error ? `Update check incomplete: ${data.check_error}`

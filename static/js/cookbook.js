@@ -10,7 +10,7 @@ import { makeWindowDraggable } from './windowDrag.js';
 import { _diagnose, _showDiagnosis, _clearDiagnosis, _runQuickCmd, ERROR_PATTERNS } from './cookbook-diagnosis.js';
 import { RECIPE_BACKENDS, recipesForBackend, pickRecipe, recipeCommands, RECIPE_DEFAULT_VARIANT } from './cookbook-deps-recipes.js';
 import { dependencyIssues, showDependencyIssues } from './cookbookDependencyHealth.js';
-import { showEnvironmentPackages, showClearVram } from './cookbookMaintenance.js';
+import { showEnvironmentPackages, showClearVram, isHuggingFaceHubPackage, dependencyPackageLabel } from './cookbookMaintenance.js';
 import { showH3Video } from './h3Video.js';
 import { showH3SeedHunter, showH3SeedScout } from './h3SeedHunter.js';
 import { showBfsVideo } from './bfsVideo.js';
@@ -1183,6 +1183,9 @@ async function _fetchDependencies({ showIssues = false } = {}) {
       if (pkg.installed && pkg.name === 'pip') {
         return `<button type="button" class="cookbook-dep-tag cookbook-dep-install" data-dep-pip="pip" data-dep-target="${isLocal ? 'local' : 'remote'}" data-upgrade="1" title="Update pip in the selected Python environment">Update pip</button>`;
       }
+      if (pkg.installed && isHuggingFaceHubPackage(pkg.name)) {
+        return `<button type="button" class="cookbook-dep-tag cookbook-dep-install" data-dep-pip="${esc(pkg.pip)}" data-dep-target="${isLocal ? 'local' : 'remote'}" data-upgrade="1" aria-label="Update Hugging Face Hub / hf CLI" title="Update Hugging Face Hub and hf CLI to the latest compatible version in this Python environment">Update Hugging Face</button>`;
+      }
       if (pkg.installed) return `<button class="cookbook-dep-tag cookbook-dep-installed cookbook-dep-installed-btn" title="Installed — click for actions"><span class="cookbook-dep-installed-label">Installed</span><span class="cookbook-dep-caret">&#9662;</span></button>`;
       if (isSystemDep) {
         const depTip = esc(pkg.install_hint || 'Install this OS package on the selected server.');
@@ -1220,6 +1223,9 @@ async function _fetchDependencies({ showIssues = false } = {}) {
     const _depRow = (pkg) => {
       const isLocal = pkg.target === 'local';
       const isSystemDep = pkg.kind === 'system';
+      const hubVersion = pkg.installed_version || pkg.version || pkg.details?.dists?.['huggingface-hub'] || pkg.details?.dists?.huggingface_hub;
+      const hubDetails = isHuggingFaceHubPackage(pkg.name)
+        ? [hubVersion ? `Installed: ${hubVersion}` : '', pkg.python_executable ? `Python: ${pkg.python_executable}` : ''].filter(Boolean).join(' · ') : '';
       const noteText = [pkg.status_note, pkg.compatibility_note, pkg.install_supported === false ? pkg.install_hint : ''].filter(Boolean).filter((value, index, values) => values.indexOf(value) === index).join(' ');
       const note = noteText ? `<div class="memory-item-meta" style="font-size:10px;opacity:0.65;margin-top:3px;">${esc(noteText)}</div>` : '';
       const releaseNote = pkg.latest_version ? `<div class="memory-item-meta" style="font-size:10px;opacity:0.55;margin-top:3px;">Latest release: ${esc(pkg.latest_version)}${pkg.requires_python ? ` · Requires Python ${esc(pkg.requires_python)}` : ''}</div>` : '';
@@ -1267,10 +1273,11 @@ async function _fetchDependencies({ showIssues = false } = {}) {
           + `<button type="button" class="cookbook-dep-tag cookbook-dep-cmd-copy" data-dep-cmd-copy="${esc(_gpuWheelCmd)}" title="Copy command to clipboard">Copy command</button>`
           + `</div>`
         : '';
-      return `<div class="cookbook-dep-row${pkg.install_supported === false && !pkg.installed ? ' cookbook-dep-blocked' : ''}" data-pkg-name="${esc(pkg.name)}" data-dep-pip="${esc(pkg.pip || '')}" data-dep-target="${isLocal ? 'local' : 'remote'}" data-dep-kind="${esc(pkg.kind || 'python')}">`
+      return `<div class="cookbook-dep-row${isHuggingFaceHubPackage(pkg.name) ? ' cookbook-dep-hub' : ''}${pkg.install_supported === false && !pkg.installed ? ' cookbook-dep-blocked' : ''}" data-pkg-name="${esc(pkg.name)}" data-dep-pip="${esc(pkg.pip || '')}" data-dep-target="${isLocal ? 'local' : 'remote'}" data-dep-kind="${esc(pkg.kind || 'python')}">`
         + `<div class="cookbook-dep-info">`
-        + `<div class="memory-item-title">${_depGlyphHtml(pkg.name)}${esc(pkg.name)}</div>`
+        + `<div class="memory-item-title">${_depGlyphHtml(pkg.name)}${esc(dependencyPackageLabel(pkg))}</div>`
         + `<div class="memory-item-meta" style="font-size:10px;opacity:0.5;margin-top:2px;">${esc(pkg.desc)}</div>`
+        + (hubDetails ? `<div class="memory-item-meta" style="font-size:11px;margin-top:3px;overflow-wrap:anywhere;user-select:text;">${esc(hubDetails)}</div>` : '')
         + note
         + releaseNote
         + updateNote
@@ -1354,7 +1361,7 @@ async function _fetchDependencies({ showIssues = false } = {}) {
       items.length ? _sectionHeader(title, note) + _rowsHtml(items) : '';
     const _pkgOrder = {
       System: ['tmux', 'docker'],
-      Tools: ['pip', 'hf_transfer'],
+      Tools: ['huggingface_hub', 'pip', 'hf_transfer'],
       LLM: ['llama_cpp', 'sglang', 'vllm', 'mlx_lm'],
       Image: ['diffusers', 'krea_diffusers', 'transformers', 'sam_mask', 'mflux', 'boogu_image_mlx', 'mlx_vlm'],
     };
@@ -1573,7 +1580,7 @@ async function _fetchDependencies({ showIssues = false } = {}) {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
         const pipName = btn.dataset.depPip;
-        const pkgName = btn.closest('.cookbook-dep-row')?.querySelector('.memory-item-title')?.textContent || pipName;
+        const pkgName = btn.closest('.cookbook-dep-row')?.dataset.pkgName || pipName;
         await _installDep(pipName, pkgName, btn.dataset.depTarget === 'local', !!btn.dataset.upgrade, btn);
       });
     });

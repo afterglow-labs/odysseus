@@ -107,7 +107,7 @@ const context = vm.createContext({
 const jsRoot = path.resolve('static/js');
 const real = new Set(['cookbook.js', 'cookbook-deps-recipes.js', 'cookbookDependencyHealth.js', 'cookbookMaintenance.js', 'escMenuStack.js']);
 const allowedStubs = new Set(['ui.js', 'spinner.js', 'providers.js', 'windowDrag.js', 'cookbook-diagnosis.js',
-  'cookbook-hwfit.js', 'cookbookRunning.js', 'cookbookDownload.js', 'cookbookServe.js', 'toolWindowZOrder.js', 'modalManager.js', 'h3Video.js', 'bfsVideo.js']);
+  'cookbook-hwfit.js', 'cookbookRunning.js', 'cookbookDownload.js', 'cookbookServe.js', 'toolWindowZOrder.js', 'modalManager.js', 'h3Video.js', 'h3SeedHunter.js', 'bfsVideo.js', 'workflowPipeline.js']);
 const source = fs.readFileSync(path.join(jsRoot, 'cookbook.js'), 'utf8');
 // Declare the collaborators' import surface, while retaining the full real
 // coordinator, recipes, dialog, and Escape stack. No production functions are
@@ -277,6 +277,7 @@ await findButton(manager, 'Check for updates').events.click();
 assert.match(requests.at(-1).url, /check_updates=true/);
 assert.match(allText(manager), /26.2 → 26.3/);
 assert.ok(findButton(manager, 'Install setuptools'), 'Missing package tools can be restored inside the app');
+assert.ok(findButton(manager, 'Install Hugging Face Hub / hf CLI'), 'HF can be installed even if it is absent from the environment');
 findButton(manager, 'Close').events.click();
 assert.equal(listeners.has('cookbook:dependency-finished'), false);
 
@@ -289,6 +290,33 @@ assert.equal(requests.at(-1).body.remote_host, undefined);
 assert.equal(requests.at(-1).body.platform, 'windows');
 assert.match(requests.at(-1).body.cmd, /^python -m pip install -U 'pip'$/);
 findButton(localManager, 'Close').events.click();
+
+// Hub and its hf command are one package, visibly updateable without an
+// Installed dropdown. Names sent to the runner remain canonical task IDs.
+packages = [{ name: 'huggingface_hub', pip: 'huggingface_hub', target: 'local', category: 'Tools',
+  desc: 'Hugging Face Hub and hf CLI', installed: true, pip_update_available: true,
+  details: { dists: { 'huggingface-hub': '1.33.0' } }, python_executable: '/opt/odysseus/venv/bin/python' }];
+await app._fetchDependencies();
+assert.match(ids.get('cookbook-deps-list').innerHTML, /Hugging Face Hub \/ hf CLI/);
+assert.match(ids.get('cookbook-deps-list').innerHTML, /Update Hugging Face<\/button>/);
+assert.match(ids.get('cookbook-deps-list').innerHTML, /Installed: 1.33.0/);
+assert.match(ids.get('cookbook-deps-list').innerHTML, /Python: \/opt\/odysseus\/venv\/bin\/python/);
+
+inventory = { ...inventory, packages: [{ name: 'huggingface-hub', version: '1.33.0', latest_version: '2.2.0', update_available: true }] };
+const hfManager = ids.get('cookbook-manage-packages').onclick();
+await settle();
+const search = hfManager.children[0].children[1].children.flatMap(child => child.children).find(child => child.tagName === 'input');
+assert.ok(search);
+for (const query of ['hf', 'hf-cli', 'huggingface_hub', 'Hugging Face']) {
+  search.value = query; search.events.input();
+  assert.ok(findButton(hfManager, 'Update Hugging Face Hub / hf CLI'), query);
+}
+assert.match(allText(hfManager), /Latest release: 2.2.0 \(compatibility checked on update\)/);
+assert.doesNotMatch(allText(hfManager), /1.33.0 → 2.2.0/);
+await findButton(hfManager, 'Update Hugging Face Hub / hf CLI').events.click();
+assert.match(requests.at(-1).body.cmd, /pip install -U 'huggingface-hub'$/);
+assert.equal(requests.at(-1).body.repo_id, 'huggingface-hub');
+findButton(hfManager, 'Close').events.click();
 
 const maintenance = modules.get(path.join(jsRoot, 'cookbookMaintenance.js')).namespace;
 let stops = 0;

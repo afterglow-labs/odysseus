@@ -2326,7 +2326,11 @@ def setup_cookbook_routes() -> APIRouter:
             elif "vllm" in req.cmd:
                 ps_lines.append('Write-Host "ERROR: vLLM is not supported on Windows. Use Ollama or llama.cpp instead."')
                 ps_lines.append('exit 1')
-            ps_lines.append(req.cmd)
+            if is_pip_install:
+                from src.hf_dependency_update import hub_install_command
+                ps_lines.append(hub_install_command(req.cmd, powershell=True))
+            else:
+                ps_lines.append(req.cmd)
             if is_pip_install:
                 ps_lines.append('if ($LASTEXITCODE -eq 0) { Write-Host ""; Write-Host "DOWNLOAD_OK" }')
             ps_lines.append('Write-Host ""')

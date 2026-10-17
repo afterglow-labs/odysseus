@@ -46,6 +46,14 @@ DEPENDENCIES = [
     # meaningful product-level dependencies on their own.
     # ── LLM ── installs on GPU servers for model serving/downloading
     {
+        "name": "huggingface_hub",
+        "pip": "huggingface_hub",
+        "desc": "Hugging Face Hub and hf CLI for model downloads, authentication, and cache management. The hf-cli agent skill is separate documentation.",
+        "category": "Tools",
+        "target": "remote",
+        "install_hint": "Updates the hf CLI in the selected Python environment to the latest version compatible with installed packages. The hf-cli agent skill is separate documentation.",
+    },
+    {
         "name": "hf_transfer",
         "pip": "hf_transfer",
         "desc": "Fast model downloads from HuggingFace",

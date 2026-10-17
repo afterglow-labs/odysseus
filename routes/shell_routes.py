@@ -27,6 +27,7 @@ from src.dependency_catalog import (
     is_native_windows, unsupported_windows_requirements,
 )
 from src.dependency_health import check_dependency_health
+from src.hf_dependency_update import hub_environment_preflight_code, hub_install_source
 from src.dependency_index import check_latest_release
 from src.environment_packages import inspect_environment
 from src.sglang_runtime import (
@@ -384,6 +385,9 @@ def _package_installed_from_probe(name: str, probe: dict) -> bool:
             dists.get("hf-transfer")
             or modules.get("hf_transfer", {}).get("real_module")
         )
+    if name == "huggingface_hub":
+        return bool((dists.get("huggingface_hub") or dists.get("huggingface-hub"))
+                    and modules.get(name, {}).get("real_module") and binaries.get("hf"))
     return bool(dists.get(name) or modules.get(name, {}).get("real_module"))
 
 
@@ -404,6 +408,11 @@ def _package_status_note(name: str, probe: dict) -> str:
             loc = locations[0] if locations else module.get("origin") or "unknown path"
             return f"Python sees a vllm namespace at {loc}, but no vLLM CLI is on PATH."
         return "vLLM CLI not found on PATH."
+    if name == "huggingface_hub":
+        version = dists.get("huggingface_hub") or dists.get("huggingface-hub")
+        return (f"Hugging Face Hub {version}; hf CLI: {binaries['hf']}"
+                if _package_installed_from_probe(name, probe)
+                else "Hugging Face Hub and the hf CLI must be installed in this Python environment.")
     if name == "llama_cpp":
         parts = []
         if binaries.get("llama-server"):
@@ -516,6 +525,8 @@ def _package_pip_update_status(
             False,
             "Using a vLLM CLI on PATH without Python package metadata; update it outside Odysseus.",
         )
+    if name == "huggingface_hub":
+        return PackageUpdateStatus(True, "Update uses the selected Python environment and preserves installed packages' Hugging Face version requirements.")
 
     return PackageUpdateStatus(
         True, "Update uses pip in the selected Python environment."
@@ -582,6 +593,7 @@ dist_names={{
     'krea_diffusers':['diffusers','torch'],
     'sam_mask':['transformers','torch'],
     'hf_transfer':['hf-transfer','hf_transfer'],
+    'huggingface_hub':['huggingface_hub'],
 }}
 bin_names={{
     'vllm':['vllm'],
@@ -590,6 +602,7 @@ bin_names={{
     'mlx_lama_swift':['odysseus-mlx-inpaint', 'mlx-lama-serve'],
     'mlx_ddcolor_swift':['odysseus-mlx-colorize', 'mlx-ddcolor-serve'],
     'tmux':['tmux'],
+    'huggingface_hub':['hf'],
 }}
 
 def add_user_install_bins_to_path():
@@ -646,6 +659,9 @@ def probe(n):
         mods['torch'] = mod_status('torch')
     dists = dist_status(dist_names.get(n, [n]))
     bins = {{b: shutil.which(b) for b in bin_names.get(n, [])}}
+    if n == 'huggingface_hub':
+        launcher = os.path.join(os.path.dirname(sys.executable), 'hf.exe' if os.name == 'nt' else 'hf')
+        bins['hf'] = launcher if os.path.isfile(launcher) else None
     files = {{}}
     if n in ('mlx_lama_swift', 'mlx_ddcolor_swift'):
         for key in ('mlx.metallib', 'default.metallib'):
@@ -658,7 +674,7 @@ def probe(n):
                     found = p
                     break
             files[key] = found
-    return {{'modules': mods, 'dists': dists, 'binaries': bins, 'files': files,
+    return {{'modules': mods, 'dists': dists, 'binaries': bins, 'files': files, 'python_executable': sys.executable,
              'health': check_dependency_health(health_specs.get(n, []))}}
 
 def safe_probe(n):
@@ -1763,6 +1779,25 @@ def setup_shell_routes() -> APIRouter:
                 pkg["status_note"] = probe.get("error") or _package_status_note("sam_mask", probe)
                 if probe.get("error"):
                     pkg["probe_error"] = probe["error"]
+            elif pkg["name"] == "huggingface_hub":
+                try:
+                    version = importlib_metadata.version("huggingface_hub")
+                    spec = importlib.util.find_spec("huggingface_hub")
+                    launcher = Path(sys.executable).parent / ("hf.exe" if IS_WINDOWS else "hf")
+                    probe = {"dists": {"huggingface_hub": version},
+                             "modules": {"huggingface_hub": {"real_module": bool(spec and spec.loader)}},
+                             "binaries": {"hf": str(launcher) if launcher.is_file() else None},
+                             "python_executable": sys.executable}
+                    pkg["version"] = version
+                    pkg["installed"] = _package_installed_from_probe(pkg["name"], probe)
+                    pkg["details"] = probe
+                    pkg["status_note"] = _package_status_note(pkg["name"], probe)
+                except importlib_metadata.PackageNotFoundError:
+                    pkg["installed"] = False
+                except (Exception, SystemExit) as exc:
+                    pkg["installed"] = False
+                    pkg["probe_error"] = f"Cannot inspect Hugging Face: {str(exc)[:240]}"
+                    pkg["status_note"] = pkg["probe_error"]
             else:
                 try:
                     _import_optional_dependency_for_status(pkg["name"])
@@ -1783,6 +1818,11 @@ def setup_shell_routes() -> APIRouter:
                     pkg["installed"] = False
                     pkg["probe_error"] = f"Cannot load {pkg['name']}: {str(exc)[:240]}"
                     pkg["status_note"] = pkg["probe_error"]
+
+            if pkg["name"] == "huggingface_hub" and isinstance(probe, dict):
+                dists = probe.get("dists") or {}
+                pkg["version"] = dists.get("huggingface_hub") or dists.get("huggingface-hub")
+                pkg["python_executable"] = probe.get("python_executable")
 
             # Metadata catches missing sub-dependencies and version conflicts
             # even when a top-level module happens to import successfully.
@@ -1963,6 +2003,7 @@ def setup_shell_routes() -> APIRouter:
             "rembg[cpu]",
             "rembg[gpu]",
             "hf_transfer",
+            "huggingface_hub",
             "llama-cpp-python[server]",
             "sglang",
             "sglang[all]",
@@ -2026,6 +2067,10 @@ def setup_shell_routes() -> APIRouter:
             code, stdout, stderr = await run_python("-c", sglang_python_preflight_code())
             if code:
                 return install_error("SGLang Python compatibility check failed", code, stdout, stderr)
+        if pip_name == "huggingface_hub":
+            code, stdout, stderr = await run_python("-c", hub_environment_preflight_code())
+            if code:
+                return install_error("Hugging Face Python environment check failed", code, stdout, stderr)
 
         # Match the task-runner path: uv environments may lack pip, and native
         # installs need the same patched wheels as the Docker build.
@@ -2045,7 +2090,12 @@ def setup_shell_routes() -> APIRouter:
         install_args = ["-m", "pip", "install"]
         if sglang_install:
             install_args += ["--pre", "--only-binary=sglang"]
-        code, stdout, stderr = await run_python(*install_args, pip_name)
+        if pip_name == "huggingface_hub":
+            if body.get("upgrade"):
+                install_args.append("--upgrade")
+            code, stdout, stderr = await run_python("-c", hub_install_source(), *install_args[2:], pip_name)
+        else:
+            code, stdout, stderr = await run_python(*install_args, pip_name)
         if code == 0:
             return {"ok": True, "output": stdout.decode("utf-8", errors="replace")[-200:]}
         return {"ok": False, "error": stderr.decode("utf-8", errors="replace")[-300:]}

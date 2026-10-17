@@ -20741,6 +20741,10 @@ body.gallery-selecting .gallery-dl-btn,
   -webkit-appearance: none;
   -moz-appearance: none;
 }
+.cookbook-dep-hub { flex-wrap: wrap; }
+.cookbook-dep-hub .cookbook-dep-info { flex-basis: 260px; }
+.cookbook-dep-hub .cookbook-dep-tag { flex-shrink: 0; }
+.cookbook-dep-hub .cookbook-dep-install { width: auto; }
 /* Conditional line under the Download h2: only when the section is folded
    (collapsed). When expanded, the body content provides separation; the
    underline reads as clutter. */
