@@ -94,6 +94,27 @@ assert.equal(s.document.edges.length,2);
 ''')
 
 
+def test_graph_history_only_offers_main_or_positive_connected_prompt_fields():
+    presentation = (ROOT / 'static/js/workflowGraphPresentation.js').as_uri()
+    run_node(f"import {{graphFieldUsesPromptHistory as eligible}} from {json.dumps(presentation)};\n" + r'''
+import assert from 'node:assert/strict';
+const p={id:'p',type:'comfy.CLIPTextEncode'},n={id:'n',type:'comfy.CustomNegativeEncoder'},r={id:'r',type:'comfy.Reroute'},s={id:'s',type:'comfy.KSampler'},main={id:'main',type:'input.prompt'};
+const graph={nodes:[p,n,r,s,main],edges:[
+ {source:{node:'p',port:'output_0'},target:{node:'r',port:'anything'}},
+ {source:{node:'r',port:'output_0'},target:{node:'s',port:'positive'}},
+ {source:{node:'n',port:'output_0'},target:{node:'s',port:'negative'}}]};
+assert(eligible(graph,p,{id:'text'}));
+assert(!eligible(graph,n,{id:'prompt'}),'Negative encoder aliases must not pollute main history');
+assert(eligible(graph,main,{id:'text'}),'Standalone explicit prompt remains usable');
+assert(!eligible(graph,p,{id:'negative_prompt'}));
+assert(!eligible(graph,p,{id:'filename_prefix'}));
+graph.edges.push({source:{node:'r',port:'output_0'},target:{node:'p',port:'text'}});
+assert(eligible(graph,p,{id:'text'}),'Malformed cycles must terminate');
+graph.edges.push({source:{node:'n',port:'output_0'},target:{node:'s',port:'positive_prompt'}});
+assert(eligible(graph,n,{id:'prompt'}),'A deliberately shared positive source is usable');
+''')
+
+
 def test_reference_attachments_are_real_multi_inputs_and_atomic_undo():
     run_node(r'''
 import assert from 'node:assert/strict';

@@ -1,3 +1,4 @@
+import { bindWorkflowPromptHistory } from './workflowPromptHistory.js';
 import { createVideoJobPager, observePagedVideoJobEditor } from './videoJobPage.js';
 import { createVideoJobMedia, releaseVideoJobMedia } from './videoJobMedia.js';
 import { bindMenuDismiss, dismissOrRemove } from './escMenuStack.js';
@@ -49,7 +50,7 @@ export function showBfsVideo({ preferred = null, layout = 'classic' } = {}, anch
     }
   }
   const storageKey = STORAGE + (layout === 'pipeline' ? ':pipeline' : '');
-  let pipeline = null;
+  let pipeline = null, promptHistory = null;
   let closed = false, inventory = null, workflow = null, loading = false, submitting = false, jobPager = null;
   let jobs = [], pollTimer, saved = {}, pendingPreferred = preferred, preferredAdapter = '', refreshFailed = false;
   let transferBusy = false, editRevision = 0, batchQueue = null, jobEditor = null, queueControls = null;
@@ -579,7 +580,7 @@ export function showBfsVideo({ preferred = null, layout = 'classic' } = {}, anch
   // A selection drag can synthesize a click on the backdrop. Only the Close
   // button (or explicit programmatic teardown) may discard this live draft.
   const close = bindMenuDismiss(overlay, () => {
-    pipeline?.destroy(); closed = true; clearInterval(pollTimer); window.removeEventListener('keydown', onKey, true);
+    promptHistory?.destroy(); pipeline?.destroy(); closed = true; clearInterval(pollTimer); window.removeEventListener('keydown', onKey, true);
     serverPicker?.close();
     batchQueue?.destroy(); queueControls?.destroy(); jobPager?.destroy(); releaseVideoJobMedia(jobList);
     for (const state of files.values()) if (state.url) URL.revokeObjectURL(state.url);
@@ -666,6 +667,7 @@ export function showBfsVideo({ preferred = null, layout = 'classic' } = {}, anch
       return descriptors;
     },
   });
+  promptHistory = bindWorkflowPromptHistory(dialog, { workflow: 'bfs' });
   if(layout==='pipeline')pipeline=createWorkflowPipeline({container:scroll,dialog,form,family:'bfs',title:'BFS Video',
     sections:[
       {id:'inputs',title:'Inputs',parent:form,nodes:[workflowPicker.parentElement,workflowNote,adapterNotice,batchContainer,inputGrid,sourceNote,inputStatus]},

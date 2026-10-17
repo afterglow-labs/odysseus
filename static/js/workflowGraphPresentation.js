@@ -6,6 +6,27 @@ export function graphFieldMultiline(field, spec = {}) {
   return spec.execution !== 'comfy' && (field.type === 'text' || ['text','prompt','negative_prompt'].includes(field.id));
 }
 
+export function graphFieldUsesPromptHistory(document, node, field) {
+  const textFields = new Set(['text', 'text_g', 'text_l', 'prompt', 'positive', 'positive_prompt']);
+  if (!textFields.has(field.id)) return false;
+  const nodes = new Map((document.nodes || []).map(item => [item.id, item]));
+  const edges = document.edges || [];
+  function upstream(ports, positive) {
+    const found = new Set(), pending = edges.filter(edge => ports.includes(edge.target.port)).map(edge => edge.source.node);
+    while (pending.length) {
+      const id = pending.pop(); if (found.has(id)) continue; found.add(id);
+      const reroute = /reroute/i.test(nodes.get(id)?.type || '');
+      for (const edge of edges) if (edge.target.node === id && (!positive || reroute || textFields.has(edge.target.port))) pending.push(edge.source.node);
+    }
+    return found;
+  }
+  const positive = upstream(['positive', 'positive_prompt'], true);
+  const negative = upstream(['negative', 'negative_prompt'], false);
+  if (negative.has(node.id) && !positive.has(node.id)) return false;
+  return positive.has(node.id) || ['prompt', 'positive_prompt', 'positive'].includes(field.id)
+    || (node.type === 'input.prompt' && field.id === 'text');
+}
+
 export function graphOutputKind(output = {}) {
   const name = String(output.name || output.filename || '').toLowerCase();
   const mime = String(output.mime_type || output.content_type || '').toLowerCase();

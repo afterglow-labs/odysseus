@@ -232,6 +232,8 @@ class GraphRunManager:
                 if temporary.exists():
                     shutil.rmtree(temporary)
         self._start(run_id)
+        from src.workflow_prompt_history import remember_graph_prompts
+        remember_graph_prompts(self, owner, compiled)
         return self.view(run_id, owner)
 
     def _public(self, directory, state):

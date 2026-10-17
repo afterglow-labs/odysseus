@@ -185,6 +185,8 @@ def edit_jobs(manager, owner, family, chosen, patch):
             raise RuntimeError("Could not save the bulk edit; all original settings were restored") from exc
         resolved_paths = {}
         jobs = [_light(item["directory"], item["state"], inventory, family, resolved_paths=resolved_paths) for item in prepared]
+    from src.workflow_prompt_history import remember_job_prompts
+    remember_job_prompts(manager, owner, [item["config"] for item in prepared])
     return {"updated": len(jobs), "succeeded": len(jobs), "failed": 0, "jobs": jobs}
 
 

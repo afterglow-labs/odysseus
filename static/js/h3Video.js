@@ -1,3 +1,4 @@
+import { bindWorkflowPromptHistory } from './workflowPromptHistory.js';
 import { createVideoJobPager, observePagedVideoJobEditor } from './videoJobPage.js';
 import { createVideoJobMedia, releaseVideoJobMedia } from './videoJobMedia.js';
 import { bindMenuDismiss, dismissOrRemove } from './escMenuStack.js';
@@ -210,7 +211,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic' } = {}, 
     document.head.appendChild(style);
   }
   const storageKey = STORAGE + (layout === 'pipeline' ? ':pipeline' : '');
-  let pipeline = null;
+  let pipeline = null, promptHistory = null;
   let closed = false, submitting = false, jobPager = null, timer = null, inventory = null, jobs = [], loadFailed = false;
   let enhancing = false, enhancementController = null, enhancer = null, enhancerChecking = false, enhancerCheck = 0;
   let originalPrompt = null, editRevision = 0, enhancementStarted = 0;
@@ -1126,7 +1127,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic' } = {}, 
   // button (or explicit programmatic teardown) may discard this live draft.
   const close = bindMenuDismiss(overlay, () => {
     save();
-    pipeline?.destroy(); closed = true; clearInterval(timer); window.removeEventListener('keydown', onKey, true);
+    promptHistory?.destroy(); pipeline?.destroy(); closed = true; clearInterval(timer); window.removeEventListener('keydown', onKey, true);
     serverPicker?.close();
     loraLibrary?.close();
     batchQueue?.destroy(); queueControls?.destroy(); jobPager?.destroy(); releaseVideoJobMedia(jobList);
@@ -1190,6 +1191,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic' } = {}, 
       components: h3LoraComponents(inventory?.components || [], savedJob?.lora_components), value: loraEditor.getValue(), max: inventory?.max_loras || 8, idPrefix: 'h3-queue', onChange,
     }) }]),
   });
+  promptHistory = bindWorkflowPromptHistory(dialog, { workflow: 'h3' });
   if (layout === 'pipeline') {
     components.append(fields.gpu.parentElement,fields.vae_gpu.parentElement);
     pipeline=createWorkflowPipeline({container:scroll,dialog,form,family:'h3',title:'MiniMax H3 Video',

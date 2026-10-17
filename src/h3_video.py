@@ -896,7 +896,9 @@ class H3JobManager:
                 _write(directory / "state.json", state)
                 raise RuntimeError(state["error"]) from exc
             threading.Thread(target=process.wait, daemon=True).start()
-            return self.view(directory.name, owner)
+        from src.workflow_prompt_history import remember_job_prompts
+        remember_job_prompts(self, owner, [config])
+        return self.view(directory.name, owner)
 
     def upgrade_queued_supervisor(self, directory, state):
         """Called only under job.lock, before an edited manifest is published.

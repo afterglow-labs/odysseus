@@ -1,3 +1,4 @@
+import { bindWorkflowPromptHistory } from './workflowPromptHistory.js';
 import { createVideoJobPager, observePagedVideoJobEditor } from './videoJobPage.js';
 import { createVideoJobMedia, releaseVideoJobMedia } from './videoJobMedia.js';
 import { createVideoJobSources } from './videoJobSources.js';
@@ -101,7 +102,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
   if (scout && !document.getElementById('h3-scout-styles')) { const css = make('link'); css.id = 'h3-scout-styles'; css.rel = 'stylesheet'; css.href = '/static/h3-seed-scout.css'; document.head.append(css); }
   document.querySelectorAll('.h3-seed-hunter-overlay').forEach(dismissOrRemove);
   const retained = scout ? seedScoutDraft(undefined,layout) : null;
-  let pipeline = null;
+  let pipeline = null, promptHistory = null;
   if (!document.getElementById('h3-video-styles')) { const css = make('link'); css.id = 'h3-video-styles'; css.rel = 'stylesheet'; css.href = '/static/h3-video.css'; document.head.append(css); }
   let saved = {}; try { saved = JSON.parse(localStorage.getItem(storageKey) || '{}'); } catch {}
   if (retained) saved = { ...saved, config: retained.config };
@@ -138,7 +139,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
     onInsertTrigger: component => { if(stage.value==='final'){fail('Refinement keeps the saved preview prompt.');return;} const profile = component.lora_profile; fields.prompt.value = insertH3LoraTrigger(fields.prompt.value, profile.trigger_words, profile.trigger_position, fields.prompt.selectionStart); changed(); fields.prompt.focus(); },
     onApplyRecommended: component => { for (const [key, value] of Object.entries(component.lora_profile?.recommended_settings || {})) if (fields[key] && (stage.value!=='final'||FINAL_FIELDS.has(key))) fields[key].value = value; changed(); },
   }); form.append(loras.node);
-  const prompt = field(form, 'prompt', 'Prompt', make('textarea')); prompt.rows = 5; prompt.maxLength = 16000; prompt.required = true;
+  const prompt = field(form, 'prompt', 'Prompt', make('textarea')); prompt.dataset.workflowPrompt = ''; prompt.rows = 5; prompt.maxLength = 16000; prompt.required = true;
   const enhancerBar = make('div', 'h3-video-actions'), enhance = button('Enhance prompt'), restorePrompt = button('Restore original prompt'), enhancerSelect = make('select', 'cookbook-field-input'), checkModels = button('Check models'); enhancerSelect.setAttribute('aria-label', 'Enhancement model');
   enhance.dataset.seedHunterHelpAction = 'prompt_enhancement';
   enhancerBar.append(enhancerSelect, enhance, restorePrompt, checkModels); form.append(enhancerBar); const enhancerInfo=make('p','h3-video-muted');form.append(enhancerInfo); restorePrompt.hidden = true;
@@ -465,10 +466,11 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
   enhance.onclick=async()=>{const model=enhancer[Number(enhancerSelect.value)];if(!model||enhance.disabled)return;const before=prompt.value,captured=revision;enhancing=true;enhancerController=new AbortController();update();try{const payload={recipe:'seed_hunter',prompt:before,mode:'ref2va',width:Number(fields.width.value),height:Number(fields.height.value),frames:Number(fields.frames.value),endpoint_id:model.endpoint_id,model:model.model,reference_counts:seedHunterEnhancerInputs(uploads,readOptions()).counts};const body=new FormData();body.append('config',JSON.stringify(payload));for(const [key,files] of Object.entries(seedHunterEnhancerInputs(uploads,readOptions()).images))for(const file of files)body.append(key,file,file.name);const result=await request('/enhance-prompt',{method:'POST',body,signal:enhancerController.signal});if(!closed&&captured===revision&&prompt.value===before){if(!result.prompt?.trim()||result.prompt.length>16000)throw new Error('Enhancement returned no usable prompt.');previousPrompt=before;prompt.value=result.prompt;changed();status.textContent='Prompt enhanced. Review it before generating.';}}catch(e){if(e.name!=='AbortError')fail(e);}finally{enhancing=false;if(!closed)update();}};
   restorePrompt.onclick=()=>{if(previousPrompt!==null){prompt.value=previousPrompt;previousPrompt=null;changed();}};checkModels.onclick=checkEnhancer;
   function onKey(event){if(document.querySelector('.settings-help-tooltip'))return;if(document.querySelector('.video-queue-confirmation[open],.video-server-files-overlay,.h3-lora-library-overlay,.video-workflow-export-overlay'))return;if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();}else if(event.key==='Tab'){const controls=[...dialog.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),summary,a[href]')].filter(n=>n.getClientRects().length);if(event.shiftKey&&document.activeElement===controls[0]){event.preventDefault();controls.at(-1)?.focus();}else if(!event.shiftKey&&document.activeElement===controls.at(-1)){event.preventDefault();controls[0]?.focus();}}}
-  const close=bindMenuDismiss(overlay,()=>{if(scout&&!jobEditor?.active){save();seedScoutDraft({config:config(),uploads:currentUploads()},layout);}pipeline?.destroy();closed=true;disposeHelp();jobPager?.destroy();releaseVideoJobMedia(jobList);clearInterval(timer);window.removeEventListener('keydown',onKey,true);enhancerController?.abort();picker?.close();library?.close();queue?.destroy();batchQueue?.destroy();Object.values(uploads).forEach(state=>state.rangeEditors.forEach(editor=>editor.destroy()));overlay.remove();if(anchor?.isConnected)anchor.focus();},()=>false);
+  const close=bindMenuDismiss(overlay,()=>{if(scout&&!jobEditor?.active){save();seedScoutDraft({config:config(),uploads:currentUploads()},layout);}promptHistory?.destroy(); pipeline?.destroy();closed=true;disposeHelp();jobPager?.destroy();releaseVideoJobMedia(jobList);clearInterval(timer);window.removeEventListener('keydown',onKey,true);enhancerController?.abort();picker?.close();library?.close();queue?.destroy();batchQueue?.destroy();Object.values(uploads).forEach(state=>state.rangeEditors.forEach(editor=>editor.destroy()));overlay.remove();if(anchor?.isConnected)anchor.focus();},()=>false);
   closeButton.onclick=close;window.addEventListener('keydown',onKey,true);closeButton.focus();
   for(const [key,value]of Object.entries({...base,...(saved.config||{})}))if(fields[key])fields[key].value=value;
   for(const key of [...NESTED,...(scout?Object.keys(SEED_SCOUT_OPTIONS):[])]){const n=options[key],v=saved.config?.seed_hunter?.[key]??defaults[key];if(n.type==='checkbox')n.checked=v;else n.value=key==='preview_count'?seedHunterPreviewCount(v):v??'';}
+  promptHistory = bindWorkflowPromptHistory(dialog, { workflow: scout ? 'seed_scout' : 'seed_hunter' });
   if (layout === 'pipeline') pipeline = createWorkflowPipeline({container:scroll,dialog,form,family:'h3',title,
     sections:[
       {id:'inputs',title:'Inputs',parent:form,nodes:[stage.parentElement,batchContainer,media]},

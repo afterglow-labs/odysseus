@@ -281,4 +281,6 @@ def commit_edit(manager, job_id, owner, family, raw, expected, retain, saved, na
                         Path(item["path"]).unlink(missing_ok=True)
                     except OSError:
                         pass
+    from src.workflow_prompt_history import remember_job_prompts
+    remember_job_prompts(manager, owner, [config])
     return manager.view(job_id, owner)

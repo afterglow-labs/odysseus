@@ -818,6 +818,8 @@ from routes.workflow_conversion_routes import setup_workflow_conversion_routes
 app.include_router(setup_workflow_conversion_routes())
 from routes.workflow_graph_routes import setup_workflow_graph_routes
 app.include_router(setup_workflow_graph_routes())
+from routes.workflow_prompt_history_routes import setup_workflow_prompt_history_routes
+app.include_router(setup_workflow_prompt_history_routes())
 
 from routes.workspace_routes import setup_workspace_routes
 app.include_router(setup_workspace_routes())

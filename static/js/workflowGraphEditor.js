@@ -1,7 +1,8 @@
+import { bindWorkflowPromptHistory } from './workflowPromptHistory.js';
 import { blankWorkflowGraph, createWorkflowGraphStore, graphFields, graphPorts, graphOrder, graphId, workflowRequestId, graphTypes, connectionIssue } from './workflowGraphStore.js';
 import { showVideoServerFiles } from './videoServerFiles.js';
 import { topPortalZ } from './toolWindowZOrder.js';
-import { graphFieldMultiline, graphOutputKind, graphPortHelp } from './workflowGraphPresentation.js';
+import { graphFieldMultiline, graphFieldUsesPromptHistory, graphOutputKind, graphPortHelp } from './workflowGraphPresentation.js';
 
 const API = '/api/workflow-graphs', DRAFT = 'odysseus-workflow-graph-draft-v1';
 let retainedDraft = null;
@@ -28,6 +29,7 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
   const overlay = make('div','workflow-graph-overlay'); overlay.style.zIndex = String(topPortalZ());
   const root = make('section','workflow-graph-editor'); root.setAttribute('role','dialog'); root.setAttribute('aria-modal','true'); root.setAttribute('aria-label','Workflow builder');
   overlay.append(root); document.body.append(overlay);
+  const promptHistory = bindWorkflowPromptHistory(root, { workflow: 'workflow_graph' });
   const header = make('header','wg-header'), identity = make('div','wg-identity');
   const title = make('input','wg-title'); title.setAttribute('aria-label','Workflow title'); title.maxLength = 180;
   const saved = make('span','wg-muted','Loading operations…'); identity.append(make('span','wg-kicker','ODYSSEUS / WORKFLOWS'),title,saved);
@@ -374,6 +376,7 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
     else if (f.type === 'object' || f.type === 'array' || typeof value === 'object' && value !== null) { input = make('textarea','wg-input'); input.rows = 5; input.value = JSON.stringify(value ?? {},null,2); transform = JSON.parse; }
     else if (graphFieldMultiline(f,store.types.get(n.type))) { input = make('textarea','wg-input'); input.rows = 7; input.value = value ?? ''; }
     else { input = make('input','wg-input'); input.type = 'text'; input.value = value ?? ''; }
+    if ((input.tagName === 'TEXTAREA' || input.type === 'text') && graphFieldUsesPromptHistory(store.document,n,f)) input.dataset.workflowPrompt = '';
     input.dataset.graphParam = f.id; input.setAttribute('aria-label',label);
     const update = () => { try { if (!input.checkValidity()) { input.reportValidity(); return; } const next = input.type === 'checkbox' ? input.checked : transform(input.value); if (typeof next === 'number' && !Number.isFinite(next)) throw new Error('Enter a finite number.'); store.parameter(n.id,f.id,next); } catch(e) { tell(`${label}: ${e.message}`,true); } };
     input.onchange = update;
@@ -640,7 +643,7 @@ export function showWorkflowGraphEditor(initial = {}, anchor = document.activeEl
   }
   // The workspace only closes with Close. Selection drags and backdrop clicks
   // cannot discard a draft, including while it is still being loaded.
-  function close() { if (closed) return; closed = true; persist(); loadToken++; validationController?.abort(); clearTimeout(validationTimer); clearTimeout(runsTimer); cancelAnimationFrame(frame); if (drag) drag.up(); for (const url of mediaUrls) URL.revokeObjectURL(url); window.removeEventListener('keydown',keydown,true); overlay.remove(); if (anchor?.isConnected) anchor.focus(); }
+  function close() { if (closed) return; promptHistory.destroy(); closed = true; persist(); loadToken++; validationController?.abort(); clearTimeout(validationTimer); clearTimeout(runsTimer); cancelAnimationFrame(frame); if (drag) drag.up(); for (const url of mediaUrls) URL.revokeObjectURL(url); window.removeEventListener('keydown',keydown,true); overlay.remove(); if (anchor?.isConnected) anchor.focus(); }
   window.addEventListener('keydown',keydown,true);
   async function init() {
     for (const b of [newBtn,libraryBtn,saveBtn,importBtn,exportBtn,addBtn,packagesBtn,validateBtn,runBtn,undoBtn,redoBtn]) b.disabled = true;

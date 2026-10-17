@@ -1,0 +1,9 @@
+.workflow-prompt-history { min-width: 0; width: 100%; margin-top: 6px; }
+.workflow-prompt-history-controls { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.workflow-prompt-history-controls select { flex: 1 1 16rem; min-width: 0; width: 0; font-size: .84rem; }
+.workflow-prompt-history-controls button { flex: 0 0 auto; white-space: nowrap; padding: 6px 9px; }
+.workflow-prompt-history-status { margin: 5px 0 0; font-size: .8rem; color: var(--text-secondary, #a9abb7); overflow-wrap: anywhere; }
+@media (max-width: 520px) {
+  .workflow-prompt-history-controls { flex-wrap: wrap; }
+  .workflow-prompt-history-controls select { flex-basis: 100%; width: 100%; }
+}
