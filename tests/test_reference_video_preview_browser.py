@@ -118,8 +118,8 @@ def test_local_mkv_compatible_preview_playback_ranges_reuse_and_retry(tmp_path, 
                 await page.locator('video').evaluate('v=>new Promise(resolve=>{v.addEventListener("seeked",resolve,{once:true});v.currentTime=2})')
                 await page.get_by_role('button', name='Use current time as start').click()
                 assert await page.evaluate('editor.getValue()') == {'start_seconds': 25, 'duration_seconds': 4}
-                await page.get_by_role('button', name='Next 30 seconds').click()
-                await page.wait_for_function('document.querySelector("video").src.includes("start_seconds=53")&&document.querySelector("video").readyState>=2')
+                await page.get_by_role('button', name='Jump forward 30 seconds').click()
+                await page.wait_for_function('document.querySelector("video").src.includes("start_seconds=55")&&document.querySelector("video").readyState>=2')
                 await page.get_by_role('button', name='Play selected section').click()
                 await page.wait_for_function('document.querySelector("video").src.includes("start_seconds=25")&&document.querySelector("video").readyState>=2')
                 assert len(uploads) == 1
@@ -130,7 +130,7 @@ def test_local_mkv_compatible_preview_playback_ranges_reuse_and_retry(tmp_path, 
                 assert len(uploads) == 1 and not deleted
                 # A transient converter failure retries against the same source.
                 failure['window'] = 503
-                await page.get_by_role('button', name='Next 30 seconds').click()
+                await page.get_by_role('button', name='Jump forward 30 seconds').click()
                 await page.get_by_role('status').filter(has_text='could not load').wait_for()
                 failure['window'] = 0
                 await page.get_by_role('button', name='Compatible preview', exact=True).click()
@@ -138,7 +138,7 @@ def test_local_mkv_compatible_preview_playback_ranges_reuse_and_retry(tmp_path, 
                 assert len(uploads) == 1
                 # Expired/missing temporary source retries with a fresh upload.
                 failure['window'] = 410
-                await page.get_by_role('button', name='Next 30 seconds').click()
+                await page.get_by_role('button', name='Jump forward 30 seconds').click()
                 await page.get_by_role('status').filter(has_text='expired').wait_for()
                 failure['window'] = 0
                 await page.get_by_role('button', name='Compatible preview', exact=True).click()
@@ -151,7 +151,7 @@ def test_local_mkv_compatible_preview_playback_ranges_reuse_and_retry(tmp_path, 
                 await page.locator('video').evaluate('v=>v.pause()')
                 await page.screenshot(path=str(tmp_path / 'local-preview-desktop.png'))
                 await page.set_viewport_size({'width': 390, 'height': 844})
-                bounds = await page.locator('.h3-reference-preview .h3-video-actions button:visible').evaluate_all('buttons=>buttons.map(b=>({left:b.getBoundingClientRect().left,right:b.getBoundingClientRect().right}))')
+                bounds = await page.locator('.h3-reference-preview button:visible').evaluate_all('buttons=>buttons.map(b=>({left:b.getBoundingClientRect().left,right:b.getBoundingClientRect().right}))')
                 assert all(b['left'] >= 0 and b['right'] <= 390 for b in bounds)
                 await page.screenshot(path=str(tmp_path / 'local-preview-mobile.png'))
                 await page.evaluate('editor.destroy();document.querySelector("#editor").replaceChildren()')
@@ -232,6 +232,173 @@ def test_incompatible_inputs_fall_back_automatically_and_upload_retry_is_visible
                 assert not errors
                 await page.evaluate('editor.destroy()')
                 await page.wait_for_timeout(300)
+            finally:
+                await browser.close()
+    asyncio.run(exercise())
+
+
+def test_jump_groups_use_source_playhead_reuse_local_upload_and_do_not_edit_selection(tmp_path, neutral_media):
+    pw = pytest.importorskip('playwright.async_api')
+    chrome = shutil.which('google-chrome') or shutil.which('chromium')
+    if not chrome:
+        pytest.skip('Browser plugin unavailable; Chrome required')
+    mp4, mkv = neutral_media
+    uploads, windows, errors = [], [], []
+
+    async def exercise():
+        async with pw.async_playwright() as p:
+            browser = await p.chromium.launch(executable_path=chrome, headless=True, args=['--no-sandbox'])
+            page = await browser.new_page(viewport={'width': 390, 'height': 844})
+            page.set_default_timeout(7000)
+            page.on('pageerror', lambda error: errors.append(str(error)))
+
+            async def route(handler):
+                request = handler.request
+                parsed = urlparse(request.url)
+                path = parsed.path
+                if path == '/':
+                    await handler.fulfill(content_type='text/html', body='<html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Reference video jumps QA</title><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/h3-video.css"></head><body style="display:block"><input id="file" type="file"><main style="margin:12px"></main></body></html>')
+                elif path.startswith('/static/'):
+                    file = ROOT / path.lstrip('/')
+                    await handler.fulfill(body=file.read_bytes(), content_type='text/javascript' if file.suffix == '.js' else mimetypes.guess_type(file.name)[0])
+                elif path == API and request.method == 'POST':
+                    uploads.append(path)
+                    await handler.fulfill(status=201, json={'id': 'a'*32, 'metadata': {'duration_seconds': 4000},
+                        'preview_url': API + '/' + 'a'*32 + '/video', 'expires_at': time.time()+7200})
+                elif path.startswith(API) and path.endswith('/video'):
+                    windows.append(float(parse_qs(parsed.query)['start_seconds'][0]))
+                    await serve_video(handler, mp4)
+                elif path == '/direct.mp4':
+                    await serve_video(handler, mp4)
+                elif path.startswith(API) and request.method == 'DELETE':
+                    await handler.fulfill(json={'deleted': True})
+                else:
+                    await handler.fulfill(status=404)
+            await page.route('**/*', route)
+            try:
+                await page.goto('https://video-jumps.test/')
+                await page.locator('#file').set_input_files(mkv)
+                await page.evaluate('''async()=>{
+                  window.ranges=await import('/static/js/referenceVideoRange.js');window.file=document.querySelector('#file').files[0];
+                  ranges.setReferenceVideoRange(file,{start_seconds:23,duration_seconds:4});
+                  window.changes=0;window.editor=ranges.createReferenceVideoRangeEditor(file,()=>changes++);
+                  document.querySelector('main').append(editor.node);
+                }''')
+                await page.get_by_text('Preview video and choose a section', exact=True).click()
+                await page.wait_for_function('document.querySelector("video").readyState>=2')
+                assert await page.get_by_role('group', name='Jump backward', exact=True).get_by_role('button').count() == 5
+                assert await page.get_by_role('group', name='Jump forward', exact=True).get_by_role('button').count() == 5
+
+                async def seek_two():
+                    await page.wait_for_function('document.querySelector("video").readyState>=2 && document.querySelector("video").seekable.length>0')
+                    await page.locator('video').evaluate('v=>new Promise(resolve=>{v.pause();v.addEventListener("seeked",resolve,{once:true});v.currentTime=2})')
+
+                async def jump(direction, label, expected_start):
+                    await page.get_by_role('button', name=f'Jump {direction} {label}', exact=True).click()
+                    await page.wait_for_function('expected=>Number(new URL(document.querySelector("video").src).searchParams.get("start_seconds"))===expected&&document.querySelector("video").readyState>=2', arg=expected_start)
+
+                for delta, label in [(30, '30 seconds'), (60, '60 seconds'), (300, '5 minutes'), (600, '10 minutes'), (1800, '30 minutes')]:
+                    await page.get_by_role('button', name='Compatible preview', exact=True).click()
+                    await seek_two()  # Source time 23 + 2, not window start 23.
+                    await jump('forward', label, 25+delta)
+                    await page.get_by_role('button', name='Compatible preview', exact=True).click()
+                    await seek_two()
+                    await jump('forward', '30 minutes', 1825)
+                    await seek_two()  # Source time 1825 + 2.
+                    await jump('backward', label, 1827-delta)
+                    assert await page.evaluate('editor.getValue()') == {'start_seconds': 23, 'duration_seconds': 4}
+                    assert await page.evaluate('changes') == 0
+                # Pasted display timestamps remain numeric source ranges.
+                start_input = page.get_by_role('textbox', name='Start at (seconds or time) for neutral-source.mkv', exact=True)
+                await start_input.fill('23:14.5')
+                assert await page.evaluate('editor.getValue()') == {'start_seconds': 1394.5, 'duration_seconds': 4}
+                await page.get_by_role('button', name='Play selected section', exact=True).click()
+                await page.wait_for_function('Number(new URL(document.querySelector("video").src).searchParams.get("start_seconds"))===1394.5&&document.querySelector("video").readyState>=2')
+                await page.locator('video').evaluate('v=>v.pause()')
+                await start_input.fill('1:02:03.5')
+                assert await page.evaluate('editor.getValue()') == {'start_seconds': 3723.5, 'duration_seconds': 4}
+                await seek_two()
+                # Typing a start does not move playback; jump uses 1394.5+2.
+                await jump('forward', '30 seconds', 1426.5)
+                assert await page.evaluate('editor.getValue().start_seconds') == 3723.5
+                await start_input.fill('90')
+                assert await page.evaluate('editor.getValue().start_seconds') == 90
+                for invalid in ['1:60', '1:60:00', '-1', '1::2', 'not a time', '']:
+                    await start_input.fill(invalid)
+                    assert not await start_input.evaluate('input=>input.checkValidity()')
+                    assert await page.evaluate('editor.getValue().start_seconds') == 90
+                count_before_invalid_play = len(windows)
+                await start_input.fill('1:30:00')  # Valid syntax, beyond this source.
+                assert not await start_input.evaluate('input=>input.checkValidity()')
+                await page.get_by_role('button', name='Play selected section', exact=True).click()
+                await page.wait_for_timeout(100)
+                assert len(windows) == count_before_invalid_play
+                await start_input.fill('23')
+                assert await start_input.evaluate('input=>input.checkValidity()')
+                await page.evaluate('window.changes=0')
+                # Boundary clamps retain the final two playable seconds.
+                await page.get_by_role('button', name='Compatible preview', exact=True).click()
+                await seek_two()
+                await jump('backward', '30 minutes', 0)
+                assert await page.get_by_role('button', name='Jump backward 30 seconds', exact=True).is_disabled()
+                await jump('forward', '30 minutes', 1800)
+                await seek_two()
+                await jump('forward', '30 minutes', 3602)
+                await seek_two()
+                await jump('forward', '30 minutes', 3998)
+                await page.wait_for_function('document.querySelector("video").currentTime===0')
+                assert await page.get_by_role('button', name='Jump forward 30 seconds', exact=True).is_disabled()
+                assert len(uploads) == 1
+                # Locked drafts remain browseable but cannot apply a new section.
+                await page.evaluate('editor.setDisabled(true)')
+                await jump('backward', '5 minutes', 3698)
+                assert await page.get_by_role('button', name='Use current time as start').is_disabled()
+                assert await page.evaluate('changes') == 0
+                assert await page.evaluate('editor.getValue()') == {'start_seconds': 23, 'duration_seconds': 4}
+                await page.evaluate('editor.setDisabled(false)')
+                await page.get_by_role('button', name='Use current time as start').click()
+                assert await page.evaluate('editor.getValue()') == {'start_seconds': 3698, 'duration_seconds': 4}
+                assert await page.evaluate('changes') == 1
+                bounds = await page.locator('.h3-reference-jumps button').evaluate_all('buttons=>buttons.map(b=>({left:b.getBoundingClientRect().left,right:b.getBoundingClientRect().right}))')
+                assert all(b['left'] >= 0 and b['right'] <= 390 for b in bounds)
+                await page.locator('video').evaluate('v=>v.play()')
+                await page.wait_for_function('document.querySelector("video").getVideoPlaybackQuality().totalVideoFrames>1')
+                await page.locator('video').evaluate('v=>v.pause()')
+                await page.evaluate('document.documentElement.style.height="auto";document.body.style.height="auto";document.body.scrollTop=0;window.scrollTo(0,0)')
+                await page.screenshot(path=str(tmp_path / 'video-jumps-mobile.png'), full_page=True)
+                await page.set_viewport_size({'width': 1100, 'height': 850})
+                await page.screenshot(path=str(tmp_path / 'video-jumps-desktop.png'), full_page=True)
+                # Browser-compatible videos seek directly and never create a proxy.
+                await page.evaluate('''()=>{editor.destroy();window.direct={name:'direct.mp4',preview_url:'/direct.mp4'};ranges.setReferenceVideoRange(direct,{start_seconds:1,duration_seconds:4});window.editor=ranges.createReferenceVideoRangeEditor(direct);document.querySelector('main').replaceChildren(editor.node)}''')
+                await page.get_by_text('Preview video and choose a section', exact=True).click()
+                await page.wait_for_function('document.querySelector("video").readyState>=2')
+                proxy_count = len(windows)
+                for label in ['30 seconds', '60 seconds', '5 minutes', '10 minutes', '30 minutes']:
+                    await page.get_by_role('button', name=f'Jump forward {label}', exact=True).click()
+                    await page.wait_for_function('document.querySelector("video").currentTime===document.querySelector("video").duration-2')
+                    await page.get_by_role('button', name=f'Jump backward {label}', exact=True).click()
+                    await page.wait_for_function('document.querySelector("video").currentTime===0')
+                assert len(windows) == proxy_count and len(uploads) == 1
+                assert await page.evaluate('editor.getValue()') == {'start_seconds': 1, 'duration_seconds': 4}
+                # Queued/rerun fields use this same parser with previews disabled.
+                await page.evaluate('''()=>{editor.destroy();window.rerun=ranges.referenceVideoRangesField([{start_seconds:59.999,duration_seconds:4}]).create(()=>{});const form=document.createElement('form');form.append(rerun.node);document.querySelector('main').replaceChildren(form)}''')
+                assert 'Use 1:00.00' in await page.locator('.h3-reference-range > p').inner_text()
+                rerun_start = page.get_by_role('textbox', name='Start at (seconds or time) for reference video 1', exact=True)
+                await rerun_start.fill('23:14.5')
+                assert await page.evaluate('rerun.getValue()') == [{'start_seconds': 1394.5, 'duration_seconds': 4}]
+                await page.evaluate('rerun.setValue([{start_seconds:3599.999,duration_seconds:4}])')
+                assert 'Use 60:00.00' in await page.locator('.h3-reference-range > p').inner_text()
+                await rerun_start.fill('60:00.00')
+                assert await page.evaluate('rerun.getValue()[0].start_seconds') == 3600
+                await page.evaluate('rerun.setValue([{start_seconds:3723.5,duration_seconds:4}])')
+                assert await rerun_start.input_value() == '3723.5'
+                await rerun_start.fill('1:60')
+                assert not await page.locator('form').evaluate('form=>form.checkValidity()')
+                await page.evaluate('rerun.setValue([{start_seconds:90,duration_seconds:4}])')
+                assert await page.locator('form').evaluate('form=>form.checkValidity()')
+                assert await page.evaluate('rerun.getValue()') == [{'start_seconds': 90, 'duration_seconds': 4}]
+                assert not errors
+                await page.evaluate('editor.destroy()')
             finally:
                 await browser.close()
     asyncio.run(exercise())

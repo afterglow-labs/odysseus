@@ -5,6 +5,15 @@ const ranges = new WeakMap();
 const durations = new WeakMap(), serverMetadata = new WeakMap(), durationQueue = [];
 let activeDurationProbes = 0;
 const fallback = () => ({ start_seconds: 0, duration_seconds: 15 });
+export function parseReferenceVideoStart(value) {
+  const text = String(value ?? '').trim(), parts = text.split(':');
+  const seconds = /^(?:\d+(?:\.\d*)?|\.\d+)$/;
+  if (parts.length > 3 || !seconds.test(parts.at(-1))) return null;
+  if (parts.length > 1 && (parts.slice(0,-1).some(part=>!/^\d+$/.test(part)) || Number(parts.at(-1)) >= 60
+      || parts.length === 3 && Number(parts[1]) >= 60)) return null;
+  const result = parts.reduce((total,part)=>total*60+Number(part),0);
+  return Number.isFinite(result) && result >= 0 ? result : null;
+}
 export function referenceVideoRange(file) { return { ...(ranges.get(file) || fallback()) }; }
 export function hasReferenceVideoRange(file) { return ranges.has(file); }
 export function setReferenceVideoRange(file, range) {
@@ -25,8 +34,8 @@ export function validateReferenceVideoRanges(values) {
   return values.map(row => ({ start_seconds: row.start_seconds, duration_seconds: row.duration_seconds }));
 }
 function timestamp(seconds) {
-  const value = Math.max(0, Number(seconds) || 0), minutes = Math.floor(value / 60);
-  return `${minutes}:${(value % 60).toFixed(2).padStart(5, '0')}`;
+  const hundredths = Math.round(Math.max(0, Number(seconds) || 0)*100), minutes = Math.floor(hundredths / 6000);
+  return `${minutes}:${((hundredths % 6000)/100).toFixed(2).padStart(5, '0')}`;
 }
 function pumpDurationProbes() {
   while (activeDurationProbes < 2 && durationQueue.length) {
@@ -83,7 +92,10 @@ export function createReferenceVideoRangeEditor(file, onChange = () => {}, { pre
     input.setAttribute('aria-label', `${label} for ${file.name}`); wrap.append(text, input); controls.append(wrap); return input;
   };
   const initial = referenceVideoRange(file);
-  const start = makeNumber('Start at (seconds)', initial.start_seconds, 0);
+  const start = makeNumber('Start at (seconds or time)', initial.start_seconds, 0);
+  start.type = 'text'; start.inputMode = 'text'; start.placeholder = '90 or 01:30';
+  const timeHelp = document.createElement('small'); timeHelp.className = 'h3-video-muted';
+  timeHelp.textContent = 'Seconds, MM:SS or HH:MM:SS; for example 23:14.5.'; start.parentElement.append(timeHelp);
   const duration = makeNumber('Length (seconds)', initial.duration_seconds, 2, 15);
   const summary = document.createElement('p'); summary.className = 'h3-video-muted'; summary.setAttribute('aria-live', 'polite');
   node.append(controls, summary);
@@ -94,15 +106,17 @@ export function createReferenceVideoRangeEditor(file, onChange = () => {}, { pre
     controls.hidden = automatic && !manual.checked;
     start.disabled = duration.disabled = disabled || automatic && !manual.checked;
     manual.disabled = disabled;
-    const begin = Number(start.value), length = Number(duration.value);
-    start.setCustomValidity(mediaDuration && begin > mediaDuration - 2 ? 'Choose a start with at least 2 seconds remaining.' : '');
+    const begin = parseReferenceVideoStart(start.value), length = Number(duration.value);
+    start.setCustomValidity(begin === null ? 'Enter seconds, MM:SS or HH:MM:SS, with seconds below 60 in a timestamp.'
+      : mediaDuration && begin > mediaDuration - 2 ? 'Choose a start with at least 2 seconds remaining.' : '');
+    if (begin === null) { summary.textContent = start.validationMessage; return; }
     const end = mediaDuration ? Math.min(mediaDuration, begin + length) : begin + length;
     summary.textContent = automatic && !manual.checked
       ? mediaDuration ? mediaDuration <= 15 ? `Auto: use the full ${mediaDuration.toFixed(2)} second video.` : `Auto: use the first 15 seconds of ${timestamp(mediaDuration)}. Choose a section to use another part.`
         : 'Auto: video length will be detected when queued; use the whole clip up to 15 seconds.'
       : `Use ${timestamp(begin)} → ${timestamp(end)}${mediaDuration ? ` of ${timestamp(mediaDuration)}` : ' · ends earlier if the source ends'} · audio follows this section.`;
   }
-  function change() { setReferenceVideoRange(file, { start_seconds: Number(start.value), duration_seconds: Number(duration.value) }); render(); onChange(); }
+  function change() { const begin = parseReferenceVideoStart(start.value); if (begin !== null) setReferenceVideoRange(file, { start_seconds: begin, duration_seconds: Number(duration.value) }); render(); onChange(); }
   start.oninput = duration.oninput = change;
   manual.onchange = () => {
     if (manual.checked) change();
@@ -122,29 +136,46 @@ export function createReferenceVideoRangeEditor(file, onChange = () => {}, { pre
     const canConvert = !!(file.serverFile || localPreview);
     const fallbackButton = canConvert ? action('Compatible preview') : null;
     const cancelUpload = local ? action('Cancel preview upload') : null;
-    const previous = canConvert ? action('Previous 30 seconds') : null, next = canConvert ? action('Next 30 seconds') : null;
-    if (previous) previous.hidden = next.hidden = true;
+    const jumps = document.createElement('div'); jumps.className = 'h3-reference-jumps';
+    const jumpButtons = [];
+    for (const [direction,sign] of [['backward',-1],['forward',1]]) {
+      const group = document.createElement('div'); group.className = 'h3-reference-jump-group';
+      group.setAttribute('role','group'); group.setAttribute('aria-label',`Jump ${direction}`);
+      const label = document.createElement('span'); label.textContent = `Jump ${direction}`;
+      const row = document.createElement('div'); row.className = 'h3-reference-jump-row';
+      for (const [seconds,text,spoken] of [[30,'30s','30 seconds'],[60,'60s','60 seconds'],[300,'5min','5 minutes'],[600,'10min','10 minutes'],[1800,'30min','30 minutes']]) {
+        const button = document.createElement('button'); button.type = 'button'; button.className = 'memory-toolbar-btn';
+        button.textContent = `${sign < 0 ? '−' : '+'}${text}`; button.setAttribute('aria-label',`Jump ${direction} ${spoken}`);
+        button.onclick = () => jump(sign*seconds); row.append(button); jumpButtons.push({button,sign});
+      }
+      group.append(label,row); jumps.append(group);
+    }
     if (cancelUpload) cancelUpload.hidden = true;
-    let busy = false, localProxyUrl = null, localPreviewId = null, playWhenReady = false;
+    let busy = false, localProxyUrl = null, localPreviewId = null, playWhenReady = false, selectWhenReady = false, windowTime = 0;
     const incompatibleContainer = /\.(mkv|avi)$/i.test(file.name);
-    function setBusy(value) { busy = value; if (fallbackButton) fallbackButton.disabled = value; if (cancelUpload) cancelUpload.hidden = !value; }
+    function updateJumps() {
+      const current = previewOffset+(Number(video.currentTime)||0);
+      for (const {button,sign} of jumpButtons) button.disabled = busy || video.readyState < 1 || (sign < 0 ? current <= .001 : mediaDuration > 0 && current >= Math.max(0,mediaDuration-2)-.001);
+    }
+    function setBusy(value) { busy = value; if (fallbackButton) fallbackButton.disabled = value; if (cancelUpload) cancelUpload.hidden = !value; updateJumps(); }
     function useMetadata(metadata) {
       const value = Number(metadata?.duration_seconds);
       if (Number.isFinite(value) && value > 0) { mediaDuration = value; durations.set(file,value); start.max = Math.max(0,value-2); render(); }
     }
-    function loadWindow(offset, play = false) {
+    function loadWindow(offset, play = false, selection = play) {
       if (disposed) return;
-      compatible = true; playingSelection = false; playWhenReady = play;
+      compatible = true; playingSelection = false; playWhenReady = play; selectWhenReady = selection;
+      windowTime = Math.max(0,mediaDuration ? Math.min(offset,mediaDuration) : offset);
       previewOffset = Math.max(0,mediaDuration ? Math.min(offset,Math.max(0,mediaDuration-2)) : offset);
-      previous.hidden = next.hidden = false;
-      previous.disabled = previewOffset <= 0; next.disabled = !!mediaDuration && previewOffset + 30 >= mediaDuration;
       const query = new URLSearchParams({...(file.serverFile || {}),start_seconds:previewOffset,duration_seconds:30});
       video.preload = 'metadata'; video.src = `${localProxyUrl || '/api/video/h3/server-files/preview'}?${query}`;
+      updateJumps();
       previewStatus.textContent = `Compatible preview starts at ${timestamp(previewOffset)} in the original video. Use current time keeps that original position.`;
     }
-    async function compatiblePreview(offset = Number(start.value) || 0, play = false) {
+    async function compatiblePreview(offset = parseReferenceVideoStart(start.value), play = false, selection = play) {
       if (!canConvert || disposed || busy) return;
-      if (file.serverFile) { loadWindow(offset,play); return; }
+      if (offset === null) { start.reportValidity(); return; }
+      if (file.serverFile) { loadWindow(offset,play,selection); return; }
       const token = ++previewGeneration; setBusy(true);
       try {
         const result = await localPreview.load(progress => {
@@ -153,7 +184,7 @@ export function createReferenceVideoRangeEditor(file, onChange = () => {}, { pre
             : `Uploading a temporary preview copy… ${progress.total > 0 ? Math.min(100,Math.round(progress.loaded/progress.total*100)) + '%' : ''} Your original attachment is unchanged.`;
         });
         if (disposed || token !== previewGeneration) return;
-        localProxyUrl = result.preview_url; localPreviewId = result.id; useMetadata(result.metadata); loadWindow(offset,play);
+        localProxyUrl = result.preview_url; localPreviewId = result.id; useMetadata(result.metadata); loadWindow(offset,play,selection);
       } catch (error) {
         if (!disposed && token === previewGeneration) previewStatus.textContent = error.name === 'AbortError'
           ? 'Preview upload cancelled. Use Compatible preview to try again.' : `${error.message} Your selected section is unchanged.`;
@@ -161,7 +192,14 @@ export function createReferenceVideoRangeEditor(file, onChange = () => {}, { pre
     }
     if (fallbackButton) fallbackButton.onclick = () => compatiblePreview();
     if (cancelUpload) cancelUpload.onclick = () => localPreview.cancel();
-    if (previous) { previous.onclick = () => compatiblePreview(previewOffset-30); next.onclick = () => compatiblePreview(previewOffset+30); }
+    function jump(delta) {
+      if (disposed || busy || video.readyState < 1) return;
+      const target = Math.max(0,Math.min(previewOffset+(Number(video.currentTime)||0)+delta,mediaDuration ? Math.max(0,mediaDuration-2) : Infinity));
+      playingSelection = false; video.pause();
+      if (compatible) compatiblePreview(target,false,false);
+      else { video.currentTime = target; updateJumps(); }
+    }
+    updateJumps();
     // Do not upload a local file or fetch video windows until this particular
     // preview is expanded. Hundreds of unopened batch rows stay lightweight.
     details.addEventListener('toggle', async () => {
@@ -187,19 +225,23 @@ export function createReferenceVideoRangeEditor(file, onChange = () => {}, { pre
     });
     useCurrent.onclick = () => { if (disabled) return; const time=previewOffset+video.currentTime;manual.checked = true; start.value = Math.max(0, Math.min(time, mediaDuration ? mediaDuration - 2 : time)).toFixed(2); change(); };
     playSelection.onclick = () => {
-      const begin = Number(start.value), end = begin + Number(duration.value);
+      if (!start.reportValidity() || !duration.reportValidity()) return;
+      const begin = parseReferenceVideoStart(start.value); if (begin === null) { start.reportValidity(); return; }
+      const end = begin + Number(duration.value);
       if (compatible && (begin < previewOffset || !Number.isFinite(video.duration) || end > previewOffset + video.duration)) { compatiblePreview(begin,true); return; }
       playingSelection = true; video.currentTime = Math.max(0,begin-previewOffset); video.play().catch(() => {});
     };
     video.addEventListener('pause', () => { playingSelection = false; });
-    video.addEventListener('timeupdate', () => { if (playingSelection && !video.paused && video.currentTime+previewOffset >= Number(start.value) + Number(duration.value)) video.pause(); });
+    video.addEventListener('timeupdate', () => { updateJumps(); const begin = parseReferenceVideoStart(start.value); if (playingSelection && !video.paused && begin !== null && video.currentTime+previewOffset >= begin + Number(duration.value)) video.pause(); });
     video.addEventListener('loadedmetadata', () => {
       if (disposed || !Number.isFinite(video.duration)) return;
       if(!compatible){mediaDuration = video.duration; durations.set(file, mediaDuration); start.max = Math.max(0, mediaDuration - 2);}
       // Requested length is an upper bound. Keep the user's saved range intact;
       // the server clips at EOF and rejects fewer than two usable seconds.
       render();
-      if (playWhenReady) { playWhenReady = false; playingSelection = true; video.currentTime = Math.max(0,Number(start.value)-previewOffset); video.play().catch(() => {}); }
+      if (compatible) video.currentTime = Math.max(0,Math.min(video.duration,windowTime-previewOffset));
+      updateJumps();
+      if (playWhenReady) { playWhenReady = false; playingSelection = selectWhenReady; video.play().catch(() => {}); }
     });
     video.addEventListener('error', async () => {
       if (disposed) return;
@@ -217,7 +259,7 @@ export function createReferenceVideoRangeEditor(file, onChange = () => {}, { pre
         } catch { /* The visible retry remains available after a connection failure. */ }
       }
     });
-    details.append(heading, video, actions,previewStatus); node.append(details);
+    details.append(heading, video, jumps, actions,previewStatus); node.append(details);
   }
   render();
   if (automatic) detectLocalDuration(file, durationController.signal, value => { if (!disposed && value > 0) { mediaDuration = value; start.max = Math.max(0, mediaDuration - 2); render(); } });

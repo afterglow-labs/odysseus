@@ -28,7 +28,7 @@ export function seedHunterHelpKey(control) {
   if (control.hasAttribute('data-batch-toggle')) return 'batch_job';
   if (control.hasAttribute('data-batch-auto-length')) return 'auto_video_length';
   if (control.hasAttribute('data-batch-files')) return 'batch_input';
-  if (label.startsWith('Start at (seconds)')) return 'reference_start';
+  if (label.startsWith('Start at (seconds')) return 'reference_start';
   if (label.startsWith('Length (seconds)') || label.startsWith('Choose a section')) return 'reference_duration';
   if (label.startsWith('New ')) return label.slice(4).replaceAll(' ', '_');
   if (label.startsWith('Strength for ')) return 'refmod_strength';

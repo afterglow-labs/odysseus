@@ -101,7 +101,7 @@ def test_large_server_video_section_reaches_h3_and_hunter_submission(tmp_path, l
                     await picker.get_by_role('checkbox', name='large-source.mkv', exact=False).check()
                     assert '4.00 GB' in await picker.inner_text()
                     await picker.get_by_role('button', name='Use 1 video', exact=True).click()
-                    await panel.get_by_role('spinbutton', name='Start at (seconds) for large-source.mkv', exact=True).fill('23')
+                    await panel.get_by_role('textbox', name='Start at (seconds or time) for large-source.mkv', exact=True).fill('00:23')
                     await panel.get_by_role('spinbutton', name='Length (seconds) for large-source.mkv', exact=True).fill('4')
                     assert 'Use 0:23.00 → 0:27.00' in await panel.inner_text()
                     count = len(submissions)
@@ -117,7 +117,7 @@ def test_large_server_video_section_reaches_h3_and_hunter_submission(tmp_path, l
                     if kind != 'h3':
                         assert sent['config']['seed_hunter']['stage'] == ('scout' if kind == 'scout' else 'preview')
                     if kind == 'hunter':
-                        await panel.get_by_role('spinbutton', name='Start at (seconds) for large-source.mkv', exact=True).scroll_into_view_if_needed()
+                        await panel.get_by_role('textbox', name='Start at (seconds or time) for large-source.mkv', exact=True).scroll_into_view_if_needed()
                         await page.screenshot(path=str(tmp_path / f'large-selected-section-{layout}.png'))
                     await page.evaluate('workflow.close()')
                 assert not media_requests, 'Choosing a range must not prefetch the entire 4 GiB source'

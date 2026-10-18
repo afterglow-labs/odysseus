@@ -60,6 +60,7 @@ assert.equal(seedHunterHelpKey(field('seed-hunter-final-lora_scale-2')),'lora_st
 assert.equal(seedHunterHelpKey(field('seed-hunter-queue-lora')),'loras');
 assert.equal(seedHunterHelpKey(field('','New sparse keep percent')),'sparse_keep_percent');
 assert.equal(seedHunterHelpKey(field('','Start at (seconds) for clip.mp4')),'reference_start');
+assert.equal(seedHunterHelpKey(field('','Start at (seconds or time) for clip.mp4')),'reference_start');
 assert.equal(seedHunterHelpKey(field('','Choose a section for clip.mp4')),'reference_duration');
 assert.equal(seedHunterHelpKey(field('','', ['data-batch-auto-length'])),'auto_video_length');
 """)

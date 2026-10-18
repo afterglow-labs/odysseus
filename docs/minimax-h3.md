@@ -190,10 +190,15 @@ it does not move an already queued or running job between GPUs.
 
 Reference mode supports up to nine images, three videos and three audio files,
 with at most twelve uploaded references overall. A reference video can be longer
-than 15 seconds: use its **Start at (seconds)** and **Length (seconds)** controls
+than 15 seconds: use its **Start at** and **Length (seconds)** controls
 to select a 2–15 second section. Expand **Preview video and choose a section**,
 scrub to the desired point, and choose **Use current time as start**. For example,
 start 80 and length 15 uses 1:20–1:35. **Play selected section** previews that range.
+The start field accepts seconds, `MM:SS`, or `HH:MM:SS`, including fractional
+seconds: `80`, `1:20`, and `0:01:20` select the same start. Backward and forward
+jump buttons move the preview by 30 seconds, 60 seconds, 5 minutes, 10 minutes,
+or 30 minutes from its current position. Jumps stop at the source boundaries
+and leave the chosen section unchanged until **Use current time as start**.
 Local files and supported E:/F: server videos can be previewed; timestamps remain
 usable when a saved job input has no preview. Unsupported containers and codecs
 automatically use a compatible H.264/AAC MP4 preview. For a local file, opening

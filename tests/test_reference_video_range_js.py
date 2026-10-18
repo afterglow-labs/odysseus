@@ -51,3 +51,14 @@ const result=resolveVideoWorkflow(doc,{{family:'h3',inventory:{{components:[]}}}
 assert.deepEqual(result.config.reference_video_ranges,[{{start_seconds:120.5,duration_seconds:15}}]);
 doc.config.reference_video_ranges[0].start_seconds=-1;assert.throws(()=>resolveVideoWorkflow(doc,{{family:'h3',inventory:{{components:[]}}}}),/start time/);
 """)
+
+
+def test_start_time_parser_accepts_seconds_and_display_timestamps_without_ambiguous_rollover():
+    run_js(r'''
+for (const [text,value] of [['90',90],[' 23:14.5 ',1394.5],['1:02:03.5',3723.5],['100:01',6001],['.5',.5],['0',0],['00:00',0]]) {
+ assert.equal(ranges.parseReferenceVideoStart(text),value,text);
+}
+for (const invalid of ['',null,'1:60','1:59:60','1:60:00','1::2','1:2:3:4','-1','-1:20','1.5:20','NaN','Infinity','1e3','1: 2','1:2e1','9'.repeat(400)]) {
+ assert.equal(ranges.parseReferenceVideoStart(invalid),null,String(invalid));
+}
+''')
