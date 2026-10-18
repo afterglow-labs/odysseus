@@ -232,7 +232,7 @@ def commit_edit(manager, job_id, owner, family, raw, expected, retain, saved, na
                 total += path.stat().st_size
                 inputs[field].append(str(path))
                 labels[field].append(names[field][index])
-        if total > limit:
+        if limit is not None and total > limit:
             raise ValueError("Retained and new video inputs exceed the per-job upload limit")
         if family == "h3":
             from src.h3_loras import frozen_inventory

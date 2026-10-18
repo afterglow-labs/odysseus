@@ -203,7 +203,11 @@ source or change generation inputs. Preview preparation failures are displayed
 with a retry action. Temporary previews use a bounded cache on the server.
 The worker seeks to the selected section and cuts its audio on the same timeline.
 It preserves the original file and saves the range with the job for later edits
-and reruns. Existing upload size and server storage limits still apply.
+and reruns. The chat attachment size limit does not apply to workflow inputs,
+including Seed Hunter's **Generate previews** and Seed Scout submissions.
+Workflow media has no fixed byte cap by default. Uploads and private job copies
+must leave at least 512 MiB free on their storage filesystems. An administrator
+can set a separate per-job cap with `ODYSSEUS_VIDEO_UPLOAD_MAX_BYTES`.
 
 Selected video sections together must total at most 15 seconds, and all audio
 (including video soundtracks) must total at most 15 seconds. Audio-only reference
@@ -534,7 +538,8 @@ uses the primary reference video when the row includes additional video referenc
 Server selections open the current file at submission time. Listing timestamps
 and sizes do not reject an otherwise readable file. Each accepted job keeps its
 own complete copy; path restrictions, input size limits and complete-copy checks
-still apply. Interrupted submissions can be retried without reselecting the batch.
+still apply, using the workflow-specific policy above rather than the chat limit.
+Interrupted submissions can be retried without reselecting the batch.
 
 Video inputs in the desktop workflow offer **Server files** alongside local file
 selection. The iOS client offers **Photos**, **Files**, and **Server files**.

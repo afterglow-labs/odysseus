@@ -183,7 +183,7 @@ def test_rerun_uses_snapshot_when_computer_video_is_gone(backend, server_media):
 
 
 def test_server_media_counts_toward_upload_limit(backend, server_media, monkeypatch):
-    monkeypatch.setattr("routes.h3_video_routes.get_chat_upload_max_bytes", lambda: 8)
+    monkeypatch.setattr("routes.h3_video_routes.get_video_upload_max_bytes", lambda: 8)
     _, row = server_media.put("large.mp4", b"12345678")
     result = create(backend, "h3", {"reference_videos": [row]},
                     files=[("reference_videos", ("phone.mp4", b"9", "video/mp4"))])

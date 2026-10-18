@@ -186,7 +186,7 @@ def test_upload_validation_size_path_safety_and_last_frame_only(api, monkeypatch
     response = client.post("/api/video/h3/jobs", data=body,
                            files={"last_frame": ("script.py", png(), "image/png")})
     assert response.status_code == 400
-    monkeypatch.setenv("ODYSSEUS_CHAT_UPLOAD_MAX_BYTES", "16")
+    monkeypatch.setenv("ODYSSEUS_VIDEO_UPLOAD_MAX_BYTES", "16")
     response = client.post("/api/video/h3/jobs", data=body,
                            files={"last_frame": ("real.png", png(), "image/png")})
     assert response.status_code == 413
@@ -319,7 +319,7 @@ def test_stop_failure_remains_active_and_api_reports_unverified(api, monkeypatch
 
 def test_stream_size_cap_cannot_be_bypassed_with_small_content_length(api, monkeypatch):
     client, manager, inv = api
-    monkeypatch.setenv("ODYSSEUS_CHAT_UPLOAD_MAX_BYTES", "16")
+    monkeypatch.setenv("ODYSSEUS_VIDEO_UPLOAD_MAX_BYTES", "16")
     response = client.post("/api/video/h3/jobs", headers={"Content-Length": "0"},
                            data={"config": json.dumps(config(inv, "fl2va"))},
                            files={"first_frame": ("oversized.png", b"x" * 70000, "image/png")})

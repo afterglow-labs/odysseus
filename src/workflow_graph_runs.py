@@ -521,7 +521,7 @@ class GraphRunManager:
 
     async def _submit_native(self, directory, state, manifest, step):
         from src.video_submission import submission, launch_job, complete_operation, known_input_bytes
-        from src.upload_limits import get_chat_upload_max_bytes
+        from src.upload_limits import get_video_upload_max_bytes
         family, owner = step["family"], state["owner"]
         manager = self.managers[family]
         key = uuid.uuid5(uuid.UUID(state["id"]), step["id"]).hex
@@ -548,8 +548,8 @@ class GraphRunManager:
                         opened.append(upload)
                         uploads[field].append(upload)
                 config = self._validate_native(step, uploads)
-                limit = get_chat_upload_max_bytes()
-                if known_input_bytes(uploads) > limit:
+                limit = get_video_upload_max_bytes()
+                if limit is not None and known_input_bytes(uploads) > limit:
                     raise ValueError("Workflow inputs exceed the per-job upload limit")
                 if family == "h3":
                     from src.h3_vfx import normalize_vfx_inputs
@@ -584,7 +584,7 @@ class GraphRunManager:
                     path.chmod(0o600)
                     while chunk := await upload.read(1024*1024):
                         total += len(chunk)
-                        if total > limit: raise ValueError("Workflow inputs exceed the per-job upload limit")
+                        if limit is not None and total > limit: raise ValueError("Workflow inputs exceed the per-job upload limit")
                         await store_upload_chunk(stream,directory,chunk)
                 if not path.stat().st_size: raise ValueError("A workflow input is empty")
                 if extension in {".png",".jpg",".jpeg",".webp",".bmp"}:

@@ -190,7 +190,7 @@ def test_start_during_upload_rejects_save_and_cleans_staging(backend, monkeypatc
 def test_retained_and_new_bytes_share_one_upload_budget(backend, monkeypatch):
     job = create(backend)
     from routes import video_job_edit_routes
-    monkeypatch.setattr(video_job_edit_routes, 'get_chat_upload_max_bytes', lambda: 15)
+    monkeypatch.setattr(video_job_edit_routes, 'get_video_upload_max_bytes', lambda: 15)
     response = patch(backend, job, files=[('reference_videos', ('extra.mp4', b'extra', 'video/mp4'))])
     assert response.status_code == 413, response.text
     assert backend.client().get(url(job) + '/edit').json()['revision'] == 0

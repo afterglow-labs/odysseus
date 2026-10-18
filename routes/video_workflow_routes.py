@@ -14,7 +14,7 @@ from starlette.datastructures import UploadFile
 from src.h3_video import _locked
 from src.video_server_files import server_video_inputs
 from src.video_submission import known_input_bytes
-from src.upload_limits import get_chat_upload_max_bytes, format_byte_limit
+from src.upload_limits import get_video_upload_max_bytes, format_byte_limit
 from src.video_workflow import (CHUNK, JSON_LIMIT, WorkflowTransfers, export_options,
                                 free_space, job_export, specification, stream_zip)
 
@@ -92,9 +92,10 @@ def add_workflow_routes(router, manager, *, family):
         from routes.h3_video_routes import _limited_request
         directory, success = None, False
         try:
-            limit = get_chat_upload_max_bytes()
-            limited = _limited_request(request, limit + 3 * JSON_LIMIT,
-                                       f'Workflow input media exceeds {format_byte_limit(limit)}')
+            limit = get_video_upload_max_bytes()
+            limited = _limited_request(request, None if limit is None else limit + 3 * JSON_LIMIT,
+                                       f'Workflow input media exceeds {format_byte_limit(limit)}' if limit is not None else None,
+                                       space_directory=manager.root)
             async with limited.form(max_files=25 if family == 'h3' else 17, max_fields=3, max_part_size=JSON_LIMIT) as form:
                 config_json, options_json = form.get('config'), form.get('options', '{}')
                 if not isinstance(config_json, str) or not isinstance(options_json, str):
@@ -113,7 +114,7 @@ def add_workflow_routes(router, manager, *, family):
                 if any(not isinstance(item, UploadFile) for values in incoming.values() for item in values):
                     raise ValueError('Workflow media must be uploaded files')
                 async with server_video_inputs(form, incoming, extensions) as incoming:
-                    if known_input_bytes(incoming) > limit:
+                    if limit is not None and known_input_bytes(incoming) > limit:
                         raise HTTPException(413, f'Workflow input media exceeds {format_byte_limit(limit)}')
                     inventory = await asyncio.to_thread(manager.inventory)
                     directory = await asyncio.to_thread(transfers.stage, owner)
@@ -132,7 +133,7 @@ def add_workflow_routes(router, manager, *, family):
                                     path.chmod(0o600)
                                     while chunk := await item.read(CHUNK):
                                         total += len(chunk)
-                                        if total > limit:
+                                        if limit is not None and total > limit:
                                             raise HTTPException(413, f'Workflow input media exceeds {format_byte_limit(limit)}')
                                         await asyncio.to_thread(free_space, directory, len(chunk))
                                         await asyncio.to_thread(output.write, chunk)

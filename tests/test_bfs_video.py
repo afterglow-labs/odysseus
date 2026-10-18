@@ -160,7 +160,7 @@ def test_upload_stages_safe_paths_keeps_prompt_and_rejects_bad_or_duplicate_medi
 
 def test_stream_cap_rejects_false_small_content_length_before_staging(api, monkeypatch):
     client, manager, inventory = api
-    monkeypatch.setenv('ODYSSEUS_CHAT_UPLOAD_MAX_BYTES', '16')
+    monkeypatch.setenv('ODYSSEUS_VIDEO_UPLOAD_MAX_BYTES', '16')
     response = client.post('/api/video/bfs/jobs', headers={'Content-Length': '0'},
                            data={'config': json.dumps(draft(inventory))},
                            files=[('identity_image', ('face.png', png(), 'image/png')),

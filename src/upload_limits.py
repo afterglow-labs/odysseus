@@ -6,6 +6,7 @@ from fastapi import HTTPException, UploadFile
 
 DEFAULT_CHAT_UPLOAD_MAX_BYTES = 1024 * 1024 * 1024
 CHAT_UPLOAD_MAX_BYTES_ENV = "ODYSSEUS_CHAT_UPLOAD_MAX_BYTES"
+VIDEO_UPLOAD_MAX_BYTES_ENV = "ODYSSEUS_VIDEO_UPLOAD_MAX_BYTES"
 
 
 def format_byte_limit(limit: int) -> str:
@@ -33,6 +34,19 @@ def read_byte_limit_env(name: str, default: int) -> int:
 
 def get_chat_upload_max_bytes() -> int:
     return read_byte_limit_env(CHAT_UPLOAD_MAX_BYTES_ENV, DEFAULT_CHAT_UPLOAD_MAX_BYTES)
+
+
+def get_video_upload_max_bytes() -> int | None:
+    """Video workflows keep full sources for later section edits and reruns.
+
+    They are disk-backed and retain a free-space reserve while receiving and
+    saving media. Chat's attachment cap must not prevent selecting a short
+    section of a longer movie. Operators may set a separate optional cap.
+    """
+    raw = os.getenv(VIDEO_UPLOAD_MAX_BYTES_ENV)
+    if raw is None or not raw.strip():
+        return None
+    return read_byte_limit_env(VIDEO_UPLOAD_MAX_BYTES_ENV, 0)
 
 
 # Per-route upload byte-limits, single-sourced here (issue #3364). Each is

@@ -12,10 +12,12 @@ from routes.h3_video_routes import _owner, _limited_request
 from src.bfs_video import BFSJobManager, UPLOAD_EXTENSIONS, validate_config
 from src.video_submission import submission, submission_key, launch_job, store_upload_chunk, known_input_bytes, UploadSpaceError
 from src.video_server_files import server_video_inputs
-from src.upload_limits import get_chat_upload_max_bytes, format_byte_limit
+from src.upload_limits import get_video_upload_max_bytes, format_byte_limit
 
 
 async def store_uploads(directory, uploads, limit):
+    from src.video_submission import ensure_upload_space
+    await asyncio.to_thread(ensure_upload_space, directory, known_input_bytes(uploads))
     saved, total = {}, 0
     for key, values in uploads.items():
         if not values:
@@ -29,7 +31,7 @@ async def store_uploads(directory, uploads, limit):
             path.chmod(0o600)
             while chunk := await upload.read(1024 * 1024):
                 total += len(chunk)
-                if total > limit:
+                if limit is not None and total > limit:
                     raise HTTPException(413, f'BFS inputs exceed {format_byte_limit(limit)} per job')
                 await store_upload_chunk(stream, directory, chunk)
         if not path.stat().st_size:
@@ -81,8 +83,9 @@ def setup_bfs_video_routes(manager=None):
                 existing = await asyncio.to_thread(pending.existing)
                 if existing is not None:
                     return existing
-                limit = get_chat_upload_max_bytes()
-                limited = _limited_request(request, limit + 2 * 65536, f'BFS inputs exceed {format_byte_limit(limit)} per job',
+                limit = get_video_upload_max_bytes()
+                limited = _limited_request(request, None if limit is None else limit + 2 * 65536,
+                                           f'BFS inputs exceed {format_byte_limit(limit)} per job' if limit is not None else None,
                                            space_directory=manager.root)
                 async with limited.form(max_files=4, max_fields=2, max_part_size=65536) as form:
                     if any(key not in {'config', 'server_inputs', *UPLOAD_EXTENSIONS} for key in form):
@@ -96,7 +99,7 @@ def setup_bfs_video_routes(manager=None):
                     async with server_video_inputs(form, uploads, UPLOAD_EXTENSIONS) as uploads:
                         current = await asyncio.to_thread(manager.submission_inventory)
                         config = validate_config(json.loads(raw), current, uploads)
-                        if known_input_bytes(uploads) > limit:
+                        if limit is not None and known_input_bytes(uploads) > limit:
                             raise HTTPException(413, f'BFS inputs exceed {format_byte_limit(limit)} per job')
                         directory = pending.stage()
                         pending.save_metadata(uploads, "bfs")

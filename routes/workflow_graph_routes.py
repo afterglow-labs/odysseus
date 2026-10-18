@@ -14,7 +14,7 @@ from routes.h3_video_routes import _owner, _limited_request
 from src.constants import DATA_DIR
 from src.h3_video import H3JobManager
 from src.bfs_video import BFSJobManager
-from src.upload_limits import get_chat_upload_max_bytes
+from src.upload_limits import get_video_upload_max_bytes
 from src.video_server_files import open_server_video_preview
 from src.video_submission import complete_operation, store_upload_chunk, UploadSpaceError
 from src.workflow_graph_store import GraphDocumentStore, GraphRevisionConflict
@@ -105,7 +105,7 @@ async def stage_bindings(root, document, bindings, form, limit):
                     suffix = Path(name).suffix.lower()
                     if suffix not in EXTENSIONS[kind]:
                         raise ValueError(f"Choose a supported {kind} file")
-                    if type(upload.size) is int and total + upload.size > limit:
+                    if limit is not None and type(upload.size) is int and total + upload.size > limit:
                         raise HTTPException(413, "Workflow inputs exceed the configured upload limit")
                     target = Path(temporary) / (uuid.uuid4().hex + suffix)
                     await upload.seek(0)
@@ -113,7 +113,7 @@ async def stage_bindings(root, document, bindings, form, limit):
                         target.chmod(0o600)
                         while chunk := await upload.read(1024 * 1024):
                             total += len(chunk)
-                            if total > limit:
+                            if limit is not None and total > limit:
                                 raise HTTPException(413, "Workflow inputs exceed the configured upload limit")
                             await store_upload_chunk(stream, directory, chunk)
                     if not target.stat().st_size:
@@ -268,7 +268,7 @@ def setup_workflow_graph_routes(store=None, runs=None, managers=None):
                 existing = await asyncio.to_thread(runs.existing, owner, header)
                 if existing:
                     return existing
-            limit = get_chat_upload_max_bytes()
+            limit = get_video_upload_max_bytes()
 
             async def accept(body, form=None):
                 if set(body) - {"document", "bindings", "request_id"}:
@@ -297,7 +297,7 @@ def setup_workflow_graph_routes(store=None, runs=None, managers=None):
                     return await complete_operation(runs.accept, owner, document, compiled, media, key)
 
             if request.headers.get("content-type", "").startswith("multipart/form-data"):
-                limited = _limited_request(request, limit + JSON_LIMIT + 65536, space_directory=runs.root)
+                limited = _limited_request(request, None if limit is None else limit + JSON_LIMIT + 65536, space_directory=runs.root)
                 async with limited.form(max_files=64, max_fields=3, max_part_size=JSON_LIMIT) as form:
                     if any(not isinstance(value, UploadFile) and key not in {"document", "bindings", "request_id"} for key, value in form.multi_items()):
                         raise ValueError("Unknown workflow upload field")

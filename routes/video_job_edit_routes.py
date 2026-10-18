@@ -12,7 +12,7 @@ from starlette.datastructures import UploadFile
 from src.video_job_edit import get_edit, snapshot, validate, commit_edit
 from src.video_submission import complete_operation, input_metadata, known_input_bytes, UploadSpaceError
 from src.video_server_files import server_video_inputs
-from src.upload_limits import get_chat_upload_max_bytes, format_byte_limit
+from src.upload_limits import get_video_upload_max_bytes, format_byte_limit
 
 
 def add_job_edit_routes(router, manager, family, extensions, store_uploads):
@@ -37,9 +37,9 @@ def add_job_edit_routes(router, manager, family, extensions, store_uploads):
             # Ownership/status are checked before reading potentially large
             # multipart bodies, and checked again under the publish lock.
             await asyncio.to_thread(snapshot, manager, job_id, owner, family)
-            limit = get_chat_upload_max_bytes()
-            limited = _limited_request(request, limit + 160 * 1024,
-                                       f'Video inputs exceed {format_byte_limit(limit)} per job',
+            limit = get_video_upload_max_bytes()
+            limited = _limited_request(request, None if limit is None else limit + 160 * 1024,
+                                       f'Video inputs exceed {format_byte_limit(limit)} per job' if limit is not None else None,
                                        space_directory=manager.root)
             async with limited.form(max_files=25 if family == 'h3' else 4, max_fields=4, max_part_size=65536) as form:
                 if any(key not in {'config', 'revision', 'retain_inputs', 'server_inputs', *extensions} for key in form):
@@ -70,14 +70,14 @@ def add_job_edit_routes(router, manager, family, extensions, store_uploads):
                     combined = {field: before['inputs'][field] + uploads[field] for field in extensions}
                     validate(raw, before.get('_inventory', inventory), combined, family)
                     retained_bytes = sum(item['size'] for values in before['inputs'].values() for item in values)
-                    if retained_bytes > limit:
+                    if limit is not None and retained_bytes > limit:
                         raise HTTPException(413, 'Retained video inputs exceed the per-job upload limit')
-                    if retained_bytes + known_input_bytes(uploads) > limit:
+                    if limit is not None and retained_bytes + known_input_bytes(uploads) > limit:
                         raise HTTPException(413, 'Combined video inputs exceed the per-job upload limit')
                     staging_root = manager.root / '.edits'
                     staging_root.mkdir(mode=0o700, exist_ok=True)
                     stage = Path(tempfile.mkdtemp(prefix='edit-', dir=staging_root))
-                    saved = await store_uploads(stage, uploads, limit - retained_bytes)
+                    saved = await store_uploads(stage, uploads, None if limit is None else limit - retained_bytes)
                     names = input_metadata(uploads, family)['input_names']
                     # Cancellation/disconnection cannot remove staging halfway
                     # through a successful atomic commit.

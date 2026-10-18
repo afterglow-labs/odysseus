@@ -18,7 +18,7 @@ from src.h3_prompt_enhancement import (
 )
 from src.video_submission import submission, submission_key, launch_job, store_upload_chunk, ensure_upload_space, known_input_bytes, UploadSpaceError
 from src.video_server_files import server_video_inputs
-from src.upload_limits import get_chat_upload_max_bytes, format_byte_limit
+from src.upload_limits import get_chat_upload_max_bytes, get_video_upload_max_bytes, format_byte_limit
 
 
 def _owner(request):
@@ -30,11 +30,13 @@ def _owner(request):
 
 
 def _limited_request(request, limit, limit_message=None, *, space_directory=None):
-    """Cap multipart bytes before Starlette spools any unbounded upload."""
+    """Apply optional media caps and keep space available while spooling."""
     raw_length = request.headers.get("content-length")
     if raw_length:
         try:
-            if int(raw_length) > limit:
+            if int(raw_length) < 0:
+                raise ValueError
+            if limit is not None and int(raw_length) > limit:
                 raise HTTPException(413, limit_message or f"Video inputs exceed {format_byte_limit(limit - 65536)} per job")
         except ValueError:
             raise HTTPException(400, "Invalid Content-Length")
@@ -45,17 +47,22 @@ def _limited_request(request, limit, limit_message=None, *, space_directory=None
         message = await request.receive()
         if message["type"] == "http.request":
             total += len(message.get("body", b""))
-            if total > limit:
+            if limit is not None and total > limit:
                 raise HTTPException(413, limit_message or f"Video inputs exceed {format_byte_limit(limit - 65536)} per job")
             if space_directory is not None:
                 # Multipart spools may reach disk before _store_uploads runs.
                 await asyncio.to_thread(ensure_upload_space, space_directory, len(message.get("body", b"")))
+                # Starlette's multipart files spool to the system temporary
+                # filesystem, which can differ from private job storage.
+                import tempfile
+                await asyncio.to_thread(ensure_upload_space, tempfile.gettempdir(), len(message.get("body", b"")))
         return message
 
     return Request(request.scope, receive=receive)
 
 
 async def _store_uploads(directory, uploads, limit):
+    await asyncio.to_thread(ensure_upload_space, directory, known_input_bytes(uploads))
     saved = {}
     total = 0
     for field, files in uploads.items():
@@ -69,7 +76,7 @@ async def _store_uploads(directory, uploads, limit):
                 path.chmod(0o600)
                 while chunk := await upload.read(1024 * 1024):
                     total += len(chunk)
-                    if total > limit:
+                    if limit is not None and total > limit:
                         raise HTTPException(413, f"Video inputs exceed {format_byte_limit(limit)} per job")
                     await store_upload_chunk(stream, directory, chunk)
             if path.stat().st_size == 0:
@@ -188,13 +195,13 @@ def setup_h3_video_routes(manager=None):
     @router.post("/jobs", status_code=201)
     async def create_job(request: Request):
         owner = _owner(request)
-        limit = get_chat_upload_max_bytes()
+        limit = get_video_upload_max_bytes()
         try:
             async with submission(manager, owner, "h3", submission_key(request)) as pending:
                 existing = await asyncio.to_thread(pending.existing)
                 if existing is not None:
                     return existing
-                limited = _limited_request(request, limit + 2 * 65536, space_directory=manager.root)
+                limited = _limited_request(request, None if limit is None else limit + 2 * 65536, space_directory=manager.root)
                 async with limited.form(max_files=25, max_fields=3, max_part_size=65536) as form:
                     if any(key not in {"config", "auto_video_length", "server_inputs", *UPLOAD_EXTENSIONS} for key in form):
                         raise HTTPException(400, "Unknown video upload field")
@@ -224,7 +231,7 @@ def setup_h3_video_routes(manager=None):
                         uploads.setdefault("source_video", [])
                         if not current["runtime_ready"]:
                             raise HTTPException(503, current["runtime_error"])
-                        if known_input_bytes(uploads) > limit:
+                        if limit is not None and known_input_bytes(uploads) > limit:
                             raise HTTPException(413, f"Video inputs exceed {format_byte_limit(limit)} per job")
                         directory = pending.stage()
                         pending.save_metadata(uploads, "h3")
