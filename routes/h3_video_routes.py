@@ -124,6 +124,8 @@ async def _enhance_until_disconnected(request, owner, config, images=None):
 def setup_h3_video_routes(manager=None):
     router = APIRouter(prefix="/api/video/h3", tags=["video"])
     manager = manager or H3JobManager()
+    from routes.video_local_preview_routes import add_local_video_preview_routes
+    add_local_video_preview_routes(router, _owner, manager.root.parent / ".local_previews")
 
     @router.get("/gpus")
     async def gpus(request: Request):

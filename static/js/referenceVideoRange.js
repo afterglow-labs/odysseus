@@ -1,7 +1,8 @@
 // Ranges belong to input objects, not list positions: removing another input
 // or restoring a draft must never move a trim to a different video.
+import { acquireLocalVideoPreview } from './videoLocalPreview.js';
 const ranges = new WeakMap();
-const durations = new WeakMap(), durationQueue = [];
+const durations = new WeakMap(), serverMetadata = new WeakMap(), durationQueue = [];
 let activeDurationProbes = 0;
 const fallback = () => ({ start_seconds: 0, duration_seconds: 15 });
 export function referenceVideoRange(file) { return { ...(ranges.get(file) || fallback()) }; }
@@ -42,7 +43,7 @@ function detectLocalDuration(file, signal, receive) {
       try {
         const response=await fetch(`/api/video/h3/server-files/metadata?${new URLSearchParams(file.serverFile)}`,{credentials:'same-origin',signal:controller.signal});
         if(!response.ok)throw new Error('Metadata unavailable');
-        const result=await response.json(),value=Number(result.duration_seconds);
+        const result=await response.json(),value=Number(result.duration_seconds);serverMetadata.set(file,result);
         if(Number.isFinite(value)&&value>0){durations.set(file,value);if(!signal.aborted)receive(value);}
       } catch { if(!signal.aborted)receive(0); }
       finally {clearTimeout(timer);signal.removeEventListener('abort',abort);}
@@ -87,6 +88,7 @@ export function createReferenceVideoRangeEditor(file, onChange = () => {}, { pre
   const summary = document.createElement('p'); summary.className = 'h3-video-muted'; summary.setAttribute('aria-live', 'polite');
   node.append(controls, summary);
   let video, objectUrl, useCurrent, playSelection, mediaDuration = durations.get(file) || 0, disabled = false, disposed = false, playingSelection = false, previewOffset = 0, compatible = false;
+  let localPreview, previewController, previewGeneration = 0;
   const durationController = new AbortController();
   function render() {
     controls.hidden = automatic && !manual.checked;
@@ -111,20 +113,84 @@ export function createReferenceVideoRangeEditor(file, onChange = () => {}, { pre
     const heading = document.createElement('summary'); heading.textContent = 'Preview video and choose a section';
     video = document.createElement('video'); video.controls = true; video.playsInline = true; video.preload = 'none';
     video.setAttribute('aria-label', `Preview ${file.name}`);
-    // A batch can contain hundreds of videos. Do not open local files or issue
-    // server range requests until this particular preview is expanded.
-    details.addEventListener('toggle', () => {
-      if (!details.open) { video.pause(); return; }
-      if (disposed || video.hasAttribute('src')) return;
-      video.preload = 'metadata';
-      video.src = file.preview_url || (file.serverFile ? `/api/video/h3/server-files/video?${new URLSearchParams(file.serverFile)}` : (objectUrl = URL.createObjectURL(file)));
-    });
     const actions = document.createElement('div'); actions.className = 'h3-video-actions';
     const previewStatus = document.createElement('p'); previewStatus.className = 'h3-video-muted'; previewStatus.setAttribute('role','status');
     const action = text => { const button = document.createElement('button'); button.type = 'button'; button.className = 'memory-toolbar-btn'; button.textContent = text; actions.append(button); return button; };
     useCurrent = action('Use current time as start'); playSelection = action('Play selected section');
+    const local = typeof File !== 'undefined' && file instanceof File;
+    if (local) localPreview = acquireLocalVideoPreview(file);
+    const canConvert = !!(file.serverFile || localPreview);
+    const fallbackButton = canConvert ? action('Compatible preview') : null;
+    const cancelUpload = local ? action('Cancel preview upload') : null;
+    const previous = canConvert ? action('Previous 30 seconds') : null, next = canConvert ? action('Next 30 seconds') : null;
+    if (previous) previous.hidden = next.hidden = true;
+    if (cancelUpload) cancelUpload.hidden = true;
+    let busy = false, localProxyUrl = null, localPreviewId = null, playWhenReady = false;
+    const incompatibleContainer = /\.(mkv|avi)$/i.test(file.name);
+    function setBusy(value) { busy = value; if (fallbackButton) fallbackButton.disabled = value; if (cancelUpload) cancelUpload.hidden = !value; }
+    function useMetadata(metadata) {
+      const value = Number(metadata?.duration_seconds);
+      if (Number.isFinite(value) && value > 0) { mediaDuration = value; durations.set(file,value); start.max = Math.max(0,value-2); render(); }
+    }
+    function loadWindow(offset, play = false) {
+      if (disposed) return;
+      compatible = true; playingSelection = false; playWhenReady = play;
+      previewOffset = Math.max(0,mediaDuration ? Math.min(offset,Math.max(0,mediaDuration-2)) : offset);
+      previous.hidden = next.hidden = false;
+      previous.disabled = previewOffset <= 0; next.disabled = !!mediaDuration && previewOffset + 30 >= mediaDuration;
+      const query = new URLSearchParams({...(file.serverFile || {}),start_seconds:previewOffset,duration_seconds:30});
+      video.preload = 'metadata'; video.src = `${localProxyUrl || '/api/video/h3/server-files/preview'}?${query}`;
+      previewStatus.textContent = `Compatible preview starts at ${timestamp(previewOffset)} in the original video. Use current time keeps that original position.`;
+    }
+    async function compatiblePreview(offset = Number(start.value) || 0, play = false) {
+      if (!canConvert || disposed || busy) return;
+      if (file.serverFile) { loadWindow(offset,play); return; }
+      const token = ++previewGeneration; setBusy(true);
+      try {
+        const result = await localPreview.load(progress => {
+          if (disposed || token !== previewGeneration) return;
+          previewStatus.textContent = progress.phase === 'preparing' ? 'Preparing a compatible preview…'
+            : `Uploading a temporary preview copy… ${progress.total > 0 ? Math.min(100,Math.round(progress.loaded/progress.total*100)) + '%' : ''} Your original attachment is unchanged.`;
+        });
+        if (disposed || token !== previewGeneration) return;
+        localProxyUrl = result.preview_url; localPreviewId = result.id; useMetadata(result.metadata); loadWindow(offset,play);
+      } catch (error) {
+        if (!disposed && token === previewGeneration) previewStatus.textContent = error.name === 'AbortError'
+          ? 'Preview upload cancelled. Use Compatible preview to try again.' : `${error.message} Your selected section is unchanged.`;
+      } finally { if (!disposed && token === previewGeneration) setBusy(false); }
+    }
+    if (fallbackButton) fallbackButton.onclick = () => compatiblePreview();
+    if (cancelUpload) cancelUpload.onclick = () => localPreview.cancel();
+    if (previous) { previous.onclick = () => compatiblePreview(previewOffset-30); next.onclick = () => compatiblePreview(previewOffset+30); }
+    // Do not upload a local file or fetch video windows until this particular
+    // preview is expanded. Hundreds of unopened batch rows stay lightweight.
+    details.addEventListener('toggle', async () => {
+      if (!details.open) { video.pause(); previewController?.abort(); previewController = null; return; }
+      if (disposed || video.hasAttribute('src') || busy || previewController) return;
+      if (incompatibleContainer && canConvert) { compatiblePreview(); if (!file.serverFile) return; }
+      if (file.serverFile) {
+        const controller = new AbortController(); previewController = controller;
+        const timer = setTimeout(() => controller.abort(),35000);
+        if (!compatible) previewStatus.textContent = 'Checking video format…';
+        try {
+          let metadata = serverMetadata.get(file);
+          if (!metadata) { const response = await fetch(`/api/video/h3/server-files/metadata?${new URLSearchParams(file.serverFile)}`,{credentials:'same-origin',signal:controller.signal}); if (response.ok) { metadata = await response.json(); serverMetadata.set(file,metadata); } }
+          if (disposed || !details.open || previewController !== controller) return;
+          useMetadata(metadata);
+          if (metadata?.browser_compatible === false && !video.hasAttribute('src')) { compatiblePreview(); return; }
+        } catch { if (disposed || !details.open || previewController !== controller) return; }
+        finally { clearTimeout(timer); if (previewController === controller) previewController = null; }
+      }
+      if (disposed || video.hasAttribute('src')) return;
+      previewStatus.textContent = ''; video.preload = 'metadata';
+      video.src = file.preview_url || (file.serverFile ? `/api/video/h3/server-files/video?${new URLSearchParams(file.serverFile)}` : (objectUrl = URL.createObjectURL(file)));
+    });
     useCurrent.onclick = () => { if (disabled) return; const time=previewOffset+video.currentTime;manual.checked = true; start.value = Math.max(0, Math.min(time, mediaDuration ? mediaDuration - 2 : time)).toFixed(2); change(); };
-    playSelection.onclick = () => { playingSelection = true; video.currentTime = Math.max(0,Number(start.value)-previewOffset); video.play().catch(() => {}); };
+    playSelection.onclick = () => {
+      const begin = Number(start.value), end = begin + Number(duration.value);
+      if (compatible && (begin < previewOffset || !Number.isFinite(video.duration) || end > previewOffset + video.duration)) { compatiblePreview(begin,true); return; }
+      playingSelection = true; video.currentTime = Math.max(0,begin-previewOffset); video.play().catch(() => {});
+    };
     video.addEventListener('pause', () => { playingSelection = false; });
     video.addEventListener('timeupdate', () => { if (playingSelection && !video.paused && video.currentTime+previewOffset >= Number(start.value) + Number(duration.value)) video.pause(); });
     video.addEventListener('loadedmetadata', () => {
@@ -133,13 +199,24 @@ export function createReferenceVideoRangeEditor(file, onChange = () => {}, { pre
       // Requested length is an upper bound. Keep the user's saved range intact;
       // the server clips at EOF and rejects fewer than two usable seconds.
       render();
+      if (playWhenReady) { playWhenReady = false; playingSelection = true; video.currentTime = Math.max(0,Number(start.value)-previewOffset); video.play().catch(() => {}); }
     });
-    if(file.serverFile){
-      const fallback=action('Compatible preview'),previous=action('Previous 30 seconds'),next=action('Next 30 seconds');previous.hidden=next.hidden=true;
-      const loadWindow=offset=>{compatible=true;playingSelection=false;previewOffset=Math.max(0,mediaDuration?Math.min(offset,Math.max(0,mediaDuration-2)):offset);previous.hidden=next.hidden=false;video.preload='metadata';video.src=`/api/video/h3/server-files/preview?${new URLSearchParams({...file.serverFile,start_seconds:previewOffset,duration_seconds:30})}`;previewStatus.textContent=`Compatible preview starts at ${timestamp(previewOffset)} in the original video. Use current time keeps that original position.`;};
-      fallback.onclick=()=>loadWindow(Number(start.value)||0);previous.onclick=()=>loadWindow(previewOffset-30);next.onclick=()=>loadWindow(previewOffset+30);
-    }
-    video.addEventListener('error', () => { previewStatus.textContent = file.serverFile?'This file’s codec cannot play directly here. Use Compatible preview to browse it.':'This browser cannot preview this file. Its length will still be detected on the server when queued; you can enter a start time manually.'; });
+    video.addEventListener('error', async () => {
+      if (disposed) return;
+      if (canConvert && !compatible && !busy) { compatiblePreview(); return; }
+      previewStatus.textContent = canConvert ? 'Compatible preview could not load. Use Compatible preview to retry; your selected section is unchanged.'
+        : 'This browser cannot preview this file. Its length will still be detected on the server when queued; you can enter a start time manually.';
+      if (compatible && localPreviewId) {
+        const failedUrl = video.src, failedId = localPreviewId;
+        try {
+          const response = await fetch(failedUrl,{method:'HEAD',credentials:'same-origin'});
+          if (!disposed && video.src === failedUrl && [404,410].includes(response.status)) {
+            localPreview.invalidate(failedId);
+            previewStatus.textContent = 'The temporary preview expired. Use Compatible preview to upload it again; your selected section is unchanged.';
+          }
+        } catch { /* The visible retry remains available after a connection failure. */ }
+      }
+    });
     details.append(heading, video, actions,previewStatus); node.append(details);
   }
   render();
@@ -148,7 +225,7 @@ export function createReferenceVideoRangeEditor(file, onChange = () => {}, { pre
     setDisabled(value) { disabled = value; if (useCurrent) useCurrent.disabled = value; render(); },
     setValue(value) { manual.checked = true; start.value = value.start_seconds; duration.value = value.duration_seconds; setReferenceVideoRange(file, value); render(); },
     getValue() { return referenceVideoRange(file); },
-    destroy() { disposed = true; durationController.abort(); if (video) { video.pause(); video.removeAttribute('src'); video.load(); } if (objectUrl) URL.revokeObjectURL(objectUrl); },
+    destroy() { disposed = true; previewGeneration++; previewController?.abort(); durationController.abort(); localPreview?.release(); if (video) { video.pause(); video.removeAttribute('src'); video.load(); } if (objectUrl) URL.revokeObjectURL(objectUrl); },
   };
 }
 export function referenceVideoRangesField(values) {

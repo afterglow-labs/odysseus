@@ -1286,10 +1286,18 @@ async def _startup_event():
     from src.cookbook_serve_lifecycle import cookbook_serve_lifecycle_loop
     _startup_tasks.append(asyncio.create_task(cookbook_serve_lifecycle_loop()))
 
+    from src.local_video_previews import local_preview_cleanup_loop
+    app.state._local_preview_cleanup_task = asyncio.create_task(local_preview_cleanup_loop())
+    _startup_tasks.append(app.state._local_preview_cleanup_task)
+
     logger.info("Application startup complete")
 
 async def _shutdown_event():
     logger.info("Application shutting down...")
+    local_preview_task = getattr(app.state, "_local_preview_cleanup_task", None)
+    if local_preview_task is not None:
+        local_preview_task.cancel()
+        await asyncio.gather(local_preview_task, return_exceptions=True)
     if upload_cleanup_task:
         upload_cleanup_task.cancel()
         try:

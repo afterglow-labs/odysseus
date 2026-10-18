@@ -37,6 +37,10 @@ def _job_prefix(selection):
         job_id = str(selection.get('path', '')).split('/')[0]
         if re.fullmatch(r'[0-9a-f]{32}', job_id):
             return job_id + '-'
+    if isinstance(selection, dict) and selection.get('root') == 'local-preview':
+        identity = str(selection.get('path', ''))
+        if re.fullmatch(r'[0-9a-f]{32}', identity):
+            return 'local-' + identity + '-'
     return ''
 
 
@@ -44,10 +48,20 @@ def delete_owned_previews(job_id, legacy_keys=()):
     """Remove only this job's disposable players; prevent in-flight republish."""
     if not re.fullmatch(r'[0-9a-f]{32}', job_id):
         raise ValueError('Invalid video job identity')
-    if not CACHE_ROOT.exists():
-        return
+    _delete_preview_namespace(job_id, legacy_keys)
+
+
+def delete_local_previews(identity):
+    if not re.fullmatch(r'[0-9a-f]{32}', identity):
+        raise ValueError('Invalid temporary video identity')
+    # Create the tombstone even if conversion has not created the cache yet.
+    _delete_preview_namespace('local-' + identity, ())
+
+
+def _delete_preview_namespace(job_id, legacy_keys):
     if CACHE_ROOT.is_symlink():
         raise RuntimeError('The video playback cache is unavailable; retry Delete')
+    CACHE_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
     with _CACHE_LOCK:
         marker = os.open(CACHE_ROOT / (job_id + '.deleted'),
                          os.O_WRONLY | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0), 0o600)
@@ -152,7 +166,7 @@ def _prune(directory, keep=None):
     with _CACHE_LOCK:
         files = []
         for path in directory.glob('*.mp4'):
-            if path.is_symlink() or not re.fullmatch(r'(?:[0-9a-f]{32}-)?[0-9a-f]{64}', path.stem):
+            if path.is_symlink() or not re.fullmatch(r'(?:(?:local-)?[0-9a-f]{32}-)?[0-9a-f]{64}', path.stem):
                 continue
             try:
                 files.append((path, path.stat()))
@@ -195,7 +209,7 @@ def _get_open_video_preview(upload, selection, *, start_seconds, duration_second
         CACHE_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
         removed = CACHE_ROOT / (prefix[:-1] + '.deleted') if prefix else None
         if removed is not None and removed.exists():
-            raise HTTPException(404, 'This video job was deleted')
+            raise HTTPException(404, 'This video preview is no longer available')
         target = CACHE_ROOT / (key + '.mp4')
         if prefix:
             legacy = CACHE_ROOT / (legacy_key + '.mp4')
@@ -240,7 +254,7 @@ def _get_open_video_preview(upload, selection, *, start_seconds, duration_second
             raise HTTPException(503, 'The video preview converter is unavailable') from exc
         upload.check_unchanged()
         if removed is not None and removed.exists():
-            raise HTTPException(404, 'This video job was deleted')
+            raise HTTPException(404, 'This video preview is no longer available')
         if temporary.is_file() and temporary.stat().st_size > MAX_CACHE_BYTES:
             raise HTTPException(507, 'The original video is too large for a playback copy. Choose a shorter source section; no truncated preview was saved.')
         if result.returncode or not temporary.is_file() or temporary.stat().st_size < 512:
@@ -249,7 +263,7 @@ def _get_open_video_preview(upload, selection, *, start_seconds, duration_second
             raise HTTPException(422, 'This section could not be previewed. The source may be unreadable or have no video here.')
         with _CACHE_LOCK:
             if removed is not None and removed.exists():
-                raise HTTPException(404, 'This video job was deleted')
+                raise HTTPException(404, 'This video preview is no longer available')
             os.replace(temporary, target)
             temporary = None
         _prune(CACHE_ROOT, keep=target)

@@ -61,6 +61,7 @@ const videoWorkflow={};
 // Prompt history's real DOM/events are exercised by its browser tests. This
 // stripped-import harness isolates H3 draft, media and submission behavior.
 const bindWorkflowPromptHistory=()=>({destroy(){}});
+const acquireLocalVideoPreview=()=>({release(){}}); // Preview conversion has real browser coverage.
 const createVideoJobPager=()=>({counts:{},total:0,load:async()=>{},destroy(){}});
 const releaseVideoJobMedia=()=>{};
 let studioOptions,studioSelection;

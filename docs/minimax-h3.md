@@ -195,9 +195,13 @@ to select a 2–15 second section. Expand **Preview video and choose a section**
 scrub to the desired point, and choose **Use current time as start**. For example,
 start 80 and length 15 uses 1:20–1:35. **Play selected section** previews that range.
 Local files and supported E:/F: server videos can be previewed; timestamps remain
-usable when the browser cannot play a codec or a saved job input has no preview.
-For server videos that the phone cannot play directly, Odysseus prepares a small
-H.264/AAC MP4 preview of the selected area. The preview covers up to 30 seconds
+usable when a saved job input has no preview. Unsupported containers and codecs
+automatically use a compatible H.264/AAC MP4 preview. For a local file, opening
+its preview first uploads a temporary copy, with progress and a cancel action.
+The copy is reused while browsing sections and does not replace the workflow
+attachment or submit a generation job. Closing the editor releases it; expired
+copies are also removed by the server. E:/F: server files need no preview upload.
+The compatible preview covers up to 30 seconds
 and follows the original video's timeline as you seek. It does not replace the
 source or change generation inputs. Preview preparation failures are displayed
 with a retry action. Temporary previews use a bounded cache on the server.
