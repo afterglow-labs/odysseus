@@ -74,7 +74,23 @@ Fresh drafts use 20 preview steps and no automatic turbo LoRA. Previously saved 
 
 Fresh Scout drafts use 20 full-schedule steps, 3 seed choices, previews after step 3, VAE decoding, and no LoRAs. Selection timeout 0 waits until a seed is chosen or the job is stopped. Optional previews-only and single-full-pass modes remain available. Batch submissions can vary a reference video, image or audio input, or repeat the whole draft; video lengths can be detected automatically. Scout drafts, batch trays and paginated history are separate from Seed Hunter.
 
-Seed Hunter's completed-preview/upscale workflow and Seed Scout's partial-schedule continuation are distinct operations.
+Enable **Final latent upscale** to run the same learned 3D upscaler used by
+Seed Hunter after Scout finishes the selected seed. The upscaler model is chosen
+under Model setup. Blank final dimensions use twice the scouting width and
+height; explicit dimensions must be multiples of 32, at least the scouting size,
+and fit 4,194,304 pixels. The default final refinement is 2 steps at denoise 0.4,
+using the selected sampler and scheduler. Denoise 0 applies only the learned
+upscaler. Temporal chunking and upscaler offload remain available.
+
+Scout retains its exact partial-latent continuation: with preview step 4 of 20,
+selection resumes 16 remaining updates at scouting resolution. It then upscales
+the finished latent, refines at final resolution, and decodes the result. The
+refinement counter is separate from the 20-step full schedule. Previews-only
+mode keeps partial previews without applying final upscaling. Existing queued
+jobs retain their saved settings; enable upscaling through Edit before they run,
+or Edit & rerun a completed job. Batch and portable workflow snapshots preserve
+these settings. New clients enable the stage when the server supports it and an
+upscaler is installed; legacy jobs and clients keep their original behavior.
 
 The preview's denoised video/audio latent and original conditioning are stored
 as a safetensors file plus typed JSON. When final and preview lengths match,

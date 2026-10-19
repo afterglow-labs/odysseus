@@ -347,7 +347,7 @@ def validate_config(raw, components, gpus, uploads):
     if set(raw) - allowed:
         raise ValueError("Unknown generation setting: " + sorted(set(raw) - allowed)[0])
     config = {**DEFAULTS, **raw}
-    from scripts.h3_seed_hunter_controls import validate_options, limits, SAMPLERS, SCHEDULERS
+    from scripts.h3_seed_hunter_controls import validate_options, limits, SAMPLERS, SCHEDULERS, scout_upscale_enabled, validate_scout_output
     hunt = config.get("recipe") == "seed_hunter"
     if "recipe" in raw and not hunt or not hunt and ("seed_hunter" in raw or "latent_upscaler" in raw):
         raise ValueError("Unknown H3 recipe")
@@ -431,7 +431,9 @@ def validate_config(raw, components, gpus, uploads):
             lora.get("lora_profile") or {"variant": lora.get("variant", "shared")})
     config["lora"] = config["loras"][0]["path"] if config["loras"] else None
     config["lora_scale"] = config["loras"][0]["strength"] if config["loras"] else 1
-    if hunt and (config.get("latent_upscaler") or options["stage"] == "final"):
+    if hunt:
+        validate_scout_output(config)
+    if hunt and (config.get("latent_upscaler") or options["stage"] == "final" or scout_upscale_enabled(config)):
         upscaler = by_id.get(config.get("latent_upscaler")) if isinstance(config.get("latent_upscaler"), str) else None
         if not upscaler or upscaler["role"] != "latent_upscaler" or not Path(upscaler["path"]).is_file():
             raise ValueError("Choose an installed H3 latent upscaler")

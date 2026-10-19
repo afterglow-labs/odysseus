@@ -71,7 +71,7 @@ export function seedHunterConfig(values, options, loras) {
   config.seed_hunter.preview_count=seedHunterPreviewCount(config.seed_hunter.preview_count);
   for (const key of OUTER) if (values[key] !== undefined) config[key] = NUMERIC.has(key) ? Number(values[key]) : values[key];
   if (['single', 'continuation'].includes(config.seed_hunter.stage)) config.seed_hunter.preview_count = 1;
-  if(!['preview','final'].includes(config.seed_hunter.stage) || !config.latent_upscaler) delete config.latent_upscaler;
+  if(!(['preview','final'].includes(config.seed_hunter.stage)||config.seed_hunter.stage==='scout'&&config.seed_hunter.scout_mode!=='scout'&&config.seed_hunter.scout_upscale) || !config.latent_upscaler) delete config.latent_upscaler;
   return config;
 }
 export function seedHunterEnhancerInputs(uploads, options) {
@@ -114,7 +114,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
   const dialog = make('section', 'cookbook-edit-modal h3-video-dialog h3-seed-hunter-dialog'); dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true'); dialog.setAttribute('aria-label', title);
   const header = make('div', 'h3-video-header'), closeButton = button('Close'); header.append(make('h2', '', title), closeButton);
   const scroll = make('div', 'h3-video-scroll'); dialog.append(header, scroll); overlay.append(dialog); document.body.append(overlay);
-  scroll.append(make('p', 'h3-video-target', `Local Odysseus server · ${window.location.host}`), make('p', 'h3-video-description', scout ? 'Scout several seeds for a few steps, view their animated previews here, then choose one to finish the same video. Continuing uses the same resolution and saved partial latent.' : 'Generate previews, then refine a selected result.'));
+  scroll.append(make('p', 'h3-video-target', `Local Odysseus server · ${window.location.host}`), make('p', 'h3-video-description', scout ? 'Compare early seed previews, continue the chosen seed, then optionally upscale its finished latent and refine the final video.' : 'Generate previews, then refine a selected result.'));
   const status = make('p', 'h3-video-muted', `Checking ${title} components…`); status.setAttribute('role', 'status');
   const error = make('p', 'h3-video-error'); error.hidden = true; error.setAttribute('role', 'alert');
   const toolbar = make('div', 'h3-video-toolbar'), refresh = button('Refresh components'), exportButton = button('Export workflow'), importButton = button('Import workflow');
@@ -160,6 +160,18 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
     select(dimensions, 'scout_preview_mode', 'Preview decoding', [['vae','Video VAE'],['latent2rgb','Fast latent preview']], options);
   }
   const duration = make('p', 'h3-video-muted'); dimensions.append(duration);
+  const scoutUpscale = scout ? group(form, 'Final latent upscale', true) : null;
+  const scoutUpscaleSummary = scout ? make('p', 'h3-video-muted') : null;
+  if (scout) {
+    check(scoutUpscale, 'scout_upscale', 'Upscale the selected final video');
+    for (const axis of ['width','height']) {
+      const control=number(scoutUpscale,`scout_final_${axis}`,`Final ${axis} (blank = 2× scouting ${axis})`,'',32,4096,32,options);
+      control.placeholder='Automatic · 2×';
+    }
+    number(scoutUpscale,'scout_refine_steps','Upscale refinement steps',2,1,100,1,options);
+    number(scoutUpscale,'denoise','Upscale refinement denoise',.4,0,1,.05,options);
+    scoutUpscale.append(scoutUpscaleSummary);
+  }
   const sizeTools = make('div', 'h3-video-actions'), aspect = make('select', 'cookbook-field-input'), megapixels = make('input', 'cookbook-field-input'), applySize = button('Apply preview size');
   aspect.setAttribute('aria-label', 'Preview aspect ratio'); for (const value of ['1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9', '21:9']) aspect.add(new Option(value, value)); aspect.value = '9:16';
   megapixels.type = 'number'; megapixels.value = '0.4'; megapixels.min = '0.1'; megapixels.max = '4'; megapixels.step = '0.1'; megapixels.setAttribute('aria-label', 'Preview megapixels'); sizeTools.append(megapixels, aspect, applySize); form.append(sizeTools);
@@ -185,7 +197,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
   select(advanced, 'sparse_sink_conditioning', 'Sparse reference preservation', [['exact_kv_and_rows','Preserve reference keys and rows'],['none','Off']], options);
   number(advanced, 'ff_chunk_size', 'Feed-forward chunks (0 = auto for INT8)', 0, 0, 64, 1, options); number(advanced, 'ff_chunk_threshold', 'Feed-forward chunk threshold', 2048, 1, 1000000, 1, options);
   number(advanced, 'low_vram_chunks', 'Attention chunks (0 = off)', 0, 0, 64, 1, options);
-  number(advanced, 'denoise', 'Default refinement denoise', .4, 0, 1, .05, options);
+  if (!scout) number(advanced, 'denoise', 'Default refinement denoise', .4, 0, 1, .05, options);
   check(advanced, 'upscaler_chunking', 'Temporal chunking for latent upscale', true); check(advanced, 'upscaler_force_unload', 'Unload latent upscaler after use');
   const continuationPanel = group(form, 'Continuation source and timing', true);
   select(continuationPanel, 'continuation_overlap', 'Overlap frames', [5,22,39,56].map(n => [String(n), String(n)]), options);
@@ -250,7 +262,11 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
   });
   const disposeHelp = bindSeedHunterHelp(overlay, scout ? { seed: { title:'Base seed', body:'Seed Scout tries consecutive seeds: the base seed, base + 1, base + 2, and so on. Each reaches the chosen preview step. Selecting one continues its saved partial latent through the rest of the full schedule.' }, steps: {title:'Full schedule steps',body:'Total sampling updates for the final video. Each candidate runs up to Preview after step; your selected seed continues the remaining updates. For 20 total steps and previews after step 3, the selected seed continues with 17 steps.'} } : {});
   function fail(reason) { error.textContent = reason?.message || String(reason || ''); error.hidden = !error.textContent; }
-  function readOptions() { return {...optionSnapshot, refmod_strengths:uploads.reference_mods?[...uploads.reference_mods.retained,...uploads.reference_mods.files].map((_,i)=>uploads.reference_mods.strengths[i]??1):[], ...Object.fromEntries(Object.keys(options).map(key => { const n = options[key]; return [key, n.type === 'checkbox' ? n.checked : n.type === 'number' || ['preview_count','continuation_overlap','output_fps','scout_timeout'].includes(key) ? (n.value === '' ? null : Number(n.value)) : n.value]; }))}; }
+  function readOptions() {
+    const value={...optionSnapshot, refmod_strengths:uploads.reference_mods?[...uploads.reference_mods.retained,...uploads.reference_mods.files].map((_,i)=>uploads.reference_mods.strengths[i]??1):[], ...Object.fromEntries(Object.keys(options).map(key => { const n = options[key]; return [key, n.type === 'checkbox' ? n.checked : n.type === 'number' || ['preview_count','continuation_overlap','output_fps','scout_timeout'].includes(key) ? (n.value === '' ? null : Number(n.value)) : n.value]; }))};
+    if(inventory?.seed_hunter?.features?.scout_upscale!==true)for(const key of ['scout_upscale','scout_final_width','scout_final_height','scout_refine_steps'])delete value[key];
+    return value;
+  }
   function config() {
     const value = seedHunterConfig(Object.fromEntries([...OUTER, 'prompt'].map(key => [key, fields[key].value])), readOptions(), loras.getValue());
     // A final job already owns its conditioning. Preserve even the absence of
@@ -303,7 +319,8 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
     batchQueue?.setCompanionFields?.([{field:'reference_audio',label:'Audio for this job'},{field:'reference_images',label:'Images for this job'},{field:'reference_videos',label:'Extra videos for this job'},...(options.first_frame_guide.checked?[{field:'first_frame',label:'First-frame guide for this job'}]:[]),...(options.last_frame_guide.checked?[{field:'last_frame',label:'Last-frame guide for this job'}]:[])]);
     const batchBusy=!!batchQueue?.busy, batching=!!batchQueue?.active&&!jobEditor?.active&&stage.value!=='final',locked=busy||batchBusy;
     const finalEdit = stage.value === 'final', single = ['single', 'continuation','final'].includes(stage.value);
-    fields.latent_upscaler.parentElement.hidden = !finalEdit && stage.value !== 'preview';
+    const scoutUpscaling=scout&&options.scout_upscale.checked&&options.scout_mode.value!=='scout';
+    fields.latent_upscaler.parentElement.hidden = !finalEdit && stage.value !== 'preview' && !scoutUpscaling;
     for(const key of [...OUTER,'prompt']) if(!['shift_video','shift_audio'].includes(key)) fields[key].disabled = locked || enhancing || (finalEdit && !FINAL_FIELDS.has(key));
     for(const key of ['reference_images','reference_videos','reference_audio'])uploads[key].wrap.hidden=false;
     media.hidden = finalEdit; sizeTools.hidden = finalEdit; applyDialogue.disabled = finalEdit; reroll.disabled = locked;
@@ -320,7 +337,14 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
     uploads.first_frame.wrap.hidden = !options.first_frame_guide.checked; uploads.last_frame.wrap.hidden = !options.last_frame_guide.checked;
     uploads.reference_mods.wrap.title = features.refmods === true ? '' : 'Reference mods are unavailable in the installed Seed Hunter runtime.';
     options.preview_count.disabled = single || locked; options.preview_count.parentElement.hidden = scout || single;
-    if (scout) { stage.disabled = true; const fullPass=options.scout_mode.value==='final';options.scout_count.disabled ||= fullPass;options.scout_step.disabled ||= fullPass;options.scout_preview_mode.disabled ||= fullPass;options.scout_timeout.disabled ||= options.scout_mode.value!=='interactive';options.scout_step.max = Math.max(1, Number(fields.steps.value) - 1); for (const key of ['upscaler_chunking','upscaler_force_unload']) options[key].parentElement.hidden = true; }
+    if (scout) {
+      stage.disabled = true; const fullPass=options.scout_mode.value==='final';options.scout_count.disabled ||= fullPass;options.scout_step.disabled ||= fullPass;options.scout_preview_mode.disabled ||= fullPass;options.scout_timeout.disabled ||= options.scout_mode.value!=='interactive';options.scout_step.max = Math.max(1, Number(fields.steps.value) - 1);
+      options.scout_upscale.disabled ||= inventory?.seed_hunter?.features?.scout_upscale!==true||options.scout_mode.value==='scout';
+      for(const key of ['scout_final_width','scout_final_height','scout_refine_steps','denoise'])options[key].disabled ||= !scoutUpscaling;
+      for (const key of ['upscaler_chunking','upscaler_force_unload']) options[key].parentElement.hidden = !scoutUpscaling;
+      const width=options.scout_final_width.value===''?Number(fields.width.value)*2:Number(options.scout_final_width.value),height=options.scout_final_height.value===''?Number(fields.height.value)*2:Number(options.scout_final_height.value);
+      scoutUpscaleSummary.textContent=inventory?.seed_hunter?.features?.scout_upscale!==true?'Final latent upscaling needs the updated server and an installed H3 latent upscaler.':scoutUpscaling?`${fields.width.value} × ${fields.height.value} → ${width} × ${height}. The chosen seed finishes its remaining schedule first, then the learned upscaler runs with ${options.scout_refine_steps.value} refinement steps. Sampler and scheduler follow the controls below.`:'The final video keeps the scouting resolution.';
+    }
     dialoguePanel.parentElement.hidden = stage.value !== 'dialogue'; audioPanel.parentElement.hidden = false; continuationPanel.parentElement.hidden = stage.value !== 'continuation'; uploads.source_video.wrap.hidden = stage.value !== 'continuation';
     const choiceCount = scout ? Math.max(1,Math.min(32,Number(options.scout_count.value)||3)) : single ? 1 : Math.max(1,Math.min(3,Number(options.preview_count.value)||1));
     fields.seed.max = Number.MAX_SAFE_INTEGER - (scout ? 1 : 1000) * (choiceCount - 1);
@@ -353,9 +377,10 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
     try {
       const data = await request('/inventory'); if (closed) return;
       const first = !inventory, serverDefaults = (scout ? data.seed_hunter?.scout_defaults : data.seed_hunter?.defaults) || {}, before = first ? { ...base, ...serverDefaults, steps:20, loras:[], ...(saved.config || {}), seed_hunter: { ...defaults, ...(serverDefaults.seed_hunter || {}), ...(scout ? SEED_SCOUT_OPTIONS : {}), ...(saved.config?.seed_hunter || {}) } } : config(); inventory = data;
+      if(scout&&first&&before.seed_hunter.scout_upscale===undefined)before.seed_hunter.scout_upscale=data.seed_hunter?.features?.scout_upscale===true;
       optionSnapshot = clone(before.seed_hunter || {});
       if(first && !saved.config && !scout){const authored=data.components.find(c=>c.role==='model'&&c.name==='Minimax-h3_Singularity_ref2va_Pruned_v1.3_int8.safetensors');if(authored)before.model=authored.id;}
-      for (const role of ['model','encoder','video_vae','audio_vae','latent_upscaler']) fill(fields[role], (data.components || []).filter(c => c.role === role && (role !== 'model' || c.variant === 'ref2va')), before[role]);
+      for (const role of ['model','encoder','video_vae','audio_vae','latent_upscaler']) fill(fields[role], (data.components || []).filter(c => c.role === role && (role !== 'model' || c.variant === 'ref2va')), before[role] || (scout&&role==='latent_upscaler'?data.components.find(c=>c.role===role)?.id:undefined));
       fill(fields.gpu, data.gpus || [], before.gpu || data.gpus?.find(g => /5090/.test(g.name))?.id); fill(fields.vae_gpu, data.gpus || [], before.vae_gpu, true);
       for (const key of OUTER.filter(key => !['model','encoder','video_vae','audio_vae','latent_upscaler','gpu','vae_gpu'].includes(key))) if (before[key] !== undefined) fields[key].value = before[key];
       for (const key of Object.keys(options)) { const n = options[key], value = before.seed_hunter?.[key] ?? defaults[key] ?? n.value; if (n.type === 'checkbox') n.checked = value; else n.value = key==='preview_count'?seedHunterPreviewCount(value):value ?? ''; }
@@ -448,13 +473,13 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
   batchQueue=createVideoBatchQueue({family:'h3',recipe:'seed_hunter',sessionKey:(scout?'h3:seed_scout':'h3:seed_hunter')+(layout==='pipeline'?':pipeline':''),container:batchContainer,getSnapshot:batchSnapshot,onJob:()=>{if(!closed)loadJobs({reset:true});},onChange:()=>{if(!closed){revision++;update();}}});
   function nestedEditor(onChange, savedConfig) {
     const node=make('div','h3-video-grid'), rows=[];
-    const allowed=savedConfig?.seed_hunter?.stage==='final'||!savedConfig&&!scout ? FINAL_OPTIONS : new Set(Object.keys(options).filter(k=>k!=='stage'&&options[k].type!=='hidden'&&(!scout||!['preview_count','upscaler_chunking','upscaler_force_unload'].includes(k))));
+    const allowed=savedConfig?.seed_hunter?.stage==='final'||!savedConfig&&!scout ? FINAL_OPTIONS : new Set(Object.keys(options).filter(k=>k!=='stage'&&options[k].type!=='hidden'&&(!scout||k!=='preview_count')));
     for(const key of allowed){const original=options[key];if(!original)continue;const wrap=make('label','h3-video-field'), enabled=make('input'), control=original.cloneNode(true);enabled.type='checkbox';enabled.setAttribute('aria-label',`Change ${key.replaceAll('_',' ')}`);control.removeAttribute('id');control.value=original.value;control.checked=original.checked;control.disabled=true;control.setAttribute('aria-label',`New ${key.replaceAll('_',' ')}`);wrap.append(make('span','',key.replaceAll('_',' ')),enabled,control);node.append(wrap);const row={key,enabled,control,unavailable:!!original.title};rows.push(row);enabled.onchange=()=>{control.disabled=!enabled.checked;onChange();};control.oninput=control.onchange=()=>{enabled.checked=true;onChange();};}
     return {node,setDisabled(value){for(const r of rows){r.enabled.disabled=value||r.unavailable;r.control.disabled=value||r.unavailable||!r.enabled.checked;}},setValue(value){for(const r of rows)if(value[r.key]!==undefined){if(r.control.type==='checkbox')r.control.checked=value[r.key];else r.control.value=r.key==='preview_count'?seedHunterPreviewCount(value[r.key]):value[r.key]??'';}},getValue(){return Object.fromEntries(rows.filter(r=>r.enabled.checked).map(r=>[r.key,r.control.type==='checkbox'?r.control.checked:r.control.type==='number'||['preview_count','continuation_overlap','output_fps'].includes(r.key)?r.control.value===''?null:Number(r.control.value):r.control.value]));}};
   }
   queue=createVideoQueueControls({container:queueContainer,historyContainer:jobToolbar,historyFilter:{recipe:'seed_hunter',stage:scout?'scout':'not_scout'},family:'h3',request,reload:loadJobs,isClosed:()=>closed,onChange:update,filterJobs:job=>scout?isSeedScoutJob(job):!isSeedScoutJob(job)&&(job.recipe==='seed_hunter'||!!job.seed_hunter),targetName:title,getFields:(savedConfig,savedJob)=>{
     const final=savedConfig?.seed_hunter?.stage==='final', shared=final||!savedConfig&&!scout;
-    const keys=OUTER.filter(k=>k!=='mode'&&(shared?FINAL_FIELDS.has(k):k!=='latent_upscaler'));
+    const keys=OUTER.filter(k=>k!=='mode'&&(shared?FINAL_FIELDS.has(k):scout||k!=='latent_upscaler'));
     return keys.map(key=>videoQueueField(key,key.replaceAll('_',' '),fields[key],NUMERIC.has(key))).concat(shared?[]:[videoQueueField('prompt','Prompt',fields.prompt,false)]).concat(!shared&&savedConfig?.reference_video_ranges?.length?[referenceVideoRangesField(savedConfig.reference_video_ranges)]:[]).concat([
       {key:'seed_hunter',label:'Seed Hunter settings',create:onChange=>nestedEditor(onChange,savedConfig)},
       {key:'loras',label:'LoRA stack',getSavedValue:h3LoraStack,create:onChange=>createH3LoraEditor({components:h3LoraComponents(inventory?.components||[],savedJob?.lora_components),value:loras.getValue(),idPrefix:'seed-hunter-queue',onChange})}]);
@@ -476,7 +501,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
       {id:'inputs',title:'Inputs',parent:form,nodes:[stage.parentElement,batchContainer,media]},
       {id:'prepare',title:'Prompt',parent:form,nodes:[prompt.parentElement,enhancerBar,enhancerInfo,dialoguePanel.parentElement,continuationPanel.parentElement,audioPanel.parentElement]},
       {id:'setup',title:'Model setup',parent:form,nodes:[componentGrid,loras.node]},
-      {id:'generate',title:'Generate',parent:form,nodes:[dimensions,sizeTools,advanced.parentElement]},
+      {id:'generate',title:'Generate',parent:form,nodes:[dimensions,sizeTools,...(scoutUpscale?[scoutUpscale.parentElement]:[]),advanced.parentElement]},
       {id:'review',title:scout?'Choose seed / Results':'Review',parent:scroll,nodes:[jobToolbar,jobStatus,jobPager.node,jobList,jobPager.bottomNode]},
       ...(!scout?[{id:'refine',title:'Refine',parent:scroll,nodes:[finalSection]}]:[]),
     ],actions:[actions],queueNodes:[queueContainer],

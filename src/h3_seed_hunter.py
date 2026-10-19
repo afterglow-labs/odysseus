@@ -2,7 +2,7 @@
 import uuid
 from pathlib import Path
 
-from scripts.h3_seed_hunter_controls import DEFAULTS, SAMPLERS, SCHEDULERS
+from scripts.h3_seed_hunter_controls import DEFAULTS, SAMPLERS, SCHEDULERS, scout_upscale_enabled, scout_output_size
 from src.h3_video import ACTIVE, _read, _write, _locked
 
 
@@ -32,6 +32,8 @@ def capabilities(project, runtime, components, gpus=()):
                            "scheduler": "linear_quadratic", "denoise": .4},
         "features": {"latent_upscaler": (extras / "latent-upscaler").is_dir()
                      and any(c.get("role") == "latent_upscaler" for c in components),
+                     "scout_upscale": (extras / "latent-upscaler/nodes/minimax_h3_latent_upscaler_3d.py").is_file()
+                     and any(c.get("role") == "latent_upscaler" for c in components),
                      "guides": True, "force_audio": True, "continuation": True, "dialogue": True,
                      "separate_final_length": True,
                      "seed_scout": (runtime.parent / "seed-scout/nodes.py").is_file(),
@@ -49,7 +51,8 @@ def preflight(config, inventory, inputs):
         return
     features = inventory.get("seed_hunter", {}).get("features", {})
     options = config["seed_hunter"]
-    wanted = {"latent_upscaler": options["stage"] == "final",
+    wanted = {"latent_upscaler": options["stage"] == "final" or scout_upscale_enabled(config),
+              "scout_upscale": scout_upscale_enabled(config),
               "seed_scout": options["stage"] == "scout",
               "refmods": bool(inputs.get("reference_mods")), "rife": options["output_fps"] == 48,
               "ff_chunking": bool(options["ff_chunk_size"]),
@@ -82,6 +85,9 @@ def summary(directory, config, state):
     result = {"stage": options.get("stage", "preview"),
               **{key: config.get(key) for key in ("width", "height", "frames")}, "candidates": []}
     result["final_frames"] = options.get("final_frames")
+    if scout_upscale_enabled(config):
+        result.update(final_width=scout_output_size(config)[0], final_height=scout_output_size(config)[1],
+                      upscale_requested=True)
     saved = _read(Path(directory) / "candidates.json")
     rows = saved.get("candidates", [])
     for row in rows[:3] if isinstance(rows, list) else []:
@@ -101,6 +107,7 @@ def summary(directory, config, state):
                 can_refine = False
         public = {"index": index, "seed": row.get("seed"), "can_refine": can_refine,
             "url": f"/api/video/h3/jobs/{Path(directory).name}/seed-hunter/candidates/{index}/video"}
+        public.update({key: row[key] for key in ("width", "height", "latent_upscaled") if key in row})
         if result["stage"] == "dialogue":
             try:
                 artifact(directory, index, "audio")

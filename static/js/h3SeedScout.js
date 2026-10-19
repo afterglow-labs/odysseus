@@ -17,7 +17,7 @@ export function createSeedScoutPreviews(jobId, { select, onError = () => {} }) {
     for (const [seed, card] of cards) if (!seeds.includes(seed)) { card.wrap.remove(); cards.delete(seed); }
     const waiting = mode==='interactive' && job.status === 'running' && scout.status === 'waiting_for_selection' && scout.selected_seed == null;
     status.textContent = waiting ? `Choose a seed to continue from step ${scout.scout_step} of ${scout.total_steps}. Viewing a preview does not choose it.`
-      : scout.selected_seed != null ? `Seed ${scout.selected_seed} selected · ${job.status === 'completed' ? 'complete' : 'continuing the same latent at the same resolution'}.`
+      : scout.selected_seed != null ? `Seed ${scout.selected_seed} selected · ${job.status === 'completed' ? 'complete' : job.phase==='upscaling_latent'?'upscaling the finished latent':job.phase==='refining_upscaled_video'?'refining the upscaled video':'continuing the selected partial latent'}.`
       : job.status==='completed' && mode==='scout' ? 'Partial previews complete. This job did not run the rest of the sampling schedule.'
       : job.status === 'failed' || job.status === 'stopped' ? 'This job has stopped. Saved previews remain available.'
       : 'Scouting partial previews. Each choice will appear here when ready.';

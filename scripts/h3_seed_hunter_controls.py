@@ -20,12 +20,36 @@ DEFAULTS = {
     "scout_count": 6, "scout_step": 3, "scout_mode": "interactive",
     "scout_timeout": 0, "scout_preview_mode": "vae",
 }
+SCOUT_UPSCALE_DEFAULTS = {"scout_upscale": False, "scout_final_width": None,
+                          "scout_final_height": None, "scout_refine_steps": 2}
+
+
+def scout_upscale_enabled(config):
+    options = config.get("seed_hunter", {})
+    return options.get("stage") == "scout" and options.get("scout_mode", "interactive") != "scout" and options.get("scout_upscale", False)
+
+
+def scout_output_size(config):
+    options = config["seed_hunter"]
+    return tuple(options.get("scout_final_" + axis) or config[axis] * 2 for axis in ("width", "height"))
+
+
+def validate_scout_output(config):
+    if not scout_upscale_enabled(config):
+        return
+    width, height = scout_output_size(config)
+    if width < config["width"] or height < config["height"]:
+        raise ValueError("Seed Scout final dimensions must be at least the scouting dimensions")
+    if width > 4096 or height > 4096 or width * height > 4194304:
+        raise ValueError("Seed Scout final dimensions must fit 4096 per side and 4,194,304 pixels; set a smaller final size")
 
 
 def validate_options(raw):
-    if not isinstance(raw, dict) or raw.keys() - DEFAULTS.keys():
+    if not isinstance(raw, dict) or raw.keys() - (DEFAULTS.keys() | SCOUT_UPSCALE_DEFAULTS.keys()):
         raise ValueError("Unknown Seed Hunter setting")
-    result = {**DEFAULTS, **raw}
+    # Keep legacy defaults unchanged for clients that validate their known
+    # options strictly. Only opted-in submissions receive the new settings.
+    result = {**DEFAULTS, **(SCOUT_UPSCALE_DEFAULTS if raw.keys() & SCOUT_UPSCALE_DEFAULTS.keys() else {}), **raw}
     enums = {"stage": ("preview", "final", "single", "continuation", "dialogue", "scout"),
              "scout_mode": ("interactive", "scout", "final"),
              "scout_preview_mode": ("vae", "latent2rgb"),
@@ -35,8 +59,11 @@ def validate_options(raw):
     for key, choices in enums.items():
         if not isinstance(result[key], str) or result[key] not in choices:
             raise ValueError(f"Unsupported Seed Hunter {key}")
-    for key in ("shift_enabled", "first_frame_guide", "last_frame_guide", "force_audio",
-                "upscaler_chunking", "upscaler_force_unload"):
+    boolean_keys = ["shift_enabled", "first_frame_guide", "last_frame_guide", "force_audio",
+                    "upscaler_chunking", "upscaler_force_unload"]
+    if "scout_upscale" in result:
+        boolean_keys.append("scout_upscale")
+    for key in boolean_keys:
         if type(result[key]) is not bool:
             raise ValueError(f"{key} must be true or false")
     ranges = {"preview_count": (1, 3, True), "denoise": (0., 1., False), "final_frames": (73, 362, True),
@@ -47,15 +74,21 @@ def validate_options(raw):
               "ff_chunk_threshold": (1, 1000000, True), "low_vram_chunks": (0, 64, True),
               "source_start_seconds": (0., 86400., False), "source_end_seconds": (0., 86400., False),
               "audio_start_seconds": (0., 3600., False), "audio_end_seconds": (0., 3600., False)}
+    if "scout_upscale" in result:
+        ranges.update(scout_final_width=(32, 4096, True), scout_final_height=(32, 4096, True),
+                      scout_refine_steps=(1, 100, True))
     for key, (low, high, integer) in ranges.items():
         value = result[key]
-        if value is None and key in {"source_end_seconds", "audio_end_seconds", "final_frames"}:
+        if value is None and key in {"source_end_seconds", "audio_end_seconds", "final_frames", "scout_final_width", "scout_final_height"}:
             continue
         if (isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high
                 or not math.isfinite(value) or integer and type(value) is not int):
             raise ValueError(f"Invalid Seed Hunter {key}")
     if result["final_frames"] is not None and (result["final_frames"] - 5) % 17:
         raise ValueError("Final H3 frame count must be 17 × n + 5 (73, 90, 107 … 362)")
+    for key in ("scout_final_width", "scout_final_height"):
+        if result.get(key) is not None and result[key] % 32:
+            raise ValueError("Seed Scout final dimensions must be multiples of 32")
     for prefix in ("source", "audio"):
         end = result[prefix + "_end_seconds"]
         if end is not None and end <= result[prefix + "_start_seconds"]:

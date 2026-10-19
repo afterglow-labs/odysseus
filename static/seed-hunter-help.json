@@ -504,6 +504,22 @@
     "final_latent_upscaler": {
       "title": "Latent upscaler",
       "body": "The learned model that enlarges the selected preview’s compressed video before refinement. It does not replace the video VAE or add video duration."
+    },
+    "scout_upscale": {
+      "title": "Final latent upscale",
+      "body": "After the chosen seed finishes its remaining schedule, apply the learned H3 latent upscaler and refine at the final resolution. Previews-only mode skips this stage. Existing queued jobs keep their submitted settings."
+    },
+    "scout_final_width": {
+      "title": "Final upscale width",
+      "body": "Final width in pixels. Leave blank for twice the scouting width. Use a multiple of 32, at least the scouting width. The final canvas can contain at most 4,194,304 pixels."
+    },
+    "scout_final_height": {
+      "title": "Final upscale height",
+      "body": "Final height in pixels. Leave blank for twice the scouting height. Use a multiple of 32, at least the scouting height. The final canvas can contain at most 4,194,304 pixels."
+    },
+    "scout_refine_steps": {
+      "title": "Upscale refinement steps",
+      "body": "Additional sampling updates after learned latent upscaling. These are separate from the full Scout schedule. Refinement uses the selected sampler, scheduler and denoise. Denoise 0 keeps only the learned upscale."
     }
   },
   "sources": [

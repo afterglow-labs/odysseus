@@ -14,6 +14,12 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import logging
+
+try:
+    from scripts.h3_seed_hunter_controls import scout_upscale_enabled, scout_output_size, validate_scout_output
+except ModuleNotFoundError:
+    from h3_seed_hunter_controls import scout_upscale_enabled, scout_output_size, validate_scout_output
 
 
 def _worker():
@@ -26,6 +32,11 @@ def _worker():
 
 def validate_inputs(manifest, config, media, uploads):
     options = config["seed_hunter"]
+    validate_scout_output(config)
+    if scout_upscale_enabled(config):
+        upscaler = Path(config.get("latent_upscaler") or "")
+        if not upscaler.is_absolute() or not upscaler.is_file() or upscaler.suffix.lower() != ".safetensors":
+            raise ValueError("Seed Scout final upscale needs an installed latent upscaler")
     if config["mode"] != "ref2va" and options["stage"] != "scout":
         raise ValueError("Seed Hunter requires a Ref2VA base model")
     if _worker().is_vfx_edit(config):
@@ -417,9 +428,31 @@ def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
                     row["seed"] = candidate_config["seed"] = selected_seed
                 else:
                     output, denoised = sample_candidate(runtime, candidate_config, model, positive, latent, progress)
+                artifact_config = config
+                if scout_upscale_enabled(config):
+                    width, height = scout_output_size(config)
+                    refinement = {**candidate_config, "width": width, "height": height,
+                                  "steps": options["scout_refine_steps"],
+                                  "seed_hunter": {**options, "stage": "final"}}
+                    logging.info("Seed Scout final latent upscale: %dx%d -> %dx%d using %s; %d refinement steps, denoise %s",
+                                 config["width"], config["height"], width, height,
+                                 Path(config["latent_upscaler"]).name, refinement["steps"], options["denoise"])
+                    progress.details.update(seed=candidate_config["seed"], width=width, height=height,
+                                            scouting_width=config["width"], scouting_height=config["height"],
+                                            full_schedule_steps=config["steps"], refinement_steps=refinement["steps"],
+                                            latent_upscaled=True)
+                    runtime.release_conditioning()
+                    denoised = upscale_latent(manifest, refinement, denoised, progress)
+                    progress.total_steps = refinement["steps"] if options["denoise"] else 0
+                    def refine_progress(_phase, step=None, **extra):
+                        progress("refining_upscaled_video", step, **extra)
+                    refine_progress("sampling", 0)
+                    output, denoised = sample_candidate(runtime, refinement, model, base_positive, denoised, refine_progress)
+                    artifact_config = {**config, "width": width, "height": height}
+                    row.update(width=width, height=height, latent_upscaled=True)
                 latent_name = f"candidate-{index}.safetensors"
                 save_snapshot(folder / latent_name, latent=denoised, positive=base_positive,
-                              config=config, seed=candidate_config["seed"])
+                              config=artifact_config, seed=candidate_config["seed"])
                 row.update(latent=latent_name, metadata=f"candidate-{index}.json", latent_ready=True)
                 # Preview uses sampler output, but single pass and refinement
                 # decode x0, as the selected-latent branch in the source graph.
@@ -432,6 +465,8 @@ def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
                     frames = torch.zeros((config["frames"], 64, 64, 3), dtype=torch.float32)
                 else:
                     frames, audio = runtime.decode(decode_samples, vae, audio_vae, progress)
+                if scout_upscale_enabled(config) and tuple(frames.shape[1:3]) != (height, width):
+                    raise RuntimeError("Seed Scout decoded dimensions do not match the requested latent upscale")
                 frames = frames[:config["frames"]]
                 if options["stage"] == "continuation":
                     frames = blend_continuation(prepared["continuation_guide"], frames,
@@ -469,6 +504,8 @@ def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
                 _publish_candidates(folder / "candidates.json", candidates)
                 raise
     completed_steps = options["scout_step"] if options["stage"] == "scout" and options["scout_mode"] == "scout" else config["steps"]
+    if scout_upscale_enabled(config):
+        completed_steps = options["scout_refine_steps"] if options["denoise"] else 0
     progress.total_steps = completed_steps
     progress("completed", completed_steps, frames=output_frames, fps=output_fps,
              duration_seconds=output_frames / output_fps, candidates=len(candidates))

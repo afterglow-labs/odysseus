@@ -20,7 +20,7 @@ def test_native_scout_choices_retained_draft_and_classic_hunter(tmp_path,layout)
     requests, errors, selections, submissions=[],[],[],[]
     components=[{'id':role,'role':role,'name':role+'.safetensors','variant':'ref2va'} for role in ['model','encoder','video_vae','audio_vae','latent_upscaler']]
     components.append({'id':'turbo','role':'lora','name':'minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors','variant':'ref2va'})
-    inventory={'runtime_ready':True,'components':components,'gpus':[{'id':'GPU-5090','name':'RTX 5090','nvfp4':True},{'id':'GPU-4090','name':'RTX 4090','nvfp4':False}], 'batch_jobs':True,'batch_auto_video_length':True,'server_video_files':True,'seed_hunter':{'features':{'seed_scout':True,'guides':True,'force_audio':True,'latent_upscaler':True,'attention_backend':True,'ff_chunking':True},'defaults':{'steps':6,'loras':[{'id':'turbo','strength':1}]}}}
+    inventory={'runtime_ready':True,'components':components,'gpus':[{'id':'GPU-5090','name':'RTX 5090','nvfp4':True},{'id':'GPU-4090','name':'RTX 4090','nvfp4':False}], 'batch_jobs':True,'batch_auto_video_length':True,'server_video_files':True,'seed_hunter':{'features':{'seed_scout':True,'scout_upscale':True,'guides':True,'force_audio':True,'latent_upscaler':True,'attention_backend':True,'ff_chunking':True},'defaults':{'steps':6,'loras':[{'id':'turbo','strength':1}]}}}
     scout={'status':'waiting_for_selection','seeds':[100,101,102],'scout_step':3,'total_steps':20,'selected_seed':None,'previews':[{'seed':n,'provisional':True,'url':f'/api/video/h3/jobs/scout-job/scout/previews/{n}'} for n in [100,101,102]]}
     job={'id':'scout-job','recipe':'seed_hunter','seed_hunter':{'stage':'scout','scout_count':3},'scout':scout,'status':'running','prompt':'Fixture job','phase':'waiting_for_selection','seed':100}
     hunter={'id':'hunter-job','recipe':'seed_hunter','seed_hunter':{'stage':'preview','candidates':[]},'status':'completed'}
@@ -70,7 +70,15 @@ def test_native_scout_choices_retained_draft_and_classic_hunter(tmp_path,layout)
           assert await page.locator('#seed-hunter-option-scout_count').is_enabled()
           assert await page.locator('#seed-hunter-option-scout_timeout').is_enabled()
           assert await panel.get_by_role('combobox',name='Preview aspect ratio',exact=True).count()==1
-          assert not await page.locator('#seed-hunter-latent_upscaler').is_visible()
+          if layout=='pipeline':await panel.locator('[data-pipeline-stage=setup]').click()
+          assert await page.locator('#seed-hunter-latent_upscaler').is_visible()
+          if layout=='pipeline':await panel.locator('[data-pipeline-stage=generate]').click()
+          assert await page.locator('#seed-hunter-option-scout_upscale').is_checked()
+          await page.locator('#seed-hunter-option-scout_final_width').fill('1280')
+          await page.locator('#seed-hunter-option-scout_final_height').fill('1728')
+          await page.locator('#seed-hunter-option-scout_refine_steps').fill('3')
+          await page.locator('#seed-hunter-option-scout_upscale').scroll_into_view_if_needed()
+          await page.screenshot(path=str(tmp_path/'seed-scout-final-upscale-desktop.png'))
           if layout=='pipeline':await panel.locator('[data-pipeline-stage=prepare]').click()
           await page.locator('#seed-hunter-prompt').fill('Keep everything except the jacket unchanged.')
           if layout=='pipeline':await panel.locator('[data-pipeline-stage=generate]').click()
@@ -90,7 +98,10 @@ def test_native_scout_choices_retained_draft_and_classic_hunter(tmp_path,layout)
           await page.wait_for_function('()=>[...document.querySelectorAll(".h3-seed-hunter-overlay button[type=submit]")].some(n=>n.textContent==="Start seed scout"&&!n.disabled)')
           assert len(submissions)==1
           cfg=submissions[0]['config'];assert cfg['seed_hunter']['stage']=='scout' and cfg['seed_hunter']['scout_count']==3 and cfg['seed_hunter']['scout_mode']=='interactive' and cfg['seed_hunter']['scout_timeout']==0
-          assert cfg['steps']==20 and cfg['loras']==[] and 'latent_upscaler' not in cfg
+          assert cfg['latent_upscaler']=='latent_upscaler'
+          assert cfg['seed_hunter']['scout_upscale'] is True and cfg['seed_hunter']['scout_refine_steps']==3
+          assert cfg['seed_hunter']['scout_final_width']==1280 and cfg['seed_hunter']['scout_final_height']==1728
+          assert cfg['steps']==20 and cfg['loras']==[]
           assert submissions[0]['files']==['reference.png']
           if layout=='pipeline':await panel.locator('[data-pipeline-stage=inputs]').click()
           await panel.locator('[data-batch-toggle]').check()
