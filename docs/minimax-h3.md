@@ -432,6 +432,12 @@ active adapter selection; errors and required actions stay visible.
   valid frame count; it does not change the requested output duration.
 - Steps: 1–100; default 20. Very low steps are useful for a smoke test, not for
   judging normal output quality.
+- Seed Scout uses one full schedule. With 20 steps and a preview after step 3,
+  each seed runs 3 updates; choosing one resumes its saved partial latent for
+  the remaining 17. The live counter reports the active pass: `0/3` through
+  `3/3` per preview, then `0/17` through `17/17` for the selected seed. The
+  configured full schedule remains 20 steps; selecting a seed keeps the same
+  running job. The final completion receipt records the chosen seed and `20/20`.
 - Seed: unsigned 64-bit integer, passed to noise generation and sampling.
   Identical settings preserve the seed; exact bitwise output can vary with
   device/kernel versions.

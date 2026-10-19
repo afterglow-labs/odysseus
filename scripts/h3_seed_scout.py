@@ -13,6 +13,26 @@ import time
 import types
 
 
+class SamplingProgressGuider:
+    """Keep the core's preview callback while reporting each completed update."""
+    def __init__(self, guider, on_step):
+        self.guider = guider
+        self.on_step = on_step
+
+    def __getattr__(self, name):
+        return getattr(self.guider, name)
+
+    def sample(self, *args, **kwargs):
+        callback = kwargs.get("callback")
+
+        def report(step, *values):
+            if callback is not None:
+                callback(step, *values)
+            self.on_step(step + 1)
+
+        return self.guider.sample(*args, **{**kwargs, "callback": report})
+
+
 def wait_for_selection(folder, seeds, timeout, *, check_cancel, notify, clock=time.monotonic, sleep=time.sleep):
     started = clock()
     notify("waiting_for_selection")
@@ -59,9 +79,24 @@ def sample(runtime, manifest, config, model, positive, latent, vae, progress):
     # Retain the same inference-boundary cleanup as Odysseus's normal sampler.
     # A preview decode can change the loaded model between scout and continue.
     core_sample = sampler._sample_core
-    def sample_core(*args, **kwargs):
+    def sample_core(guider, selected_sampler, sigmas, latent, latent_samples, noise, seed):
+        continuing = state["status"] == "continuing"
+        full_pass = options["scout_mode"] == "final"
+        phase = "continuing_selected_seed" if continuing else "sampling" if full_pass else "scouting_seeds"
+        offset = options["scout_step"] if continuing else 0
+        updates = int(sigmas.shape[-1]) - 1
+
+        def report(step):
+            progress(phase, step, total_steps=updates, seed=seed,
+                     schedule_step=offset + step, schedule_total_steps=config["steps"],
+                     remaining_steps=max(0, updates - step),
+                     candidate=seeds.index(seed) + 1 if seed in seeds else 1,
+                     candidate_count=1 if full_pass else len(seeds))
+
+        report(0)
         try:
-            return core_sample(*args, **kwargs)
+            return core_sample(SamplingProgressGuider(guider, report), selected_sampler,
+                               sigmas, latent, latent_samples, noise, seed)
         finally:
             runtime.cleanup_model_state()
     sampler._sample_core = sample_core
@@ -99,8 +134,8 @@ def sample(runtime, manifest, config, model, positive, latent, vae, progress):
     def send(event, payload):
         if event == source.EVT_PREVIEW:
             update_preview(int(payload["seed"]), base64.b64decode(payload["image_b64"], validate=True), payload.get("provisional", False))
-            progress("scouting_seeds", seed=payload["seed"], candidate=payload.get("index", 0) + 1,
-                     candidate_count=len(seeds))
+            progress("scouting_seeds", options["scout_step"], total_steps=options["scout_step"],
+                     seed=payload["seed"], candidate=payload.get("index", 0) + 1, candidate_count=len(seeds))
         elif event == source.EVT_DONE:
             state.update(status=payload["status"], selected_seed=payload.get("seed"))
             publish()
@@ -121,11 +156,14 @@ def sample(runtime, manifest, config, model, positive, latent, vae, progress):
         def notify(status):
             state["status"] = status
             publish()
-            progress(status, options["scout_step"], candidate_count=len(candidates))
+            progress(status, options["scout_step"], total_steps=options["scout_step"],
+                     candidate_count=len(candidates))
         chosen = wait_for_selection(folder, candidates, timeout, check_cancel=check_cancel, notify=notify)
         state.update(status="continuing", selected_seed=chosen)
         publish()
-        progress("continuing_selected_seed", options["scout_step"], seed=chosen)
+        progress("continuing_selected_seed", 0, total_steps=config["steps"] - options["scout_step"],
+                 seed=chosen, schedule_step=options["scout_step"], schedule_total_steps=config["steps"],
+                 remaining_steps=config["steps"] - options["scout_step"])
         return chosen, "selected in Odysseus"
 
     source._send = send
@@ -148,6 +186,9 @@ def sample(runtime, manifest, config, model, positive, latent, vae, progress):
         output, denoised, chosen, _report = result["result"]
         state.update(status="scouted" if options["scout_mode"] == "scout" else "completed", selected_seed=chosen)
         publish()
+        progress.total_steps = options["scout_step"] if options["scout_mode"] == "scout" else config["steps"]
+        progress.details["seed"] = chosen
+        progress("sampling_complete", progress.total_steps)
         return output, denoised, chosen
     except BaseException as exc:
         state.update(status="stopped" if (folder / "cancel").exists() else "failed", error=str(exc)[:2000])

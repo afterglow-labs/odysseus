@@ -7,7 +7,8 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 
-project, output = map(Path, sys.argv[1:])
+project, output = map(Path, sys.argv[1:3])
+mode = sys.argv[3] if len(sys.argv) > 3 else 'interactive'
 sys.path.insert(0, str(project / 'scripts'))
 assert importlib.util.find_spec('scripts') is None, 'Probe must match script launch without the project package path'
 import h3_video_worker as worker
@@ -30,22 +31,49 @@ torch.cuda._lazy_init = no_cuda
 from comfy_extras.nodes_custom_sampler import BasicGuider, BasicScheduler
 source = scout.load_source(runtime)
 scout.load_source = lambda _runtime: source
-guider = SimpleNamespace(model_patcher=SimpleNamespace(model=SimpleNamespace(latent_format=None)))
-BasicGuider.execute = classmethod(lambda cls, *_: (guider,))
-BasicScheduler.execute = classmethod(lambda cls, *_: (torch.tensor([6., 4., 2., 0.]),))
-
 calls = []
+callbacks = []
+progress_updates = []
+
+def prepare_callback(_model, total, output):
+    def callback(step, x0, _x, _total):
+        callbacks.append((step, total))
+        output['x0'] = x0
+    return callback
+
+source.latent_preview.prepare_callback = prepare_callback
+
+class Guider:
+    model_patcher = SimpleNamespace(model=SimpleNamespace(latent_format=None, process_latent_out=lambda value: value))
+
+    def sample(self, noise, samples, _sampler, sigmas, *, callback, seed, **_kwargs):
+        continuing = sigmas[0].item() == 17
+        if continuing:
+            assert noise.count_nonzero() == 0
+            calls.append(['continue', seed, sigmas.tolist(), samples.tolist()])
+            result = samples + 1000
+            x0 = result
+        else:
+            calls.append(['full' if len(sigmas) == 21 else 'scout', seed, sigmas.tolist()])
+            result = torch.tensor([float(seed)])
+            x0 = result + 200
+        for step in range(len(sigmas) - 1):
+            callback(step, x0, result, len(sigmas) - 1)
+        return result
+
+BasicGuider.execute = classmethod(lambda cls, *_: (Guider(),))
+BasicScheduler.execute = classmethod(lambda cls, *_: (torch.arange(20., -1., -1.),))
 source.MiniMaxH3SeedScoutSampler._prepare_latent = staticmethod(lambda *_: ({}, torch.zeros(1)))
-def sample_seed(self, _guider, _sampler, sigmas, _latent, _samples, seed):
-    calls.append(['scout', seed, sigmas.tolist()])
-    return {'samples': torch.tensor([float(seed)])}, {'samples': torch.tensor([float(seed + 100)])}, torch.tensor([float(seed + 200)])
-def sample_continue(self, _guider, _sampler, sigmas, _latent, partial, seed):
-    calls.append(['continue', seed, sigmas.tolist(), partial.tolist()])
-    return {'samples': partial}, {'samples': partial + 1000}, None
-source.MiniMaxH3SeedScoutSampler._sample_seed = sample_seed
-source.MiniMaxH3SeedScoutSampler._sample_continue = sample_continue
 source._vae_preview_images = lambda *_: torch.zeros((1, 2, 2, 3))
 source._latent2rgb_images = lambda *_: torch.zeros((1, 2, 2, 3))
+atomic_json = worker.atomic_json
+
+def record_progress(path, value):
+    if Path(path).name == 'progress.json':
+        progress_updates.append(value.copy())
+    atomic_json(path, value)
+
+worker.atomic_json = record_progress
 
 class Runtime:
     def __init__(self, *_):
@@ -57,7 +85,7 @@ class Runtime:
     def release_conditioning(self):
         pass
     def decode(self, samples, *_):
-        assert samples['samples'].item() == 1043
+        assert samples['samples'].item() == (1043 if mode == 'interactive' else 242)
         return torch.zeros((73, 2, 2, 3)), {}
 
 hunter.patch_model = lambda _runtime, _config, model, _path: model
@@ -66,10 +94,10 @@ worker.run_job = functools.partial(worker.run_job, runtime_factory=Runtime, medi
                                   muxer=lambda path, *_: Path(path).write_bytes(b'cpu-mp4'))
 output.mkdir(parents=True, exist_ok=True)
 config = dict(recipe='seed_hunter', mode='ref2va', prompt='A neutral sphere rolls.',
-              width=480, height=864, frames=73, steps=3, seed=42, gpu='0',
+              width=480, height=864, frames=73, steps=20, seed=42, gpu='0',
               sampler='euler', scheduler='simple', reference_size='max',
-              seed_hunter={'stage': 'scout', 'scout_count': 3, 'scout_step': 1,
-                           'scout_mode': 'interactive', 'scout_timeout': 1})
+              seed_hunter={'stage': 'scout', 'scout_count': 3, 'scout_step': 3,
+                           'scout_mode': mode, 'scout_timeout': 1})
 for key in ('model', 'encoder', 'video_vae', 'audio_vae'):
     path = output / f'{key}.safetensors'
     path.touch()
@@ -82,10 +110,32 @@ manifest_path.write_text(json.dumps(manifest))
 status = worker.main(['--job', str(manifest_path)])
 if status:
     raise SystemExit(status)
-assert calls == [['scout', seed, [6., 4.]] for seed in (42, 43, 44)] + [['continue', 43, [4., 2., 0.], [43.]]]
+previews = [['scout', seed, [20., 19., 18., 17.]] for seed in (42, 43, 44)]
+if mode == 'interactive':
+    assert calls == previews + [['continue', 43, list(range(17, -1, -1)), [43.]]]
+    assert [total for _, total in callbacks] == [3] * 9 + [17] * 17
+elif mode == 'scout':
+    assert calls == previews
+    assert [total for _, total in callbacks] == [3] * 9
+else:
+    assert calls == [['full', 42, list(range(20, -1, -1))]]
+    assert [total for _, total in callbacks] == [20] * 20
+continuation = [row for row in progress_updates if row['phase'] == 'continuing_selected_seed']
+assert bool(continuation) == (mode == 'interactive')
+if continuation:
+    assert continuation[0]['step'] == 0 and continuation[-1]['step'] == 17
+    assert [row['step'] for row in continuation if row['step']] == list(range(1, 18))
+    assert [row['schedule_step'] for row in continuation if row['step']] == list(range(4, 21))
+assert all(row['total_steps'] == 17 and row['seed'] == 43 for row in continuation)
+assert all(row['schedule_total_steps'] == 20 for row in continuation)
+chosen = 43 if mode == 'interactive' else 42
+completed_steps = 3 if mode == 'scout' else 20
 saved = json.loads((output / 'candidate-1.json').read_text())
-assert saved['seed'] == 43
-assert json.loads((output / 'scout.json').read_text())['selected_seed'] == 43
+assert saved['seed'] == chosen
+assert json.loads((output / 'scout.json').read_text())['selected_seed'] == chosen
 assert json.loads((output / 'progress.json').read_text())['phase'] == 'completed'
+assert json.loads((output / 'progress.json').read_text())['seed'] == chosen
+assert json.loads((output / 'progress.json').read_text())['step'] == completed_steps
+assert json.loads((output / 'progress.json').read_text())['total_steps'] == completed_steps
 assert (output / 'output.mp4').read_bytes() == b'cpu-mp4'
-print('isolated Scout entrypoint completed chosen seed 43; no CUDA initialization')
+print(f'isolated Scout entrypoint completed chosen seed {chosen}; no CUDA initialization')

@@ -19,6 +19,24 @@ def setup(backend):
     return {**defaults, 'prompt': 'A neutral sphere rolls.'}
 
 
+@pytest.mark.parametrize('step', [0, 1, 9, 17])
+def test_continuation_job_counter_reports_remaining_pass_without_changing_full_schedule(backend, step):
+    config = setup(backend)
+    response = backend.client().post('/api/video/h3/jobs', data={'config': json.dumps(config)})
+    assert response.status_code == 201, response.text
+    identity = response.json()['id']
+    directory = backend.managers['h3'].directory(identity)
+    state = h3._read(directory / 'state.json')
+    h3._write(directory / 'state.json', {**state, 'status': 'running'})
+    h3._write(directory / 'progress.json', {'phase': 'continuing_selected_seed', 'step': step,
+                                           'total_steps': 17, 'seed': 43})
+    result = backend.client().get('/api/video/h3/jobs/' + identity)
+    assert result.status_code == 200, result.text
+    job = result.json()
+    assert (job['phase'], job['step'], job['total_steps']) == ('continuing_selected_seed', step, 17)
+    assert h3._read(directory / 'manifest.json')['config']['steps'] == 20
+
+
 def test_standalone_scout_capabilities_use_full_schedule_no_adapters_and_compatible_components(backend, tmp_path):
     inventory = backend.inventories['h3']
     before = copy.deepcopy(inventory)

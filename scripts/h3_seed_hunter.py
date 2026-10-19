@@ -468,7 +468,9 @@ def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
                 row.update(status="failed", error=str(error)[:2000])
                 _publish_candidates(folder / "candidates.json", candidates)
                 raise
-    progress("completed", config["steps"], frames=output_frames, fps=output_fps,
+    completed_steps = options["scout_step"] if options["stage"] == "scout" and options["scout_mode"] == "scout" else config["steps"]
+    progress.total_steps = completed_steps
+    progress("completed", completed_steps, frames=output_frames, fps=output_fps,
              duration_seconds=output_frames / output_fps, candidates=len(candidates))
 
 
