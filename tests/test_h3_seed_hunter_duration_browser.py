@@ -99,6 +99,20 @@ def test_preview_seconds_apply_immediately_and_final_length_is_independent(tmp_p
                 panel = page.get_by_role('dialog', name='H3 Seed Hunter', exact=True)
                 if layout == 'pipeline':
                     await panel.get_by_role('button', name='Show all settings', exact=True).click()
+                aspect = panel.get_by_role('combobox', name='Preview aspect ratio', exact=True)
+                assert await aspect.input_value() == '640:384'  # Restore custom landscape dimensions.
+                await aspect.select_option('4:3')
+                await panel.get_by_role('spinbutton', name='Preview megapixels', exact=True).fill('0.6')
+                await panel.get_by_role('button', name='Apply preview size', exact=True).click()
+                remembered_width = await page.locator('#seed-hunter-width').input_value()
+                await panel.get_by_role('button', name='Close', exact=True).click()
+                await page.evaluate("async layout=>(await import('/static/js/h3SeedHunter.js')).showH3SeedHunter({layout})", layout)
+                await page.get_by_text('H3 Seed Hunter is ready.', exact=True).wait_for()
+                if layout == 'pipeline':
+                    await panel.get_by_role('button', name='Show all settings', exact=True).click()
+                assert await aspect.input_value() == '4:3'
+                assert await panel.get_by_role('spinbutton', name='Preview megapixels', exact=True).input_value() == '0.6'
+                assert await page.locator('#seed-hunter-width').input_value() == remembered_width
                 seconds = panel.get_by_role('spinbutton', name='Preview seconds', exact=True)
                 frames = page.locator('#seed-hunter-frames')
                 assert await seconds.input_value() == '12.25'

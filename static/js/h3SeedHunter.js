@@ -174,7 +174,25 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
   }
   const sizeTools = make('div', 'h3-video-actions'), aspect = make('select', 'cookbook-field-input'), megapixels = make('input', 'cookbook-field-input'), applySize = button('Apply preview size');
   aspect.setAttribute('aria-label', 'Preview aspect ratio'); for (const value of ['1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9', '21:9']) aspect.add(new Option(value, value)); aspect.value = '9:16';
-  megapixels.type = 'number'; megapixels.value = '0.4'; megapixels.min = '0.1'; megapixels.max = '4'; megapixels.step = '0.1'; megapixels.setAttribute('aria-label', 'Preview megapixels'); sizeTools.append(megapixels, aspect, applySize); form.append(sizeTools);
+  megapixels.type = 'number'; megapixels.value = '0.4'; megapixels.min = '0.1'; megapixels.max = '4'; megapixels.step = 'any'; megapixels.setAttribute('aria-label', 'Preview megapixels'); sizeTools.append(megapixels, aspect, applySize); form.append(sizeTools);
+  function syncSizeControls(remembered) {
+    const width = Number(fields.width.value), height = Number(fields.height.value);
+    if (!(width > 0 && height > 0)) return;
+    const ratios = [...aspect.options].filter(option => !option.dataset.custom).map(option => option.value);
+    const nearest = ratios.reduce((best, ratio) => {
+      const [w, h] = ratio.split(':').map(Number), [bw, bh] = best.split(':').map(Number);
+      return Math.abs(Math.log(width / height / (w / h))) < Math.abs(Math.log(width / height / (bw / bh))) ? ratio : best;
+    });
+    const [rw, rh] = nearest.split(':').map(Number);
+    let ratio = Math.abs(width / height / (rw / rh) - 1) < .06 ? nearest : `${width}:${height}`;
+    if (remembered && ratios.includes(remembered.aspect)) ratio = remembered.aspect;
+    aspect.querySelectorAll('option[data-custom]').forEach(option => option.remove());
+    if (!ratios.includes(ratio)) { const option = new Option(`Custom · ${ratio}`, ratio); option.dataset.custom = 'true'; aspect.add(option); }
+    aspect.value = ratio;
+    const mp = Number(remembered?.megapixels);
+    megapixels.value = String(mp >= .1 && mp <= 4 ? mp : Number((width * height / 1048576).toFixed(3)));
+  }
+  for (const key of ['width', 'height']) fields[key].addEventListener('input', () => syncSizeControls());
   const seconds=make('input','cookbook-field-input'),applyDuration=button('Apply duration');seconds.type='number';seconds.min='3';seconds.max='15.083';seconds.step='any';seconds.setAttribute('aria-label','Preview seconds');sizeTools.append(seconds,applyDuration);
   function syncDuration() {const frames=Number(fields.frames.value);if(Number.isFinite(frames)&&frames>0)seconds.value=String(Number((frames/24).toFixed(3)));}
   function applyDurationValue() {if(!seconds.value||!seconds.validity.valid)return;fields.frames.value=seedHunterFrames(seconds.value);changed();}
@@ -284,7 +302,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
       ? `Preview: ${(preview/24).toFixed(2)} seconds. Final output: ${(frames/24).toFixed(2)} seconds. The selected seed is rendered at the final length before upscaling and refinement, using the saved prompt and references.`
       : `Preview and final output: ${(preview/24).toFixed(2)} seconds. Reuses the selected preview’s latent and saved inputs.`;
   }
-  function save() { if (jobEditor?.active) return; try { localStorage.setItem(storageKey, JSON.stringify({ config: config(), dialogue_text: dialogueText.value, dialogue_tone: dialogueTone.value, dialogue_template: dialogueTemplate.value, enhancer: enhancer[Number(enhancerSelect.value)] ? {model:enhancer[Number(enhancerSelect.value)].model,endpoint_id:enhancer[Number(enhancerSelect.value)].endpoint_id} : null, selected: selection && { job_id: selection.job_id, index: selection.index }, final_config: finalConfig(), final_request: finalRequest })); } catch {} }
+  function save() { if (jobEditor?.active) return; try { localStorage.setItem(storageKey, JSON.stringify({ config: config(), sizing: { aspect: aspect.value, megapixels: megapixels.value }, dialogue_text: dialogueText.value, dialogue_tone: dialogueTone.value, dialogue_template: dialogueTemplate.value, enhancer: enhancer[Number(enhancerSelect.value)] ? {model:enhancer[Number(enhancerSelect.value)].model,endpoint_id:enhancer[Number(enhancerSelect.value)].endpoint_id} : null, selected: selection && { job_id: selection.job_id, index: selection.index }, final_config: finalConfig(), final_request: finalRequest })); } catch {} }
   function changed() { revision++; error.hidden = true; update(); save(); }
   function restore(values, inputFiles = {}, retained = {}) {
     restoredRangeConfig = Object.prototype.hasOwnProperty.call(values, 'reference_video_ranges') ? {reference_video_ranges: clone(values.reference_video_ranges)} : {};
@@ -294,6 +312,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
     for (const key of Object.keys(options)) { const n = options[key], value = values.seed_hunter?.[key] ?? defaults[key] ?? n.value; if (n.type === 'checkbox') n.checked = value; else n.value = key==='preview_count'?seedHunterPreviewCount(value):value ?? ''; }
     loras.setInventory(effectiveComponents()); loras.setValue(h3LoraStack(values));
     for (const [key, state] of Object.entries(uploads)) { state.files = [...(inputFiles[key] || [])]; state.retained = [...(retained[key] || [])]; state.strengths=key==='reference_mods'?[...(values.seed_hunter?.refmod_strengths||[])]:[]; if(key==='reference_videos')restoreReferenceVideoRanges(state,values.reference_video_ranges); state.render(); }
+    syncSizeControls();
     revision++; update();
   }
   function batchIssue() {
@@ -387,7 +406,8 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
       loras.setInventory(effectiveComponents(), data.max_loras || 8); loras.setValue(h3LoraStack(before));
       fill(finalFields.latent_upscaler, data.components.filter(c => c.role === 'latent_upscaler'), finalFields.latent_upscaler.value || saved.final_config?.latent_upscaler);
       if (first) { prompt.value = before.prompt || ''; for (const key of ['dialogue_text','dialogue_tone','dialogue_template']) if (saved[key] !== undefined) fields[key].value = saved[key]; }
-      if (first && retained) restore(retained.config, retained.uploads);
+      if (first) syncSizeControls(saved.sizing);
+      if (first && retained) { restore(retained.config, retained.uploads); syncSizeControls(saved.sizing); }
       status.textContent = !data.seed_hunter ? `${title} needs the updated Odysseus server.` : scout && !data.seed_hunter.features?.seed_scout ? 'Seed Scout is not installed in this runtime.' : !data.runtime_ready ? data.runtime_error || 'H3 runtime unavailable.' : `${title} is ready.`;
     } catch (e) { fail(e); } finally { loading = false; if (!closed) update(); }
   }
