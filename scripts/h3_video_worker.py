@@ -430,7 +430,6 @@ def prepare_media(media, config):
     prepared["ref_images"] = {f"ref_image_{i}": read_image(path, image_area)
                               for i, path in enumerate(media["reference_images"], 1)}
     prepared["ref_videos"], prepared["ref_video_audios"] = {}, {}
-    video_duration = audio_duration = 0.0
     ranges = config.get("reference_video_ranges", [])
     for i, path in enumerate(media["reference_videos"], 1):
         if ranges:
@@ -438,13 +437,11 @@ def prepare_media(media, config):
                 from scripts.h3_reference_video import read_selected_video
             except ModuleNotFoundError:
                 from h3_reference_video import read_selected_video
-            frames, soundtrack, duration, sound_duration = read_selected_video(path, ranges[i - 1], read_video)
+            frames, soundtrack, _, _ = read_selected_video(path, ranges[i - 1], read_video)
         else:
-            frames, soundtrack, duration, sound_duration = read_video(path)
-        video_duration += duration
-        audio_duration += sound_duration
-        if video_duration > 15.05 or audio_duration > 15.05:
-            raise ValueError("Reference clips must total at most 15 seconds per modality")
+            frames, soundtrack, _, _ = read_video(path)
+        # Each decoder enforces the per-file limit. The H3 core conditions on
+        # each reference separately; their durations do not share one budget.
         # The core rounds reference clips DOWN to 17k+5. Pad up first so it
         # receives the ending instead of silently dropping up to 16 frames and
         # their soundtrack. The configured output length remains the hard cap;
@@ -468,10 +465,7 @@ def prepare_media(media, config):
             prepared["ref_video_audios"][f"ref_video_audio_{i}"] = {**soundtrack, "waveform": waveform}
     prepared["ref_audios"] = {}
     for i, path in enumerate(media["reference_audio"], 1):
-        audio, duration = read_audio(path)
-        audio_duration += duration
-        if audio_duration > 15.05:
-            raise ValueError("Reference audio, including video soundtracks, must total at most 15 seconds")
+        audio, _ = read_audio(path)
         prepared["ref_audios"][f"ref_audio_{i}"] = audio
     return prepared
 

@@ -296,18 +296,13 @@ def test_30fps_video_without_soundtrack_and_44100_mono_audio(tmp_path):
     assert np.allclose(audio["waveform"][0, 0], audio["waveform"][0, 1])
 
 
-def test_short_references_and_combined_duration_rejected(tmp_path, job, monkeypatch):
+def test_short_reference_rejected(tmp_path):
     pytest.importorskip("av")
     short = tmp_path / "short.mp4"
     worker.mux_mp4(short, np.zeros((24, 32, 64, 3), np.float32),
                     {"waveform": np.zeros((1, 2, 32000), np.float32), "sample_rate": 32000})
     with pytest.raises(ValueError, match="2–15"):
         worker.read_video(short)
-    config, media = worker.validate_job(job)
-    media["reference_videos"] = ["clip1", "clip2"]
-    monkeypatch.setattr(worker, "read_video", lambda _: ([0] * 192, None, 8.0, 0.0))
-    with pytest.raises(ValueError, match="total at most 15"):
-        worker.prepare_media(media, config)
 
 
 def test_reference_video_and_soundtrack_trim_to_same_model_grid(job, monkeypatch):

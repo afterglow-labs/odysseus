@@ -202,8 +202,8 @@ def test_source_and_native_reference_channels_stay_distinct(job, tmp_path, monke
 
 def test_source_and_reference_duration_budgets_are_independent(job, tmp_path, monkeypatch):
     reference_media(job, tmp_path, monkeypatch)
-    # Fifteen seconds of source + fifteen seconds of native video are distinct
-    # channels. Native reference videos still share their own 15-second budget.
+    # The source and all three native video references each retain their own
+    # fifteen seconds; none consumes another reference's duration allowance.
     native_path = job["uploads"]["reference_videos"][0]
     frames = torch.zeros((360, 16, 8, 3))
     monkeypatch.setattr(worker, "read_video", lambda path, **kwargs: (frames, None, 15, 0))
@@ -211,9 +211,10 @@ def test_source_and_reference_duration_budgets_are_independent(job, tmp_path, mo
     config, media = worker.validate_job(job)
     prepared = worker.prepare_media(media, config)
     assert prepared["output_frames"] == 360 and len(prepared["ref_videos"]["ref_video_1"]) == 362
-    media["reference_videos"].append(native_path)
-    with pytest.raises(ValueError, match="Reference clips must total at most 15 seconds"):
-        worker.prepare_media(media, config)
+    media["reference_videos"].extend([native_path, native_path])
+    prepared = worker.prepare_media(media, config)
+    assert prepared["output_frames"] == 360
+    assert [len(frames) for frames in prepared["ref_videos"].values()] == [362] * 3
 
 
 def pinned_reference_nodes():

@@ -218,10 +218,11 @@ Workflow media has no fixed byte cap by default. Uploads and private job copies
 must leave at least 512 MiB free on their storage filesystems. An administrator
 can set a separate per-job cap with `ODYSSEUS_VIDEO_UPLOAD_MAX_BYTES`.
 
-Selected video sections together must total at most 15 seconds, and all audio
-(including video soundtracks) must total at most 15 seconds. Audio-only reference
-requests are rejected. Reference video is resampled to 24 fps, and its soundtrack
-is paired with the same video. Standalone audio files must be 2–15 seconds;
+Each selected video section can be 2–15 seconds, independently of the other
+references. Their durations and soundtracks do not share a combined limit.
+Audio-only reference requests are rejected by the standard H3 workflow.
+Reference video is resampled to 24 fps, and its soundtrack is paired with the
+same video. Each standalone audio file must be 2–15 seconds;
 audio is converted to stereo 32 kHz. The H3 core limits each video reference to
 the generation's frame count, so choose an output length at least as long as
 the selected section when all of it should guide the render.

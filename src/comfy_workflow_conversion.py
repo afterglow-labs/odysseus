@@ -340,7 +340,7 @@ def _native(graph, output):
     if any(value is not None for key, value in audios.items() if key not in used_audio):
         raise ConversionError("video_reference_audio", "An independent video-audio reference needs an explicit native slot mapping", condition)
     if used_audio:
-        warnings.append(issue("video_preprocessing", "Reference videos use Odysseus's 24 fps preprocessing, final-frame padding to the H3 grid, and the 2–15 second reference budget. Video and its matching soundtrack remain paired.", severity="warning"))
+        warnings.append(issue("video_preprocessing", "Reference videos use Odysseus's 24 fps preprocessing, final-frame padding to the H3 grid, and a 2–15 second limit per video. Video and its matching soundtrack remain paired.", severity="warning"))
     if sum(item["field"] == "reference_videos" for item in inputs) > 3 or sum(item["field"] == "reference_audio" for item in inputs) > 3 or len(inputs) > 9:
         raise ConversionError("media_count", "This graph exceeds the native reference slot budget", condition)
     rows, shift = [], False

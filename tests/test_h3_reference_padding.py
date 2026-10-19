@@ -73,13 +73,48 @@ def test_multiple_references_align_independently_and_keep_soundtrack_pairing(mon
             assert sound["waveform"][..., samples:].count_nonzero() == 0
 
 
-def test_original_reference_duration_budget_is_checked_before_padding(monkeypatch):
-    # Three five-second clips are valid even though each gets four synthetic
-    # frames; padding is not additional user-provided reference footage.
-    prepared, _ = prepare(monkeypatch, {str(i): reference(120) for i in range(3)})
-    assert [len(frames) for frames in prepared["ref_videos"].values()] == [124, 124, 124]
-    with pytest.raises(ValueError, match="total at most 15"):
-        prepare(monkeypatch, {"first": reference(192), "second": reference(192)})
+@pytest.mark.parametrize("count,aligned", [(120, 124), (192, 192), (360, 362)])
+def test_reference_durations_and_padding_are_independent(monkeypatch, count, aligned):
+    prepared, _ = prepare(monkeypatch, {str(i): reference(count) for i in range(3)})
+    assert [len(frames) for frames in prepared["ref_videos"].values()] == [aligned] * 3
+    assert all(audio["waveform"].shape[-1] == round(aligned / 24 * worker.AUDIO_RATE)
+               for audio in prepared["ref_video_audios"].values())
+
+
+@pytest.mark.parametrize("seed_hunter", [False, True])
+def test_pinned_core_keeps_three_full_references_with_three_standalone_audio_files(monkeypatch, seed_hunter):
+    from scripts import h3_seed_hunter as hunter
+    from scripts.h3_seed_hunter_controls import validate_options
+
+    references = {f"video-{i}": reference(360) for i in range(3)}
+    standalone = {f"audio-{i}": {"waveform": torch.full((1, 2, 15 * worker.AUDIO_RATE), (i + 1) / 4),
+                                "sample_rate": worker.AUDIO_RATE} for i in range(3)}
+    prepared, config = prepare(monkeypatch, references)
+    media = {"first_frame": None, "last_frame": None, "reference_images": [],
+             "reference_videos": list(references), "reference_audio": list(standalone),
+             "reference_mods": []}
+    monkeypatch.setattr(worker, "read_audio", lambda path: (standalone[path], 15))
+    if seed_hunter:
+        config.update(recipe="seed_hunter", seed_hunter=validate_options({"stage": "single"}))
+        prepared = hunter.prepare_media({}, config, media, worker.prepare_media, None)
+    else:
+        prepared = worker.prepare_media(media, config)
+    core, clip, vae, audio_vae, calls = pinned_reference_nodes()
+    runtime = worker.H3Runtime.__new__(worker.H3Runtime)
+    runtime.h3 = core
+    if seed_hunter:
+        positive, latent, _ = hunter.condition(runtime, config, prepared, clip, vae, audio_vae)
+    else:
+        positive, latent = runtime.condition(config, prepared, clip, vae, audio_vae)
+    blocks = positive[0][1]["minimax_refs"]
+    assert [block["kind"] for block in blocks] == ["video_audio"] * 3 + ["audio"] * 3
+    assert [item["type"] for item in calls["tokenize"][1]["minimax_ref_items"]] == ["audio", "video"] * 3 + ["audio"] * 3
+    assert [block["latent_t"] for block in blocks[:3]] == [core.video_latent_t(362)] * 3
+    assert [block["ref_audio_t"] for block in blocks[:3]] == [round(362 / 24 * 40)] * 3
+    assert [block["ref_audio_t"] for block in blocks[3:]] == [600] * 3
+    for index, block in enumerate(blocks[3:]):
+        assert float(block["audio_latent"].mean()) == pytest.approx((index + 1) / 4)
+    assert latent["samples"].tensors[0].shape[2] == core.video_latent_t(362)
 
 
 def test_pinned_core_receives_original_final_frame_and_end_audio_marker(monkeypatch):

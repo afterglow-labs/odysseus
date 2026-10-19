@@ -406,7 +406,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic' } = {}, 
   upload('reference_images', 'Reference images', 'image/jpeg,image/png,image/webp', true, 'ref2va');
   upload('reference_videos', 'Reference videos', 'video/*', true, 'ref2va');
   upload('reference_audio', 'Reference audio (optional)', 'audio/*,.mka', true, 'ref2va');
-  const modeHelp = el('p', 'h3-video-muted'), referenceLengthHelp = el('p', 'h3-video-muted', 'Choose a 2–15 second section from each reference video; selected sections must total at most 15 seconds. Generation length limits how much reference content is used.');
+  const modeHelp = el('p', 'h3-video-muted'), referenceLengthHelp = el('p', 'h3-video-muted', 'Choose a 2–15 second section from each reference video. The limit applies to each video independently. Generation length limits how much reference content is used.');
   const referenceHelp = h3WorkflowHelp('Reference help', modeHelp, referenceLengthHelp); referenceHelp.id = 'h3-reference-help'; form.appendChild(referenceHelp);
   const vfxInputError = el('p', 'h3-video-error'); vfxInputError.hidden = true; vfxInputError.setAttribute('role', 'alert'); form.appendChild(vfxInputError);
   const dimensions = el('div', 'h3-video-grid h3-video-numbers'); form.appendChild(dimensions);

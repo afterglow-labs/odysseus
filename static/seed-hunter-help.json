@@ -375,11 +375,11 @@
     },
     "reference_videos": {
       "title": "Reference videos",
-      "body": "Up to 3 video references. Each chosen section is 2–15 seconds; selected sections total at most 15 seconds. A longer file can supply a later section. Generation length can limit how much reference content is consumed."
+      "body": "Up to 3 video references. Each chosen section is 2–15 seconds, independently of the other references and their soundtracks. A longer file can supply a later section. Generation length can limit how much reference content is consumed."
     },
     "reference_audio": {
       "title": "Reference audio",
-      "body": "Up to 3 audio references, numbered <Audio 1>, <Audio 2>, etc., for sound or voice context. Describe how to use them. Ordinary references are not guaranteed to be copied exactly."
+      "body": "Up to 3 audio references, each 2–15 seconds, numbered <Audio 1>, <Audio 2>, etc., for sound or voice context. Each file has its own duration limit; video soundtracks do not reduce it. Describe how to use them. Ordinary references are not guaranteed to be copied exactly."
     },
     "source_video": {
       "title": "Continuation source video",

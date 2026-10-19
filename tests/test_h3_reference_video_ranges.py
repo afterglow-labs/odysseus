@@ -102,13 +102,19 @@ def test_selection_preserves_original_stream_offsets(timeline, tmp_path, delayed
         assert frequency(audio["waveform"][0, 0, 1600:17600]) == pytest.approx(600, abs=2)
 
 
-def test_prepare_media_keeps_aggregate_reference_budget(timeline):
+@pytest.mark.parametrize("count", [2, 3])
+def test_prepare_media_keeps_each_fifteen_second_selection_and_soundtrack(timeline, count):
     media = {"reference_images": [], "reference_audio": [], "first_frame": None,
-             "last_frame": None, "reference_videos": [str(timeline)] * 2}
+             "last_frame": None, "reference_videos": [str(timeline)] * count}
     config = {"width": 32, "height": 32, "frames": 362, "reference_size": "match",
-              "reference_video_ranges": [selection(0, 8), selection(8, 8)]}
-    with pytest.raises(ValueError, match="total at most 15"):
-        worker.prepare_media(media, config)
+              "reference_video_ranges": [selection(i, 15) for i in range(count)]}
+    prepared = worker.prepare_media(media, config)
+    assert list(prepared["ref_videos"]) == [f"ref_video_{i}" for i in range(1, count + 1)]
+    for i in range(1, count + 1):
+        assert len(prepared["ref_videos"][f"ref_video_{i}"]) == 362
+        audio = prepared["ref_video_audios"][f"ref_video_audio_{i}"]["waveform"]
+        assert audio.shape[-1] == round(362 / 24 * worker.AUDIO_RATE)
+        assert frequency(audio[0, 0, 1600:17600]) == pytest.approx(200 + (i - 1) * 40, abs=2)
 
 
 def test_auto_batch_length_uses_selected_window_not_full_movie(monkeypatch):
