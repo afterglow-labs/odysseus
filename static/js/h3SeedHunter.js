@@ -206,7 +206,9 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
   select(advanced, 'reference_size', 'Reference sizing', [['max', 'Maximum'], ['match', 'Match output']]);
   check(advanced, 'shift_enabled', 'Override video/audio shifts'); number(advanced, 'shift_video', 'Video shift', 12, .01, 100, .01); number(advanced, 'shift_audio', 'Audio shift', 6, .01, 100, .01);
   check(advanced, 'first_frame_guide', 'Use Picture 1 as first-frame guide'); check(advanced, 'last_frame_guide', 'Use Picture 2 as last-frame guide'); check(advanced, 'force_audio', 'Preserve supplied Audio 1 in the latent');
-  select(advanced, 'output_fps', 'Output fps', [['24','24 fps'],['48','48 fps · RIFE interpolation']], options);
+  const fpsChoices = [['24','24 fps · RIFE off'],['48','48 fps · RIFE interpolation']];
+  select(dimensions, 'output_fps', 'Output FPS / RIFE', fpsChoices, options).setAttribute('aria-label', 'Output FPS / RIFE');
+  const rifeStatus = make('p', 'h3-video-muted'); dimensions.append(rifeStatus);
   select(advanced, 'attention_backend', 'Attention backend', [['comfy kitchen attention', 'Comfy Kitchen'], ['pytorch', 'PyTorch']], options);
   select(advanced, 'sparse_method', 'Sparse attention', [['none', 'Off'], ['sla', 'SLA'], ['sol_attn', 'Sol-Attn'], ['vsa', 'VSA']], options);
   number(advanced, 'sparse_keep_percent', 'Sparse attention kept (%)', 10, 1, 100, .1, options);
@@ -250,6 +252,8 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
   finalFields.frames.prepend(new Option('Choose final output length',''));finalFields.frames.required=true;
   number(finalGrid, 'steps', 'Refinement steps', 2, 1, 100, 1, finalFields); number(finalGrid, 'seed', 'Refinement seed', 42, 0, Number.MAX_SAFE_INTEGER, 1, finalFields); number(finalGrid, 'denoise', 'Denoise', .4, 0, 1, .05, finalFields);
   select(finalGrid, 'sampler', 'Refinement sampler', [['er_sde','ER-SDE'],['euler','Euler'],['res_multistep','RES multistep']], finalFields); select(finalGrid, 'scheduler', 'Refinement scheduler', [['linear_quadratic','Linear quadratic'],['beta','Beta'],['simple','Simple'],['normal','Normal']], finalFields);
+  select(finalGrid, 'output_fps', 'Final output FPS / RIFE', fpsChoices, finalFields).setAttribute('aria-label', 'Final output FPS / RIFE');
+  const finalRifeStatus = make('p', 'h3-video-muted'); finalForm.append(finalRifeStatus);
   const finalLoras = createH3LoraEditor({ idPrefix: 'seed-hunter-final', onChange: () => { finalRequest = null; save(); } }); finalForm.append(finalLoras.node);
   const finalActions = make('div', 'h3-video-actions'), finalSubmit = button('Render selected preview'), finalReroll = button('Randomize refinement seed'), cancelSelection = button('Clear selection'); finalSubmit.dataset.seedHunterHelpAction = 'refine_preview'; finalSubmit.type = 'submit'; finalSubmit.className = 'cookbook-btn'; finalActions.append(finalSubmit, finalReroll, cancelSelection); finalForm.append(finalActions);
   finalReroll.onclick = () => { finalFields.seed.value = randomSeed(); finalRequest = null; save(); }; cancelSelection.onclick = () => { selecting++; selection = null; finalRequest = null; finalSection.hidden = true; save(); renderJobs(); };
@@ -293,7 +297,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
     return { ...value, reference_video_ranges: referenceVideoRanges(uploads.reference_videos) };
   }
   function currentUploads() { return Object.fromEntries(Object.entries(uploads).filter(([key]) => (key !== 'source_video' || stage.value === 'continuation') && (key !== 'first_frame' || options.first_frame_guide.checked) && (key !== 'last_frame' || options.last_frame_guide.checked)).map(([key, state]) => [key, [...state.files]])); }
-  function finalConfig() { return { ...Object.fromEntries(Object.entries(finalFields).filter(([key])=>key!=='frames'||inventory?.seed_hunter?.features?.separate_final_length===true).map(([key, n]) => [key, n.type === 'number'||key==='frames' ? Number(n.value) : n.value])), loras: finalLoras.getValue() }; }
+  function finalConfig() { return { ...Object.fromEntries(Object.entries(finalFields).filter(([key])=>key!=='output_fps'&&(key!=='frames'||inventory?.seed_hunter?.features?.separate_final_length===true)).map(([key, n]) => [key, n.type === 'number'||key==='frames' ? Number(n.value) : n.value])), loras: finalLoras.getValue(), seed_hunter: { output_fps: Number(finalFields.output_fps.value) } }; }
   function describeRefinement() {
     if(!selection)return;
     const preview=selection.frames,frames=inventory?.seed_hunter?.features?.separate_final_length?Number(finalFields.frames.value)||preview:preview;
@@ -349,9 +353,11 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
     stage.disabled = !!jobEditor?.active || locked;
     for (const item of stage.options) item.hidden = item.value === 'final' && !finalEdit;
     for (const item of stage.options) item.disabled = (item.value === 'final' && !finalEdit) || ['continuation', 'dialogue'].includes(item.value) && features[item.value] !== true;
-    for (const [feature, keys] of Object.entries({ guides: ['first_frame_guide', 'last_frame_guide'], force_audio: ['force_audio'], attention_backend: ['attention_backend'], sparse_attention: ['sparse_method','sparse_keep_percent','sparse_start','sparse_end','sparse_min_tokens','sparse_extra_tokens','sparse_sink_conditioning'], ff_chunking: ['ff_chunk_size','ff_chunk_threshold'], low_vram_attention:['low_vram_chunks'], rife: ['output_fps'], latent_upscaler: ['upscaler_chunking', 'upscaler_force_unload'] })) {
+    for (const [feature, keys] of Object.entries({ guides: ['first_frame_guide', 'last_frame_guide'], force_audio: ['force_audio'], attention_backend: ['attention_backend'], sparse_attention: ['sparse_method','sparse_keep_percent','sparse_start','sparse_end','sparse_min_tokens','sparse_extra_tokens','sparse_sink_conditioning'], ff_chunking: ['ff_chunk_size','ff_chunk_threshold'], low_vram_attention:['low_vram_chunks'], latent_upscaler: ['upscaler_chunking', 'upscaler_force_unload'] })) {
       for (const key of keys) { options[key].disabled ||= features[feature] !== true; options[key].title = features[feature] === true ? '' : 'Unavailable in the installed Seed Hunter runtime.'; }
     }
+    for (const control of [options.output_fps, finalFields.output_fps]) control.querySelector('option[value="48"]').disabled = features.rife !== true;
+    rifeStatus.textContent = finalRifeStatus.textContent = features.rife === true ? 'RIFE v4.26 installed · Choose 48 fps to enable frame interpolation after rendering. H3 generates at 24 fps; duration and audio stay unchanged.' : 'RIFE unavailable · 24 fps needs no interpolation model. 48 fps requires rife-v4.26.safetensors in models/hzwer/RIFE and the frame interpolation runtime.';
     uploads.reference_mods.input.disabled ||= features.refmods !== true;
     uploads.first_frame.wrap.hidden = !options.first_frame_guide.checked; uploads.last_frame.wrap.hidden = !options.last_frame_guide.checked;
     uploads.reference_mods.wrap.title = features.refmods === true ? '' : 'Reference mods are unavailable in the installed Seed Hunter runtime.';
@@ -388,7 +394,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
     const batchBlock=busy||loading||enhancing||finalBusy||!!jobEditor?.active||!!jobEditor?.loading||!inventory?.runtime_ready;
     const batchReason=batchBlock?'Finish the current operation before adding a batch.':batchIssue();
     batchQueue?.setEnabled(!batchReason,batchReason,{snapshotEnabled:!batchBlock,snapshotReason:batchReason});
-    queue?.setBlocked(locked || loading || finalBusy || !!jobEditor?.active); finalSubmit.disabled = finalBusy || !selection || !finalFields.latent_upscaler.value || features.latent_upscaler !== true || features.separate_final_length===true&&!finalFields.frames.value; finalLoras.setDisabled(finalBusy); for(const n of Object.values(finalFields))n.disabled=finalBusy;finalFields.frames.disabled||=features.separate_final_length!==true;finalFields.frames.parentElement.hidden=features.separate_final_length!==true;finalReroll.disabled=cancelSelection.disabled=finalBusy;
+    queue?.setBlocked(locked || loading || finalBusy || !!jobEditor?.active); finalSubmit.disabled = finalBusy || (finalFields.output_fps.value==='48'&&features.rife!==true) || !selection || !finalFields.latent_upscaler.value || features.latent_upscaler !== true || features.separate_final_length===true&&!finalFields.frames.value; finalLoras.setDisabled(finalBusy); for(const n of Object.values(finalFields))n.disabled=finalBusy;finalFields.frames.disabled||=features.separate_final_length!==true;finalFields.frames.parentElement.hidden=features.separate_final_length!==true;finalReroll.disabled=cancelSelection.disabled=finalBusy;
   }
   function fill(n, items, selected, blank = false) { n.replaceChildren(); if (blank) n.add(new Option('Use model GPU', '')); for (const item of items) n.add(new Option(displayName(item), item.id)); if(selected!==undefined&&selected!==null){if(![...n.options].some(o=>o.value===String(selected)))n.add(new Option('Choose an available component',selected));n.value=selected;} }
   async function loadInventory() {
@@ -439,6 +445,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
       selection = { job_id: job.id, index: candidate.index, seed: candidate.seed, width:source.width, height:source.height,frames:source.frames,final_length:data.final_length }; finalRequest = remembered ? saved.final_request || null : null;
       const defaults = seedHunterRefinementDefaults(source, { ...size, latent_upscaler:source.latent_upscaler||finalFields.latent_upscaler.value, steps: 2, seed: candidate.seed, sampler: 'er_sde', scheduler: 'linear_quadratic', denoise: .4, ...(inventory.seed_hunter?.final_defaults || {}),...(data.refinement_defaults||{}),frames:data.refinement_defaults?.frames??source.seed_hunter?.final_frames??source.frames }, remembered ? saved.final_config || {} : {});
       for (const [key, n] of Object.entries(finalFields)) if (defaults[key] !== undefined) n.value = defaults[key];
+      finalFields.output_fps.value = String((remembered ? saved.final_config?.seed_hunter?.output_fps : undefined) ?? source.seed_hunter?.output_fps ?? 24);
       if(data.final_length?.requires_manual&&!remembered)finalFields.frames.value='';
       finalComponents = h3LoraComponents(inventory.components, data.lora_components); finalLoras.setInventory(finalComponents); finalLoras.setValue(remembered && saved.final_config?.loras ? saved.final_config.loras : h3LoraStack(source));
       finalTitle.textContent = `Refine preview ${candidate.index} · seed ${candidate.seed}`;describeRefinement();finalSection.hidden = false;

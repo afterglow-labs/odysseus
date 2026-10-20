@@ -27,7 +27,7 @@ def test_preview_seconds_apply_immediately_and_final_length_is_independent(tmp_p
                   for role in ('model', 'encoder', 'video_vae', 'audio_vae', 'latent_upscaler')]
     inventory = dict(runtime_ready=True, components=components, gpus=[{'id': 'GPU-5090', 'name': 'RTX 5090'}],
                      batch_jobs=True, batch_auto_video_length=True, server_video_files=True,
-                     seed_hunter={'defaults': defaults, 'features': {'latent_upscaler': True,
+                     seed_hunter={'defaults': defaults, 'features': {'latent_upscaler': True, 'rife': True,
                          'separate_final_length': separate_final}})
     candidates = [{'index': index, 'seed': 42 + 1000 * (index - 1), 'can_refine': True, 'status': 'completed'}
                   for index in range(1, 4)]
@@ -113,6 +113,8 @@ def test_preview_seconds_apply_immediately_and_final_length_is_independent(tmp_p
                 assert await aspect.input_value() == '4:3'
                 assert await panel.get_by_role('spinbutton', name='Preview megapixels', exact=True).input_value() == '0.6'
                 assert await page.locator('#seed-hunter-width').input_value() == remembered_width
+                await panel.get_by_role('combobox', name='Output FPS / RIFE', exact=True).select_option('48')
+                assert 'RIFE v4.26 installed' in await panel.inner_text()
                 seconds = panel.get_by_role('spinbutton', name='Preview seconds', exact=True)
                 frames = page.locator('#seed-hunter-frames')
                 assert await seconds.input_value() == '12.25'
@@ -147,6 +149,7 @@ def test_preview_seconds_apply_immediately_and_final_length_is_independent(tmp_p
                 assert len(submissions) == 2
                 for index, submission in enumerate(submissions):
                     assert submission['config']['frames'] == 107
+                    assert submission['config']['seed_hunter']['output_fps'] == 48
                     assert submission['config']['seed_hunter']['preview_count'] == 3
                     assert submission['config']['seed_hunter']['final_frames'] is None
                     assert submission['auto'] is separate_final
@@ -165,11 +168,13 @@ def test_preview_seconds_apply_immediately_and_final_length_is_independent(tmp_p
                     assert await final_frames.input_value() == '311'
                     assert 'Preview: 4.46 seconds. Final output: 12.96 seconds.' in await final.inner_text()
                     assert 'selected seed is rendered at the final length' in await final.inner_text()
+                    await final.get_by_role('combobox', name='Final output FPS / RIFE', exact=True).select_option('48')
                     await final_frames.select_option('243')
                     assert await frames.input_value() == '107'
                     await final.get_by_role('button', name='Render selected preview', exact=True).click()
                     await page.wait_for_function("()=>document.querySelector('.h3-seed-hunter-final button[type=submit]').disabled===false")
                     assert len(finals) == 1, await final.locator('form').evaluate('(form)=>[...form.elements].filter(n=>n.validity&&!n.validity.valid).map(n=>({id:n.id,value:n.value,message:n.validationMessage}))')
+                    assert finals[0]['config']['seed_hunter']['output_fps'] == 48
                     assert finals[0]['candidate'] == 2
                     assert finals[0]['config']['frames'] == 243
                     assert finals[0]['config']['seed'] == candidates[1]['seed']
