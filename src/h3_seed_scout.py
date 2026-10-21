@@ -51,7 +51,8 @@ def summary(directory, state=None):
         path = directory / f"scout-{seed}.webp"
         if path.is_file() and not path.is_symlink():
             result["previews"].append({"seed": seed, "provisional": bool(row.get("provisional")),
-                "url": f"/api/video/h3/jobs/{directory.name}/scout/previews/{seed}", "mime_type": "image/webp"})
+                "url": f"/api/video/h3/jobs/{directory.name}/scout/previews/{seed}", "mime_type": "image/webp",
+                "can_resume": all((directory / f"scout-{seed}{ext}").is_file() and not (directory / f"scout-{seed}{ext}").is_symlink() for ext in (".safetensors", ".json"))})
     # Worker termination may occur before it can update the scout receipt.
     if state and state.get("status") in {"stopped", "failed"}:
         result["status"] = state["status"]
@@ -110,3 +111,53 @@ def select(manager, identity, owner, seed):
             raise ValueError("Choose one of this job's scouted seeds")
         _write(directory / "scout-selection.json", {"version": 1, "seed": seed})
         return summary(directory, state)
+
+
+def prepare_render(manager, source_id, owner, body, directory, submission_id):
+    import uuid
+    from pathlib import Path
+    from src.h3_loras import frozen_inventory
+    from src.h3_video import validate_config, UPLOAD_EXTENSIONS, ACTIVE
+    from src.video_job_edit import _inputs, _draft
+    from src.video_queue_bulk import _clone_file
+    from src.h3_seed_hunter import clone_snapshot, preflight
+    manager._state(source_id, owner)
+    current = manager.submission_inventory()
+    source = manager.directory(source_id)
+    seed = body.get('seed')
+    with _locked(source / 'job.lock'):
+        state = _read(source / 'state.json')
+        if state.get('owner') != owner:
+            raise FileNotFoundError('Seed Scout job not found')
+        value = summary(source, state)
+        if state.get('status') in ACTIVE and not (state.get('status') == 'running' and value and value.get('selected_seed') is not None and value.get('status') != 'waiting_for_selection'):
+            raise RuntimeError('Choose the first seed or stop the Scout job before rendering another seed')
+        if not value or type(seed) is not int or seed not in [r['seed'] for r in value['previews']]:
+            raise ValueError('Choose one of this job’s saved seed previews')
+        manifest = _read(source / 'manifest.json')
+        inventory = frozen_inventory(manifest['config'], current)
+        raw = _draft(manifest['config'], inventory, 'h3')
+        raw['seed'] = seed
+        raw['seed_hunter'].update(scout_mode='final', scout_count=1, preview_count=1)
+        inputs = _inputs(source, manifest, UPLOAD_EXTENSIONS)
+        config = validate_config(raw, inventory['components'], inventory['gpus'], inputs)
+        preflight(config, current, inputs)
+        uploads, names = {}, {}
+        for field, values in inputs.items():
+            paths = []
+            for item in values:
+                target = directory / (uuid.uuid4().hex + Path(item['path']).suffix)
+                _clone_file(item['path'], target)
+                paths.append(str(target.resolve()))
+            uploads[field] = paths[0] if paths and field in {'first_frame','last_frame','source_video'} else paths
+            if values:
+                names[field] = [item['name'] for item in values]
+        latent, metadata = source / f'scout-{seed}.safetensors', source / f'scout-{seed}.json'
+        if latent.is_file() and metadata.is_file():
+            uploads['seed_hunter_input'] = clone_snapshot(source, directory,
+                {'candidate': seed, 'latent': str(latent), 'metadata': str(metadata)})
+        uploads['seed_hunter_source'] = {'source_job_id': source_id, 'source_seed': seed,
+            'strategy': 'resume' if 'seed_hunter_input' in uploads else 'full_schedule'}
+        _write(directory / 'submission.json', {'submission_id': submission_id, 'input_names': names,
+                                              'source_name': manifest.get('source_name')})
+        return config, uploads

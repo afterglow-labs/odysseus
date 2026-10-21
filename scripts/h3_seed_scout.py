@@ -61,11 +61,11 @@ def load_source(runtime_path):
     return module
 
 
-def sample(runtime, manifest, config, model, positive, latent, vae, progress):
+def sample(runtime, manifest, config, model, positive, latent, vae, progress, base_positive=None):
     if __package__:
-        from .h3_seed_hunter import _worker
+        from .h3_seed_hunter import _worker, save_snapshot
     else:
-        from h3_seed_hunter import _worker
+        from h3_seed_hunter import _worker, save_snapshot
     import comfy.samplers
     from comfy_extras.nodes_custom_sampler import BasicGuider, BasicScheduler
     from PIL import Image
@@ -95,8 +95,15 @@ def sample(runtime, manifest, config, model, positive, latent, vae, progress):
 
         report(0)
         try:
-            return core_sample(SamplingProgressGuider(guider, report), selected_sampler,
-                               sigmas, latent, latent_samples, noise, seed)
+            result = core_sample(SamplingProgressGuider(guider, report), selected_sampler,
+                                 sigmas, latent, latent_samples, noise, seed)
+            if not continuing and not full_pass:
+                save_snapshot(folder / f"scout-{seed}.safetensors",
+                    latent={**result[0], "_scout_sigmas": full_sigmas[options["scout_step"]:],
+                            "_scout_step": options["scout_step"]},
+                    positive={"sampling": positive, "refinement": base_positive if base_positive is not None else positive},
+                    config={**config, "seed": seed}, seed=seed)
+            return result
         finally:
             runtime.cleanup_model_state()
     sampler._sample_core = sample_core
@@ -176,6 +183,7 @@ def sample(runtime, manifest, config, model, positive, latent, vae, progress):
     publish()
     guider = BasicGuider.execute(model, positive)[0]
     sigmas = BasicScheduler.execute(model, config["scheduler"], config["steps"], 1.)[0]
+    full_sigmas = sigmas
     try:
         result = sampler.run(guider=guider, sampler=comfy.samplers.sampler_object(config["sampler"]), sigmas=sigmas,
             latent_image=latent, mode=options["scout_mode"], seed_start=config["seed"], seed_count=options["scout_count"],
@@ -194,3 +202,27 @@ def sample(runtime, manifest, config, model, positive, latent, vae, progress):
         state.update(status="stopped" if (folder / "cancel").exists() else "failed", error=str(exc)[:2000])
         publish()
         raise
+
+
+def resume(runtime, manifest, config, model, positive, latent, vae, progress, base_positive=None):
+    """Continue the saved noisy partial through its exact remaining sigmas."""
+    import comfy.samplers
+    from comfy_extras.nodes_custom_sampler import BasicGuider
+    sigmas = latent.pop("_scout_sigmas")
+    offset = latent.pop("_scout_step")
+    total = len(sigmas) - 1
+    if offset + total != config["steps"] or total < 1:
+        raise ValueError("Saved Scout schedule does not match this job")
+    def report(step):
+        progress("continuing_selected_seed", step, total_steps=total, seed=config["seed"],
+                 schedule_step=offset + step, schedule_total_steps=config["steps"], remaining_steps=total-step)
+    runtime.release_conditioning()
+    guider = SamplingProgressGuider(BasicGuider.execute(model, positive)[0], report)
+    sampler = load_source(manifest["runtime_path"]).MiniMaxH3SeedScoutSampler()
+    report(0)
+    try:
+        output, denoised, _ = sampler._sample_continue(guider, comfy.samplers.sampler_object(config["sampler"]),
+                                                       sigmas, latent, latent["samples"], config["seed"])
+    finally:
+        runtime.cleanup_model_state()
+    return output, denoised if denoised is not None else output, config["seed"]

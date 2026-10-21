@@ -139,3 +139,28 @@ assert json.loads((output / 'progress.json').read_text())['step'] == completed_s
 assert json.loads((output / 'progress.json').read_text())['total_steps'] == completed_steps
 assert (output / 'output.mp4').read_bytes() == b'cpu-mp4'
 print(f'isolated Scout entrypoint completed chosen seed {chosen}; no CUDA initialization')
+
+if mode != 'final':
+    # The losing candidate resumes from its own persisted noisy partial, never
+    # its denoised preview and never a fresh 20-step pass.
+    import copy
+    child = output / 'child'
+    child.mkdir()
+    child_config = copy.deepcopy(config)
+    child_config['seed'] = 44
+    child_config['seed_hunter'].update(scout_mode='final', scout_count=1)
+    child_manifest = {**manifest, 'config': child_config, 'output_path':str(child/'output.mp4'),
+        'status_path':str(child/'progress.json'), 'seed_hunter_input':{
+            'candidate':44, 'latent':str(output/'scout-44.safetensors'), 'metadata':str(output/'scout-44.json')}}
+    child_path = child/'manifest.json'
+    child_path.write_text(json.dumps(child_manifest))
+    def decode_resumed(self, samples, *_):
+        assert samples['samples'].item() == 1044
+        return torch.zeros((73,2,2,3)), {}
+    Runtime.decode = decode_resumed
+    hunter.condition = lambda *_: (_ for _ in ()).throw(AssertionError('Resume must reuse saved conditioning'))
+    calls.clear()
+    assert worker.main(['--job',str(child_path)]) == 0
+    assert calls == [['continue',44,list(range(17,-1,-1)),[44.]]]
+    assert (output/'output.mp4').read_bytes() == b'cpu-mp4'
+    print('Losing seed 44 resumed its own exact 17 remaining updates')

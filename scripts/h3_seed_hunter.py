@@ -370,7 +370,8 @@ def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
     progress("initializing_runtime")
     runtime = runtime_factory(manifest["runtime_path"])
     progress("preparing_media")
-    prepared = prepare_media(manifest, initial_config, media, media_loader, folder)
+    scout_resume = options["stage"] == "scout" and bool(manifest.get("seed_hunter_input"))
+    prepared = {} if scout_resume else prepare_media(manifest, initial_config, media, media_loader, folder)
     import torch
     candidates = []
     with torch.inference_mode():
@@ -407,6 +408,9 @@ def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
             runtime.release_conditioning()
             latent = upscale_latent(manifest, config, latent, progress)
             base_positive = positive
+        elif scout_resume:
+            conditioning, latent = load_snapshot(manifest["seed_hunter_input"], config)
+            positive, base_positive = conditioning["sampling"], conditioning["refinement"]
         else:
             progress("encoding_prompt")
             positive, latent, base_positive = condition(runtime, config, prepared, clip, vae, audio_vae)
@@ -420,11 +424,11 @@ def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
             try:
                 if options["stage"] == "scout":
                     if __package__:
-                        from .h3_seed_scout import sample as scout_sample
+                        from .h3_seed_scout import sample as scout_sample, resume as scout_resume_sample
                     else:
-                        from h3_seed_scout import sample as scout_sample
-                    output, denoised, selected_seed = scout_sample(runtime, manifest, candidate_config,
-                        model, positive, latent, vae, progress)
+                        from h3_seed_scout import sample as scout_sample, resume as scout_resume_sample
+                    output, denoised, selected_seed = (scout_resume_sample if scout_resume else scout_sample)(runtime, manifest, candidate_config,
+                        model, positive, latent, vae, progress, base_positive=base_positive)
                     row["seed"] = candidate_config["seed"] = selected_seed
                 else:
                     output, denoised = sample_candidate(runtime, candidate_config, model, positive, latent, progress)

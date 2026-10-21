@@ -227,6 +227,11 @@ def guard_refinement_dimensions(metadata_path, config):
 
 
 def guard_saved_refinement(directory, manifest, updated):
+    original = manifest.get("config", {})
+    if original.get("seed_hunter", {}).get("stage") == "scout" and manifest.get("seed_hunter_input"):
+        if any(original.get(key) != updated.get(key) for key in original.keys() | updated.keys() if key not in {"gpu", "vae_gpu"}):
+            raise ValueError("Resuming a Scout partial keeps its saved sampling settings. Start a new Scout job to change them.")
+        return
     if manifest.get("config", {}).get("seed_hunter", {}).get("stage") != "final":
         return
     snapshot = manifest.get("seed_hunter_input")

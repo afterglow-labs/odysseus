@@ -237,7 +237,7 @@ def _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, recei
                         _clone_file(value["path"], target)
                         paths.append(str(target.resolve()))
                     uploads[field] = paths if family == "h3" and field not in {"first_frame", "last_frame", "source_video"} else paths[0] if paths else []
-                if family == "h3" and item["config"].get("seed_hunter", {}).get("stage") == "final":
+                if family == "h3" and (item["config"].get("seed_hunter", {}).get("stage") == "final" or item["manifest"].get("seed_hunter_input")):
                     from src.h3_seed_hunter import clone_snapshot
                     uploads["seed_hunter_input"] = clone_snapshot(item["directory"], directory, item["manifest"].get("seed_hunter_input"))
                     uploads["seed_hunter_source"] = item["manifest"].get("seed_hunter_source", {})

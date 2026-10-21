@@ -55,7 +55,7 @@ def test_selected_clean_latent_is_upscaled_then_refined_and_decoded_at_final_siz
             return torch.zeros((1, 1, 1, 3)).expand(73, edge, edge, 3), {}
     monkeypatch.setattr(hunter, 'patch_model', lambda _r, _c, model, _p: model)
     monkeypatch.setattr(hunter, 'condition', lambda *_: (positive, {'samples': torch.zeros(1)}, positive))
-    def finish(_runtime, _manifest, config, *_args):
+    def finish(_runtime, _manifest, config, *_args, base_positive=None):
         calls.append('finish chosen seed')
         assert config['steps'] == 20 and config['seed_hunter']['scout_step'] == 4
         return {'samples': torch.tensor(999.)}, clean, 43

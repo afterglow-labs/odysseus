@@ -18,6 +18,7 @@ def test_native_scout_choices_retained_draft_and_classic_hunter(tmp_path,layout)
     chrome=shutil.which('google-chrome') or shutil.which('chromium')
     if not chrome: pytest.skip('Chrome required')
     requests, errors, selections, submissions=[],[],[],[]
+    renders=[]
     components=[{'id':role,'role':role,'name':role+'.safetensors','variant':'ref2va'} for role in ['model','encoder','video_vae','audio_vae','latent_upscaler']]
     components.append({'id':'turbo','role':'lora','name':'minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors','variant':'ref2va'})
     inventory={'runtime_ready':True,'components':components,'gpus':[{'id':'GPU-5090','name':'RTX 5090','nvfp4':True},{'id':'GPU-4090','name':'RTX 4090','nvfp4':False}], 'batch_jobs':True,'batch_auto_video_length':True,'server_video_files':True,'seed_hunter':{'features':{'seed_scout':True,'scout_upscale':True,'guides':True,'force_audio':True,'latent_upscaler':True,'attention_backend':True,'ff_chunking':True},'defaults':{'steps':6,'loras':[{'id':'turbo','strength':1}]}}}
@@ -46,12 +47,14 @@ def test_native_scout_choices_retained_draft_and_classic_hunter(tmp_path,layout)
             submissions.append({'config':cfg,'files':[part.get_filename() for part in parts if part.get_filename()], 'auto':any(part.get_param('name',header='content-disposition')=='auto_video_length' and part.get_payload(decode=True)==b'true' for part in parts)});await handler.fulfill(json={'id':'new-job','status':'queued'})
           elif path.endswith('/scout/select'):
             assert path=='/api/video/h3/jobs/scout-job/scout/select';value=r.post_data_json;selections.append(value);scout['selected_seed']=value['seed'];scout['status']='continuing';await handler.fulfill(json=scout)
+          elif path.endswith('/scout/render'):
+            renders.append(r.post_data_json);await handler.fulfill(json={'id':'another-seed-job','status':'queued'})
           elif '/scout/previews/' in path:await handler.fulfill(body=image,content_type='image/gif')
           elif path.endswith('/video'):await handler.fulfill(body=b'',content_type='video/mp4')
           else:await handler.fulfill(status=404,json={'detail':'Fixture not found'})
         await page.route('**/*',route)
         try:
-          await page.goto('http://scout.test/')
+          await page.goto('https://scout.test/')
           async def open_scout():
             await page.evaluate("async layout=>window.dialog=(await import('/static/js/h3SeedHunter.js')).showH3SeedScout({layout})",layout)
             await page.get_by_text('H3 Seed Scout is ready.',exact=True).wait_for()
@@ -134,6 +137,15 @@ def test_native_scout_choices_retained_draft_and_classic_hunter(tmp_path,layout)
           assert await page.evaluate('window.previewElement===document.querySelector(".h3-scout-choice img")')
           await choices.first.scroll_into_view_if_needed();await page.screenshot(path=str(tmp_path/'seed-scout-native-desktop.png'))
           job['status']='completed';await panel.get_by_role('button',name='Refresh jobs',exact=True).click()
+          await choices.first.get_by_role('button',name='Render this seed → full result',exact=True).click()
+          await choices.first.get_by_text('Full result queued',exact=False).wait_for()
+          assert renders[0]['seed']==100 and renders[0]['request_id']
+          assert scout['selected_seed']==101
+          scout['previews'][2]['can_resume']=True
+          await panel.get_by_role('button',name='Refresh jobs',exact=True).click()
+          await choices.nth(2).get_by_role('button',name='Resume this seed → full result',exact=True).click()
+          await choices.nth(2).get_by_text('Full result queued',exact=False).wait_for()
+          assert renders[1]['seed']==102
           await panel.get_by_role('button',name='Play video',exact=True).wait_for();assert await panel.locator('.h3-video-output video[src]').count()==0
           await panel.get_by_role('button',name='Close',exact=True).click()
           await page.evaluate("async layout=>window.dialog=(await import('/static/js/h3SeedHunter.js')).showH3SeedHunter({layout})",layout)

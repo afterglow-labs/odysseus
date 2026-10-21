@@ -130,3 +130,38 @@ def test_queued_scout_summary_uses_its_configured_seeds_before_worker_initialize
     assert reply.status_code==200,reply.text
     assert reply.json()['seeds']==[710,711,712,713]
     assert reply.json()['previews']==[] and reply.json()['selected_seed'] is None
+
+
+@pytest.mark.parametrize('checkpoint', [False, True])
+def test_additional_seed_render_owned_idempotent_and_keeps_original(backend, checkpoint):
+    config = setup(backend)
+    client = backend.client()
+    parent = client.post('/api/video/h3/jobs', data={'config': json.dumps(config)}).json()['id']
+    manager = backend.managers['h3']
+    folder = manager.directory(parent)
+    original = (folder / 'manifest.json').read_bytes()
+    state = h3._read(folder / 'state.json')
+    seed = config['seed'] + 1
+    h3._write(folder / 'scout.json', {'mode':'interactive', 'seeds':[config['seed'], seed],
+        'selected_seed':config['seed'], 'previews':[{'seed':seed}], 'status':'completed'})
+    (folder / f'scout-{seed}.webp').write_bytes(b'preview')
+    if checkpoint:
+        (folder / f'scout-{seed}.safetensors').write_bytes(b'partial')
+        h3._write(folder / f'scout-{seed}.json', {'config':config})
+    body = {'seed':seed, 'request_id':uuid.uuid4().hex}
+    url = f'/api/video/h3/jobs/{parent}/scout/render'
+    assert client.post(url,json=body).status_code == 409
+    h3._write(folder / 'state.json', {**state,'status':'completed'})
+    result = client.post(url,json=body)
+    assert result.status_code == 201, result.text
+    child = result.json()['id']
+    assert child != parent
+    assert client.post(url,json=body).json()['id'] == child
+    manifest = h3._read(manager.directory(child) / 'manifest.json')
+    assert manifest['config']['seed'] == seed
+    assert manifest['config']['steps'] == config['steps']
+    assert manifest['config']['seed_hunter']['scout_mode'] == 'final'
+    assert ('seed_hunter_input' in manifest) == checkpoint
+    assert manifest['seed_hunter_source']['strategy'] == ('resume' if checkpoint else 'full_schedule')
+    assert (folder / 'manifest.json').read_bytes() == original
+    assert client.post(url,json={**body,'seed':-1,'request_id':uuid.uuid4().hex}).status_code == 400
