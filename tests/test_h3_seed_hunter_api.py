@@ -177,7 +177,73 @@ def test_final_rejects_replacing_saved_conditioning_or_path_injection(hunter, pa
     assert len(hunter.calls) == 1
 
 
-def test_refinement_rejects_live_preview_and_direct_final_submission(hunter):
+@pytest.mark.parametrize('status', ['running', 'failed', 'stopped'])
+def test_finished_candidates_remain_refinable_while_other_candidates_are_unfinished(hunter, status):
+    job, directory = preview(hunter)
+    state = {**h3._read(directory / 'state.json'), 'status': status}
+    h3._write(directory / 'state.json', state)
+    candidates = h3._read(directory / 'candidates.json')
+    candidates['candidates'][2].update(status='running', latent_ready=False)
+    h3._write(directory / 'candidates.json', candidates)
+    # Even if its files already exist, an unpublished candidate is not ready.
+    saved = {name: (directory / name).read_bytes() for name in
+             ['state.json', 'manifest.json', 'candidates.json', 'candidate-1.json', 'candidate-2.json']}
+    client = hunter.client()
+    url = f"/api/video/h3/jobs/{job['id']}"
+    for endpoint in [url, url + '/seed-hunter']:
+        response = client.get(endpoint)
+        assert response.status_code == 200, response.text
+        rows = response.json()['seed_hunter']['candidates']
+        assert [row['index'] for row in rows] == [1, 2]
+        assert all(row['can_refine'] for row in rows)
+    body = final_body(hunter)
+    response = client.post(url + '/seed-hunter/finalize', json={**body, 'candidate': 3})
+    assert response.status_code == 400, response.text
+    assert len(hunter.calls) == 1
+    response = client.post(url + '/seed-hunter/finalize', json=body, headers={'x-user': 'other'})
+    assert response.status_code == 404
+    response = client.post(url + '/seed-hunter/finalize', json=body)
+    assert response.status_code == 201, response.text
+    assert response.json()['status'] == 'queued'
+    target = hunter.managers['h3'].directory(response.json()['id'])
+    assert (target / 'source-latent.safetensors').read_bytes() == (directory / 'candidate-2.safetensors').read_bytes()
+    assert h3._read(target / 'source-latent.json')['chosen'] == 2
+    assert client.post(url + '/seed-hunter/finalize', json=body).json()['id'] == target.name
+    another = client.post(url + '/seed-hunter/finalize', json={**final_body(hunter), 'candidate': 1})
+    assert another.status_code == 201, another.text
+    assert another.json()['id'] != target.name
+    assert len(hunter.calls) == 3
+    assert {name: (directory / name).read_bytes() for name in saved} == saved
+    # Finishing a sibling never consumes or replaces the earlier previews.
+    candidates['candidates'][2].update(status='completed', latent_ready=True)
+    h3._write(directory / 'candidates.json', candidates)
+    rows = client.get(url + '/seed-hunter').json()['seed_hunter']['candidates']
+    assert [row['index'] for row in rows] == [1, 2, 3]
+    assert all(row['can_refine'] for row in rows)
+
+
+@pytest.mark.parametrize('suffix', ['json', 'safetensors'])
+@pytest.mark.parametrize('damage', ['missing', 'empty', 'symlink'])
+def test_running_preview_requires_complete_saved_artifacts(hunter, suffix, damage):
+    job, directory = preview(hunter)
+    h3._write(directory / 'state.json', {**h3._read(directory / 'state.json'), 'status': 'running'})
+    artifact = directory / f'candidate-2.{suffix}'
+    artifact.unlink()
+    if damage == 'empty':
+        artifact.touch()
+    elif damage == 'symlink':
+        artifact.symlink_to(directory / f'candidate-1.{suffix}')
+    client = hunter.client()
+    url = f"/api/video/h3/jobs/{job['id']}/seed-hunter"
+    candidates = client.get(url).json()['seed_hunter']['candidates']
+    assert candidates[0]['can_refine'] is True
+    assert candidates[1]['can_refine'] is False
+    response = client.post(url + '/finalize', json=final_body(hunter))
+    assert response.status_code == 400, response.text
+    assert len(hunter.calls) == 1
+
+
+def test_refinement_rejects_unstarted_preview_and_direct_final_submission(hunter):
     job, _ = preview(hunter, completed=False)
     response = hunter.client().post(f"/api/video/h3/jobs/{job['id']}/seed-hunter/finalize", json=final_body(hunter))
     assert response.status_code == 409

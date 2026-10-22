@@ -3,7 +3,7 @@ import uuid
 from pathlib import Path
 
 from scripts.h3_seed_hunter_controls import DEFAULTS, SAMPLERS, SCHEDULERS, scout_upscale_enabled, scout_output_size
-from src.h3_video import ACTIVE, _read, _write, _locked
+from src.h3_video import TERMINAL, _read, _write, _locked
 
 
 def capabilities(project, runtime, components, gpus=()):
@@ -98,7 +98,11 @@ def summary(directory, config, state):
             artifact(directory, index, "video")
         except (ValueError, FileNotFoundError):
             continue
-        can_refine = result["stage"] == "preview" and state.get("status") == "completed"
+        # The worker publishes each candidate only after its latent, metadata
+        # and video are complete. Later candidates never rewrite those files.
+        # Refinements own a snapshot and join the shared render queue, so they
+        # can be submitted while siblings render (or after a sibling fails).
+        can_refine = result["stage"] == "preview" and state.get("status") in TERMINAL | {"running"}
         if can_refine:
             try:
                 artifact(directory, index, "latent")
@@ -261,8 +265,8 @@ def prepare_final(manager, source_id, owner, body, directory, submission_id):
         state = _read(source / "state.json")
         if state.get("owner") != owner:
             raise FileNotFoundError("Seed Hunter job not found")
-        if state.get("status") in ACTIVE:
-            raise RuntimeError("Wait for the preview job to finish before refining a candidate")
+        if state.get("status") == "queued":
+            raise RuntimeError("This preview job has not started rendering yet")
         manifest = _read(source / "manifest.json")
         config = manifest.get("config", {})
         data = summary(source, config, state)

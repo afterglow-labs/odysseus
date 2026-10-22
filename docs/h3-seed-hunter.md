@@ -16,10 +16,18 @@ The classic editor remains available. **Cookbook → Launch → Build Pipeline**
 2. Generate one to three previews. They share the prompt and settings and use
    the base seed, base + 1000, and base + 2000. The model loads once per job.
 3. Play the results and select a candidate. Selection only opens the refinement
-   editor; it does not enqueue anything.
+   editor; it does not enqueue anything. Each finished candidate becomes
+   selectable immediately, even while the remaining candidates are rendering.
 4. Choose the final length, dimensions, steps, sampler, scheduler, denoise and
    LoRAs, then submit the final render explicitly. Reference-video duration
    matching applies to this final target, independently of the short previews.
+
+Refinements join the shared render queue; submitting one does not interrupt the
+remaining previews. Completed candidates also remain usable if a later candidate
+fails or the preview job is stopped. The original preview job keeps all its
+candidates so you can refine more than one seed. Each final refinement is a
+separate job containing the selected result; return to the original preview job
+to choose another candidate.
 
 Preview duration is the duration of **each** candidate; selecting three
 candidates does not triple it. The seconds control applies immediately and
@@ -223,8 +231,10 @@ Seed Hunter submissions use `recipe: "seed_hunter"` and bounded nested options.
 
 `GET /api/video/h3/jobs/{id}/seed-hunter` returns safe component IDs and candidate
 URLs. `POST .../seed-hunter/finalize` requires `candidate`, a UUID `request_id`
-and refinement `config`. It only accepts a completed preview owned by the
-requesting user. Duplicate submissions return the original child job, including
+and refinement `config`. It only accepts a completed candidate with saved video,
+latent and metadata owned by the requesting user. The parent preview job may
+still be rendering its other candidates, or may have finished, failed or stopped.
+Duplicate submissions return the original child job, including
 after source deletion. No request can supply a latent path or arbitrary module.
 
 Verification includes ownership/isolation, retry concurrency, snapshot lifetime,
