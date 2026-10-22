@@ -235,6 +235,7 @@ Path(job['status_path']).write_text(json.dumps({'phase':'completed','step':20,'t
     assert len(rows) == 1 and rows[0][0] == "corey" and rows[0][2] == original_prompt
     assert json.loads(rows[0][3])["seed"] == 42
     assert (manager.gallery_directory / rows[0][1]).read_bytes() == b"fixture-MP4"
+    assert (manager.gallery_directory / rows[0][1]).samefile(manager.directory(job_id) / 'output.mp4')
     assert client.get(f"/api/video/h3/jobs/{job_id}/video").content == b"fixture-MP4"
     assert client.get(f"/api/video/h3/jobs/{job_id}/video", headers={"x-user": "other"}).status_code == 404
     assert client.delete(f"/api/video/h3/jobs/{job_id}", headers={"x-user": "other"}).status_code == 404

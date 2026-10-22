@@ -189,8 +189,9 @@ def setup_h3_video_routes(manager=None):
 
     @router.get("/jobs/{job_id}")
     async def job_detail(job_id: str, request: Request):
+        from src.video_job_groups import detail
         try:
-            return await asyncio.to_thread(manager.view, job_id, _owner(request))
+            return await asyncio.to_thread(detail, manager, job_id, _owner(request))
         except FileNotFoundError as exc:
             raise HTTPException(404, "Video job not found") from exc
 

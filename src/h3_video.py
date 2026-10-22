@@ -647,10 +647,8 @@ def _save_gallery(manifest, state):
                                tags=("video,bfs," + manifest["config"]["family"] + ",generated") if manifest["config"].get("workflow_id") else "video,minimax-h3,generated", width=metadata["width"], height=metadata["height"],
                                file_size=source.stat().st_size)
             db.add(row)
-        temporary = target.with_suffix(".tmp")
-        shutil.copyfile(source, temporary)
-        temporary.chmod(0o600)
-        temporary.replace(target)
+        from src.video_job_storage import publish_gallery_video
+        publish_gallery_video(source, target)
         db.commit()
 
 

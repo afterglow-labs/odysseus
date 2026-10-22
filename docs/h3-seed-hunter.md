@@ -25,9 +25,27 @@ The classic editor remains available. **Cookbook → Launch → Build Pipeline**
 Refinements join the shared render queue; submitting one does not interrupt the
 remaining previews. Completed candidates also remain usable if a later candidate
 fails or the preview job is stopped. The original preview job keeps all its
-candidates so you can refine more than one seed. Each final refinement is a
-separate job containing the selected result; return to the original preview job
-to choose another candidate.
+candidates so you can refine more than one seed. In desktop and current iOS
+history, each candidate shows its refinements directly below it. Their queue
+positions, progress, playback and controls stay with that preview set. Multiple
+refinements of the same seed remain separate results in the same card. Each
+refinement still has its own execution receipt, so stopping or editing one
+does not interrupt its siblings.
+
+Grouping also applies to existing saved jobs and happens before pagination.
+Queue counts count render operations; page counts count cards. Older clients
+keep their flat history. Deleting **previews** keeps already-submitted
+refinements, which then appear as standalone history entries. **Delete
+refinement** removes only that result; **Delete all job history** still covers
+every saved job. A final job's detail links back to all its source previews.
+
+Gallery and job output names share the same immutable video data through
+hardlinks when stored on the same filesystem. Refinement inputs and latents
+also share their existing data; displaying a result under its preview does
+not copy media. Gallery edits replace their own file without changing the
+saved render. Installations with Gallery on another filesystem retain a copy
+fallback. `scripts/dedupe_video_gallery.py --apply --owner USER` verifies older
+Gallery copies byte-for-byte before replacing redundant copies with links.
 
 Preview duration is the duration of **each** candidate; selecting three
 candidates does not triple it. The seconds control applies immediately and
@@ -236,6 +254,12 @@ latent and metadata owned by the requesting user. The parent preview job may
 still be rendering its other candidates, or may have finished, failed or stopped.
 Duplicate submissions return the original child job, including
 after source deletion. No request can supply a latent path or arbitrary module.
+
+`GET /api/video/h3/jobs?recipe=seed_hunter&group_refinements=true&page=1`
+returns grouped cards with a `refinements` list of owner-checked child jobs.
+The regular detail endpoint includes the same list and exposes a validated
+`refinement_parent` on final jobs. Missing/deleted/foreign preview sources
+never hide a surviving refinement.
 
 Verification includes ownership/isolation, retry concurrency, snapshot lifetime,
 nested queue edits, original H3 regression tests, rendered desktop interaction

@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from core.database import SessionLocal, GalleryImage, GalleryAlbum, ModelEndpoint
 from core.database import Session as DbSession
+from core.atomic_io import atomic_write_bytes
 from src.auth_helpers import get_current_user, owner_filter, require_privilege
 from src.upload_limits import (
     read_upload_limited,
@@ -396,7 +397,7 @@ def setup_gallery_routes() -> APIRouter:
             is_video = ext in VIDEO_EXTS
             filename = f"{uuid.uuid4().hex[:12]}.{ext}"
             img_path = img_dir / filename
-            img_path.write_bytes(content)
+            atomic_write_bytes(str(img_path), content)
 
             # Extract EXIF for images only — PIL can't parse video containers
             # and the failure path logs a noisy WARNING. We'll add ffprobe-based
@@ -451,7 +452,7 @@ def setup_gallery_routes() -> APIRouter:
             content = await read_upload_limited(file, GALLERY_UPLOAD_MAX_BYTES, "Gallery replacement")
             GALLERY_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
             img_path = _gallery_image_path(img.filename)
-            img_path.write_bytes(content)
+            atomic_write_bytes(str(img_path), content)
 
             # Refresh dimensions in case the editor resized the canvas.
             # updated_at auto-bumps via TimestampMixin's onupdate hook.
@@ -547,7 +548,7 @@ def setup_gallery_routes() -> APIRouter:
                     fmt = "PNG"
                 rotated.save(buf, format=fmt, **save_kwargs)
                 content = buf.getvalue()
-                img_path.write_bytes(content)
+                atomic_write_bytes(str(img_path), content)
                 img.file_hash = hashlib.sha256(content).hexdigest()
                 img.file_size = len(content)
                 img.width, img.height = rotated.size

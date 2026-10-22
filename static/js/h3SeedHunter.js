@@ -1,5 +1,6 @@
 import { bindWorkflowPromptHistory } from './workflowPromptHistory.js';
 import { createVideoJobPager, observePagedVideoJobEditor } from './videoJobPage.js';
+import { createVideoRefinements } from './videoRefinements.js';
 import { createVideoJobMedia, releaseVideoJobMedia } from './videoJobMedia.js';
 import { createVideoJobSources } from './videoJobSources.js';
 import { bindMenuDismiss, dismissOrRemove } from './escMenuStack.js';
@@ -259,10 +260,10 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
   finalReroll.onclick = () => { finalFields.seed.value = randomSeed(); finalRequest = null; save(); }; cancelSelection.onclick = () => { selecting++; selection = null; finalRequest = null; finalSection.hidden = true; save(); renderJobs(); };
   finalForm.addEventListener('input', () => { finalRequest = null; describeRefinement();update();save(); }); finalForm.addEventListener('change', () => { finalRequest = null; describeRefinement();update();save(); });
   const jobToolbar = make('div', 'h3-video-toolbar'), refreshJobs = button('Refresh jobs'); jobToolbar.append(make('h3', '', `${title} jobs`), refreshJobs); const jobStatus = make('p', 'h3-video-muted'), jobList = make('div', 'h3-video-jobs'); scroll.append(jobToolbar, jobStatus, jobList);
-  jobPager = createVideoJobPager({ container: scroll, beforeNode: jobList, request: (path, options) => request(path.startsWith('/jobs?') ? path + (scout ? '&stage=scout' : '&stage=not_scout') : path, options), recipe: 'seed_hunter', isClosed: () => closed,
+  jobPager = createVideoJobPager({ container: scroll, beforeNode: jobList, request: (path, options) => request(path.startsWith('/jobs?') ? path + (scout ? '&stage=scout' : '&stage=not_scout&group_refinements=true') : path, options), recipe: 'seed_hunter', isClosed: () => closed,
     onData: async data => {
       jobs = data.jobs.filter(job => scout ? isSeedScoutJob(job) : !isSeedScoutJob(job)); queue?.update(data.queue); renderJobs();
-      await observePagedVideoJobEditor(jobEditor, data.legacyJobs || jobs, request, () => closed);
+      await observePagedVideoJobEditor(jobEditor, data.legacyJobs || jobs.flatMap(job => [job, ...(job.refinements || [])]), request, () => closed);
       if (!closed) update();
       if (!scout && saved.selected && !selection && inventory) {
         const remembered = saved.selected;
@@ -460,11 +461,11 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
     const current = { candidate: selection.index, config: values };
     if (!finalRequest || finalRequest.source !== selection.job_id || JSON.stringify(finalRequest.payload) !== JSON.stringify(current)) finalRequest = { source: selection.job_id, payload: clone(current), request_id: crypto.randomUUID() };
     save(); finalBusy = true; update(); error.hidden = true;
-    try { const result=await request(`/jobs/${encodeURIComponent(finalRequest.source)}/seed-hunter/finalize`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...finalRequest.payload, request_id: finalRequest.request_id }) }); if(!result.id&&!result.job?.id)throw new Error('The server did not confirm this refinement.'); finalRequest = null; save(); status.textContent = 'Refinement queued. The saved preview remains available for another variation.'; await loadJobs({ reset: true }); }
+    try { const result=await request(`/jobs/${encodeURIComponent(finalRequest.source)}/seed-hunter/finalize`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...finalRequest.payload, request_id: finalRequest.request_id }) }); if(!result.id&&!result.job?.id)throw new Error('The server did not confirm this refinement.'); finalRequest = null; save(); status.textContent = 'Refinement queued beneath its source preview. You can refine another seed too.'; await loadJobs(); }
     catch (e) { fail(`${e.message} Retry keeps the same submission ID.`); }
     finally { finalBusy = false; if (!closed) update(); }
   };
-  const reruns = createVideoJobReruns({ family: 'h3', request, onChange: () => renderJobs(), onQueued: () => loadJobs({ reset: true }), isClosed: () => closed, isBlocked: () => busy || finalBusy });
+  const reruns = createVideoJobReruns({ family: 'h3', request, onChange: () => renderJobs(), onQueued: () => loadJobs(), isClosed: () => closed, isBlocked: () => busy || finalBusy });
   async function stopJob(job) { try { await request(`/jobs/${job.id}`, { method: 'DELETE' }); await loadJobs(); } catch (e) { fail(e); } }
   function renderJobs() {
     jobStatus.textContent = `${jobPager?.counts.running || 0} rendering · ${jobPager?.counts.queued || 0} queued`;
@@ -490,7 +491,23 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
       nodes.jobError.textContent=job.error||state.error||'';nodes.jobError.hidden=!nodes.jobError.textContent;nodes.log.textContent=(job.log_tail||[]).join?.('\n')||job.log_tail||'';if(nodes.usedPrompt.textContent!==job.prompt)nodes.usedPrompt.textContent=job.prompt||'Prompt unavailable.';
       for(const candidate of job.seed_hunter?.candidates||[]){let c=nodes.previews.get(candidate.index);if(!c){const card=make('section','h3-seed-hunter-candidate'),label=make('h5'),choose=button('Use this preview'),download=make('a','memory-toolbar-btn','Download preview');const url=`${API}/jobs/${encodeURIComponent(job.id)}/seed-hunter/candidates/${candidate.index}/video`;const player=createVideoJobMedia(url,{label:`Play preview ${candidate.index}`});download.href=url;download.download=`h3-preview-${candidate.index}.mp4`;card.append(label,player.node,choose,download);nodes.candidates.append(card);c={card,label,video:player.media,choose};nodes.previews.set(candidate.index,c);choose.onclick=()=>selectCandidate(jobs.find(j=>j.id===job.id)||job,(jobs.find(j=>j.id===job.id)?.seed_hunter?.candidates||[]).find(p=>p.index===candidate.index)||candidate);}
         if(candidate.audio_url&&!c.audio){const link=make('a','memory-toolbar-btn','Download audio');link.href=`${API}/jobs/${encodeURIComponent(job.id)}/seed-hunter/candidates/${candidate.index}/audio`;const player=createVideoJobMedia(link.href,{type:'audio',label:'Play audio'});link.download=`h3-dialogue-${candidate.index}.flac`;c.card.append(player.node,link);c.audio=player.media;}
-        c.label.textContent=`Preview ${candidate.index} · seed ${candidate.seed}`;c.choose.hidden=!candidate.can_refine;c.choose.disabled=finalBusy;c.card.classList.toggle('selected',selection?.job_id===job.id&&selection.index===candidate.index);c.choose.textContent=selection?.job_id===job.id&&selection.index===candidate.index?'Selected preview':'Use this preview';}
+        c.label.textContent=`Preview ${candidate.index} · seed ${candidate.seed}`;c.choose.hidden=!candidate.can_refine;c.choose.disabled=finalBusy;c.card.classList.toggle('selected',selection?.job_id===job.id&&selection.index===candidate.index);c.choose.textContent=selection?.job_id===job.id&&selection.index===candidate.index?'Selected preview':'Use this preview';
+        if (!c.refinements) {
+          c.refinements = createVideoRefinements({ stop: stopJob, edit: item => jobEditor.open(item.id),
+            retry: item => reruns.run(item), rerun: item => queue.openRerun(item.id, async(source, patch) => { const result = await reruns.run(source, patch, true); return {result, ...reruns.state(source)}; }),
+            remove: async item => { const result = await request(`/jobs/${item.id}/record`, {method:'DELETE'}); if (!result.deleted) throw new Error('Deletion was not confirmed.'); await loadJobs(); },
+            state: item => reruns.state(item), onError: fail });
+          c.card.append(c.refinements.node);
+        }
+        c.refinements.update((job.refinements || []).filter(item => item.seed_hunter?.source_candidate === candidate.index));
+      }
+      if (job.refinements?.length) {
+        nodes.remove.textContent = 'Delete previews';
+        nodes.deletion.querySelector('p').textContent = 'Delete these previews and their saved inputs? Existing refinements are kept and become separate history entries.';
+      } else {
+        nodes.remove.textContent = 'Delete job';
+        nodes.deletion.querySelector('p').textContent = 'Delete this job and its saved previews, latents and outputs?';
+      }
       if(job.status==='completed'&&stageName!=='preview'&&!(job.seed_hunter?.candidates?.length)&&!nodes.output.childElementCount){nodes.output.append(createVideoJobMedia(`${API}/jobs/${encodeURIComponent(job.id)}/video`).node);}
     }
   }

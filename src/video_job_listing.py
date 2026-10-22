@@ -13,11 +13,15 @@ def list_options(query, family):
     stage = query.get("stage")
     if stage is not None and (recipe != "seed_hunter" or stage not in {"scout", "not_scout"}):
         raise ValueError("stage requires recipe=seed_hunter and must be scout or not_scout")
+    grouped = query.get("group_refinements", "false")
+    if grouped not in {"true", "false"} or grouped == "true" and (family != "h3" or recipe != "seed_hunter"):
+        raise ValueError("group_refinements must be true or false and requires the H3 seed_hunter recipe")
+    grouping = {"group_refinements": True} if grouped == "true" else {}
     paged = "page" in query or "page_size" in query
     if not paged:
         if "before" in query:
             raise ValueError("before requires page or page_size")
-        return {"recipe": recipe, "stage": stage}
+        return {"recipe": recipe, "stage": stage, **grouping}
     try:
         page = int(query.get("page", "1"))
         page_size = int(query.get("page_size", "10"))
@@ -33,7 +37,7 @@ def list_options(query, family):
             raise ValueError("before must be a finite, nonnegative Unix timestamp") from None
         if not math.isfinite(before) or before < 0:
             raise ValueError("before must be a finite, nonnegative Unix timestamp")
-    return {"page": page, "page_size": page_size, "before": before, "recipe": recipe, "stage": stage}
+    return {"page": page, "page_size": page_size, "before": before, "recipe": recipe, "stage": stage, **grouping}
 
 
 def _created_at(state):
@@ -41,7 +45,7 @@ def _created_at(state):
     return value if isinstance(value, (int, float)) and math.isfinite(value) else 0
 
 
-def history(manager, owner, *, page=None, page_size=10, before=None, recipe=None, stage=None):
+def history(manager, owner, *, page=None, page_size=10, before=None, recipe=None, stage=None, group_refinements=False):
     """Cheap state scan first, then full views for only the selected IDs.
 
     Active receipts are reconciled even when they fall outside the page. Old
@@ -54,6 +58,7 @@ def history(manager, owner, *, page=None, page_size=10, before=None, recipe=None
 
     anchor = time.time() if before is None else before
     states = []
+    records = {}
     processes = None
     if manager.root.is_dir():
         for directory in manager.root.iterdir():
@@ -86,6 +91,8 @@ def history(manager, owner, *, page=None, page_size=10, before=None, recipe=None
                     if is_scout != (stage == "scout"):
                         continue
             states.append((directory.name, state))
+            if group_refinements:
+                records[directory.name] = (state, h3._read(directory / "manifest.json"))
 
     counts = {status: 0 for status in ("running", "queued", "completed", "failed", "stopped")}
     for _, state in states:
@@ -93,6 +100,11 @@ def history(manager, owner, *, page=None, page_size=10, before=None, recipe=None
         if isinstance(status, str):
             counts[status] = counts.get(status, 0) + 1
     states.sort(key=lambda item: (_created_at(item[1]), item[0]), reverse=True)
+    children = {}
+    if group_refinements:
+        from src.video_job_groups import refinement_groups, attach_refinements
+        parents, children = refinement_groups(manager, owner, records)
+        states = [item for item in states if item[0] not in parents]
     if page is not None:
         states = [item for item in states if _created_at(item[1]) <= anchor]
         total = len(states)
@@ -106,11 +118,16 @@ def history(manager, owner, *, page=None, page_size=10, before=None, recipe=None
     jobs = []
     for identifier, _ in states:
         try:
-            jobs.append(manager.view(identifier, owner, queue_positions=positions, snapshot=processes or {}))
+            job = manager.view(identifier, owner, queue_positions=positions, snapshot=processes or {})
+            if group_refinements:
+                attach_refinements(manager, owner, job, children, queue_positions=positions, snapshot=processes or {})
+            jobs.append(job)
         except FileNotFoundError:
             # Deletion may race a read; the next poll recomputes the last page.
             continue
     result = {"jobs": jobs, "counts": counts, "queue": queue_status(manager, owner)}
+    if group_refinements:
+        result["grouped_refinements"] = True
     if page is not None:
         result["pagination"] = {"page": page, "page_size": page_size, "total": total,
                                 "total_pages": total_pages, "has_next": page < total_pages,

@@ -47,6 +47,26 @@ def save(manager, stage=None, **kwargs):
     return directory, state
 
 
+def test_existing_gallery_migration_shares_only_identical_owned_completed_outputs(managers, db):
+    from scripts.dedupe_video_gallery import deduplicate
+    manager = managers[0]
+    identical, first = save(manager)
+    output = gallery(db, manager, first)
+    output.write_bytes((identical / 'output.mp4').read_bytes())
+    edited, second = save(manager)
+    edited_output = gallery(db, manager, second)
+    active, third = save(manager, status='running')
+    active_output = gallery(db, manager, third)
+    active_output.write_bytes((active / 'output.mp4').read_bytes())
+    assert deduplicate(manager) == {'linked_videos': 1, 'bytes_reclaimed': 5}
+    assert output.samefile(identical / 'output.mp4')
+    assert edited_output.read_bytes() == b'gallery-video'
+    assert not active_output.samefile(active / 'output.mp4')
+    assert deduplicate(manager)['linked_videos'] == 0
+    manager.delete(first['id'], first['owner'])
+    assert not output.exists() and not identical.exists()
+
+
 def test_history_scope_counts_every_page_and_preserves_active_other_workflows_owners(managers):
     main, bfs = managers
     for i in range(37):

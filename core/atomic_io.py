@@ -46,6 +46,23 @@ def atomic_write_json(path: str, data: Any, *, indent: Optional[int] = None) -> 
             pass
 
 
+def atomic_write_bytes(path: str, data: bytes) -> None:
+    """Replace the directory entry, preserving any other hardlinks to old data."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = f"{path}.tmp.{uuid.uuid4().hex}"
+    try:
+        with open(tmp, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, path)
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
 def atomic_write_text(path: str, text: str) -> None:
     if not isinstance(text, str):
         raise TypeError("atomic_write_text expects a string")
