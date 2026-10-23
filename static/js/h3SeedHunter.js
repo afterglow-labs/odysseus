@@ -12,7 +12,7 @@ import { showVideoServerFiles } from './videoServerFiles.js';
 import { referenceVideoRanges, restoreReferenceVideoRanges, createReferenceVideoRangeEditor, referenceVideoRangesField } from './referenceVideoRange.js';
 import { appendVideoInputs, videoFormIssue } from './videoInputs.js';
 import { createVideoBatchQueue } from './videoBatch.js';
-import { createVideoJobReruns } from './videoJobRerun.js';
+import { createVideoJobReruns, BASE_RERUN_LABEL, BASE_RERUN_HELP } from './videoJobRerun.js';
 import { createVideoQueueControls, videoQueueField } from './videoQueue.js';
 import { createVideoJobEditor, videoJobEditFormData } from './videoJobEdit.js';
 import { showVideoWorkflowExportOptions } from './h3Video.js';
@@ -396,6 +396,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
     const batchReason=batchBlock?'Finish the current operation before adding a batch.':batchIssue();
     batchQueue?.setEnabled(!batchReason,batchReason,{snapshotEnabled:!batchBlock,snapshotReason:batchReason});
     queue?.setBlocked(locked || loading || finalBusy || !!jobEditor?.active); finalSubmit.disabled = finalBusy || (finalFields.output_fps.value==='48'&&features.rife!==true) || !selection || !finalFields.latent_upscaler.value || features.latent_upscaler !== true || features.separate_final_length===true&&!finalFields.frames.value; finalLoras.setDisabled(finalBusy); for(const n of Object.values(finalFields))n.disabled=finalBusy;finalFields.frames.disabled||=features.separate_final_length!==true;finalFields.frames.parentElement.hidden=features.separate_final_length!==true;finalReroll.disabled=cancelSelection.disabled=finalBusy;
+    if (jobNodes.size) renderJobs();
   }
   function fill(n, items, selected, blank = false) { n.replaceChildren(); if (blank) n.add(new Option('Use model GPU', '')); for (const item of items) n.add(new Option(displayName(item), item.id)); if(selected!==undefined&&selected!==null){if(![...n.options].some(o=>o.value===String(selected)))n.add(new Option('Choose an available component',selected));n.value=selected;} }
   async function loadInventory() {
@@ -465,7 +466,9 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
     catch (e) { fail(`${e.message} Retry keeps the same submission ID.`); }
     finally { finalBusy = false; if (!closed) update(); }
   };
-  const reruns = createVideoJobReruns({ family: 'h3', request, onChange: () => renderJobs(), onQueued: () => loadJobs(), isClosed: () => closed, isBlocked: () => busy || finalBusy });
+  const reruns = createVideoJobReruns({ family: 'h3', request, getBaseConfig: config,
+    isBaseBlocked: () => loading || enhancing || !inventory || !!jobEditor?.active || !!jobEditor?.loading || !!queue?.busy || !!queue?.editing,
+    onChange: () => renderJobs(), onQueued: () => loadJobs(), isClosed: () => closed, isBlocked: () => busy || finalBusy });
   async function stopJob(job) { try { await request(`/jobs/${job.id}`, { method: 'DELETE' }); await loadJobs(); } catch (e) { fail(e); } }
   function renderJobs() {
     jobStatus.textContent = `${jobPager?.counts.running || 0} rendering · ${jobPager?.counts.queued || 0} queued`;
@@ -473,13 +476,17 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
     for (const [index, job] of jobs.entries()) {
       let nodes = jobNodes.get(job.id);
       if (!nodes) {
-        const card = make('article', 'h3-video-job'), heading = make('h4'), line = make('p', 'h3-video-muted'), tools = make('div', 'h3-video-job-actions'), stop = button('Stop'), retry = button('Retry'), edit = button('Edit queued job'), editRerun = button('Edit & rerun'), remove = button('Delete job');
+        const card = make('article', 'h3-video-job'), heading = make('h4'), line = make('p', 'h3-video-muted'), tools = make('div', 'h3-video-job-actions'), stop = button('Stop'), retry = button('Retry'), baseRerun = button(BASE_RERUN_LABEL), edit = button('Edit queued job'), editRerun = button('Edit & rerun'), remove = button('Delete job');
         const jobError = make('p', 'h3-video-error'), candidates = make('div', 'h3-seed-hunter-candidates'), output = make('div', 'h3-video-output'), details = make('details'), log = make('pre', 'h3-video-log'), promptDetails = make('details'), usedPrompt = make('pre', 'h3-video-prompt-used');
         card.dataset.jobId = job.id;
         const originals = createVideoJobSources();
-        details.append(make('summary','','Runtime log'), log); promptDetails.append(make('summary','','Prompt used'),usedPrompt); tools.append(stop,retry,edit,editRerun,remove); card.append(heading,line,tools,jobError,originals.node,candidates,output,promptDetails,details); jobList.append(card);
+        const rerunStatus = make('p', 'h3-video-muted'); rerunStatus.hidden = true; rerunStatus.setAttribute('role', 'status');
+        details.append(make('summary','','Runtime log'), log); promptDetails.append(make('summary','','Prompt used'),usedPrompt); tools.append(stop,retry,baseRerun,edit,editRerun,remove); card.append(heading,line,tools,rerunStatus,jobError,originals.node,candidates,output,promptDetails,details); jobList.append(card);
         const deletion = make('div','h3-video-delete-confirmation'), keep = button('Keep job'), confirm = button('Delete permanently'); deletion.hidden = true; deletion.append(make('p','','Delete this job and its saved previews, latents and outputs?'),keep,confirm); card.append(deletion);
-        nodes = {card,heading,line,stop,retry,edit,editRerun,remove,jobError,originals,candidates,output,log,usedPrompt,previews:new Map(),deletion}; jobNodes.set(job.id,nodes);
+        nodes = {card,heading,line,stop,retry,baseRerun,rerunStatus,edit,editRerun,remove,jobError,originals,candidates,output,log,usedPrompt,previews:new Map(),deletion}; jobNodes.set(job.id,nodes);
+        baseRerun.title = BASE_RERUN_HELP; baseRerun.onclick = () => reruns.runBase(jobs.find(j => j.id === job.id) || job);
+        retry.title = 'Queue this job again with its original prompt, settings and saved files.';
+        editRerun.title = 'Edit this job’s saved settings before queuing a new copy. Changes apply only to that copy.';
         stop.onclick = () => stopJob(job); retry.onclick = () => reruns.run(jobs.find(j => j.id===job.id)||job); edit.onclick = () => jobEditor.open(job.id); editRerun.onclick = () => queue.openRerun(job.id,async(source,patch)=>{const result=await reruns.run(source,patch,true);return {result,...reruns.state(source)};});
         remove.onclick=()=>{deletion.hidden=false;};keep.onclick=()=>{deletion.hidden=true;};confirm.onclick=async()=>{confirm.disabled=true;try{const result=await request(`/jobs/${job.id}/record`,{method:'DELETE'});if(!result.deleted)throw new Error('Deletion was not confirmed.');if(selection?.job_id===job.id){selection=null;finalSection.hidden=true;save();}await loadJobs();}catch(e){fail(e);}finally{confirm.disabled=false;}};
       }
@@ -487,14 +494,15 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
       nodes.originals.update(job.input_videos);
       if (isSeedScoutJob(job)) { if (!nodes.scout) { nodes.scout = createSeedScoutPreviews(job.id, { select: seed => request(`/jobs/${encodeURIComponent(job.id)}/scout/select`, { method: 'POST', headers: {'Content-Type':'application/json'}, body:JSON.stringify({seed}) }), render: async (seed, request_id) => { const result = await request(`/jobs/${encodeURIComponent(job.id)}/scout/render`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({seed,request_id}) }); await loadJobs(); return result; }, onError:fail }); nodes.candidates.append(nodes.scout.node); } nodes.scout.update(job); }
       const stageName=job.seed_hunter?.stage||'preview'; nodes.heading.textContent=`${stageName} · ${job.status} · ${job.id}`;nodes.line.textContent=[job.phase,job.total_steps?`Step ${job.step||0}/${job.total_steps}`:''].filter(Boolean).join(' · ');
-      const state=reruns.state(job);nodes.retry.hidden=nodes.editRerun.hidden=state.hidden;nodes.retry.disabled=nodes.editRerun.disabled=state.disabled;nodes.retry.textContent=state.label;nodes.edit.hidden=job.status!=='queued';nodes.stop.hidden=!ACTIVE.has(job.status);nodes.remove.hidden=!TERMINAL.has(job.status);
-      nodes.jobError.textContent=job.error||state.error||'';nodes.jobError.hidden=!nodes.jobError.textContent;nodes.log.textContent=(job.log_tail||[]).join?.('\n')||job.log_tail||'';if(nodes.usedPrompt.textContent!==job.prompt)nodes.usedPrompt.textContent=job.prompt||'Prompt unavailable.';
+      const state=reruns.state(job);nodes.retry.hidden=nodes.baseRerun.hidden=nodes.editRerun.hidden=state.hidden;nodes.retry.disabled=state.disabled;nodes.editRerun.disabled=state.disabled||state.pending;nodes.retry.textContent=state.label;nodes.baseRerun.disabled=state.baseDisabled;nodes.edit.hidden=job.status!=='queued';nodes.stop.hidden=!ACTIVE.has(job.status);nodes.remove.hidden=!TERMINAL.has(job.status);
+      nodes.rerunStatus.textContent=state.message;nodes.rerunStatus.hidden=!state.message;
+      nodes.jobError.textContent=state.error||job.error||'';nodes.jobError.hidden=!nodes.jobError.textContent;nodes.log.textContent=(job.log_tail||[]).join?.('\n')||job.log_tail||'';if(nodes.usedPrompt.textContent!==job.prompt)nodes.usedPrompt.textContent=job.prompt||'Prompt unavailable.';
       for(const candidate of job.seed_hunter?.candidates||[]){let c=nodes.previews.get(candidate.index);if(!c){const card=make('section','h3-seed-hunter-candidate'),label=make('h5'),choose=button('Use this preview'),download=make('a','memory-toolbar-btn','Download preview');const url=`${API}/jobs/${encodeURIComponent(job.id)}/seed-hunter/candidates/${candidate.index}/video`;const player=createVideoJobMedia(url,{label:`Play preview ${candidate.index}`});download.href=url;download.download=`h3-preview-${candidate.index}.mp4`;card.append(label,player.node,choose,download);nodes.candidates.append(card);c={card,label,video:player.media,choose};nodes.previews.set(candidate.index,c);choose.onclick=()=>selectCandidate(jobs.find(j=>j.id===job.id)||job,(jobs.find(j=>j.id===job.id)?.seed_hunter?.candidates||[]).find(p=>p.index===candidate.index)||candidate);}
         if(candidate.audio_url&&!c.audio){const link=make('a','memory-toolbar-btn','Download audio');link.href=`${API}/jobs/${encodeURIComponent(job.id)}/seed-hunter/candidates/${candidate.index}/audio`;const player=createVideoJobMedia(link.href,{type:'audio',label:'Play audio'});link.download=`h3-dialogue-${candidate.index}.flac`;c.card.append(player.node,link);c.audio=player.media;}
         c.label.textContent=`Preview ${candidate.index} · seed ${candidate.seed}`;c.choose.hidden=!candidate.can_refine;c.choose.disabled=finalBusy;c.card.classList.toggle('selected',selection?.job_id===job.id&&selection.index===candidate.index);c.choose.textContent=selection?.job_id===job.id&&selection.index===candidate.index?'Selected preview':'Use this preview';
         if (!c.refinements) {
           c.refinements = createVideoRefinements({ stop: stopJob, edit: item => jobEditor.open(item.id),
-            retry: item => reruns.run(item), rerun: item => queue.openRerun(item.id, async(source, patch) => { const result = await reruns.run(source, patch, true); return {result, ...reruns.state(source)}; }),
+            retry: item => reruns.run(item), reprocessBase: item => reruns.runBase(item), rerun: item => queue.openRerun(item.id, async(source, patch) => { const result = await reruns.run(source, patch, true); return {result, ...reruns.state(source)}; }),
             remove: async item => { const result = await request(`/jobs/${item.id}/record`, {method:'DELETE'}); if (!result.deleted) throw new Error('Deletion was not confirmed.'); await loadJobs(); },
             state: item => reruns.state(item), onError: fail });
           c.card.append(c.refinements.node);

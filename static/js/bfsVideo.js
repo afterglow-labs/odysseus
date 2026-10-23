@@ -11,7 +11,7 @@ import { appendVideoInputs } from './videoInputs.js';
 import { showVideoServerFiles } from './videoServerFiles.js';
 import { createVideoJobEditor, videoJobEditFormData } from './videoJobEdit.js';
 import { createVideoQueueControls, videoQueueField } from './videoQueue.js';
-import { createVideoJobReruns } from './videoJobRerun.js';
+import { createVideoJobReruns, BASE_RERUN_LABEL, BASE_RERUN_HELP } from './videoJobRerun.js';
 
 const API = '/api/video/bfs';
 const STORAGE = 'odysseus-bfs-video-settings-v1';
@@ -163,9 +163,10 @@ export function showBfsVideo({ preferred = null, layout = 'classic' } = {}, anch
     onError: error => { jobsStatus.textContent = `Could not refresh jobs: ${error.message}`; },
   });
   overlay.appendChild(dialog); document.body.appendChild(overlay);
-  const reruns = createVideoJobReruns({ family: 'bfs', request, isClosed: () => closed,
+  const reruns = createVideoJobReruns({ family: 'bfs', request, getBaseConfig: config, isClosed: () => closed,
+    isBaseBlocked: () => loading || transferBusy || submitting || !inventory || !!jobEditor?.active || !!jobEditor?.loading,
     isBlocked: () => !!queueControls?.busy || !!queueControls?.editing, onChange: () => renderJobs(),
-    onQueued: async result => { queueControls?.update(result.queue); await loadJobs({ reset: true }); },
+    onQueued: async result => { queueControls?.update(result.queue); await loadJobs(); },
   });
 
   function setError(message) { error.textContent = message || ''; error.hidden = !message; if (message) error.scrollIntoView({ block: 'nearest' }); }
@@ -261,7 +262,7 @@ export function showBfsVideo({ preferred = null, layout = 'classic' } = {}, anch
     queueControls?.setBlocked(editing || editLoading || batchBusy || transferBusy || loading || submitting || stopping.size > 0 || deleting.size > 0);
     for (const job of jobs) {
       const nodes = jobNodes.get(job.id); if (!nodes) continue;
-      const state = reruns.state(job); nodes.rerun.disabled = state.disabled;
+      const state = reruns.state(job); nodes.rerun.disabled = state.disabled; nodes.baseRerun.disabled = state.baseDisabled;
       nodes.editRerun.disabled = state.disabled || !!queueControls?.blocked || nodes.editorLoading || state.pending || !inventory || !!jobEditor?.active || !!jobEditor?.loading;
     }
   }
@@ -395,8 +396,8 @@ export function showBfsVideo({ preferred = null, layout = 'classic' } = {}, anch
       let nodes = jobNodes.get(job.id);
       if (!nodes) {
         const card = el('article', 'h3-video-job'); card.dataset.jobId = job.id;
-        const row = el('div', 'h3-video-toolbar'), heading = el('strong'), stop = button('Stop'), remove = button('Delete job'), exportJob = button('Export workflow'), edit = button('Edit'), rerun = button('Retry'), editRerun = button('Edit & rerun');
-        const jobActions = el('div', 'h3-video-job-actions'); jobActions.append(edit, rerun, editRerun, exportJob, stop, remove); row.append(heading, jobActions);
+        const row = el('div', 'h3-video-toolbar'), heading = el('strong'), stop = button('Stop'), remove = button('Delete job'), exportJob = button('Export workflow'), edit = button('Edit'), rerun = button('Retry'), baseRerun = button(BASE_RERUN_LABEL), editRerun = button('Edit & rerun');
+        const jobActions = el('div', 'h3-video-job-actions'); jobActions.append(edit, rerun, baseRerun, editRerun, exportJob, stop, remove); row.append(heading, jobActions);
         const status = el('p', 'h3-video-muted'); status.setAttribute('role', 'status');
         const progress = el('progress'); progress.setAttribute('aria-label', 'BFS video progress');
         const failure = el('p', 'h3-video-error'); failure.setAttribute('role', 'alert');
@@ -418,8 +419,10 @@ export function showBfsVideo({ preferred = null, layout = 'classic' } = {}, anch
         confirmDelete.classList.add('h3-video-delete-button'); deleteActions.append(keep, confirmDelete); deletion.appendChild(deleteActions);
         const deleteError = el('p', 'h3-video-error'); deleteError.hidden = true; deleteError.setAttribute('role', 'alert'); deletion.appendChild(deleteError);
         card.append(row, status, rerunStatus, rerunError, deletion, progress, failure, output, promptDetails, details); jobList.appendChild(card);
-        nodes = { card, heading, edit, rerun, editRerun, rerunStatus, rerunError, stop, remove, deletion, keep, confirmDelete, deleteError, status, progress, failure, output, usedPrompt, copy, log }; jobNodes.set(job.id, nodes);
+        nodes = { card, heading, edit, rerun, baseRerun, editRerun, rerunStatus, rerunError, stop, remove, deletion, keep, confirmDelete, deleteError, status, progress, failure, output, usedPrompt, copy, log }; jobNodes.set(job.id, nodes);
         edit.onclick = () => jobEditor.open(job.id);
+        baseRerun.title = BASE_RERUN_HELP; baseRerun.onclick = () => reruns.runBase(jobs.find(item => item.id === job.id) || job);
+        editRerun.title = 'Edit this job’s saved settings before queuing a new copy. Changes apply only to that copy.';
         rerun.title = 'Queue a new copy using this job’s saved prompt, settings and inputs; keep the original.';
         rerun.onclick = () => reruns.run(jobs.find(item => item.id === job.id) || job);
         editRerun.onclick = async () => {
@@ -442,7 +445,7 @@ export function showBfsVideo({ preferred = null, layout = 'classic' } = {}, anch
       const queued = job.status === 'queued';
       nodes.edit.hidden = !queued;
       const rerunState = reruns.state(job);
-      nodes.rerun.hidden = nodes.editRerun.hidden = rerunState.hidden; nodes.rerun.disabled = rerunState.disabled; nodes.rerun.textContent = rerunState.label;
+      nodes.rerun.hidden = nodes.baseRerun.hidden = nodes.editRerun.hidden = rerunState.hidden; nodes.baseRerun.disabled = rerunState.baseDisabled; nodes.rerun.disabled = rerunState.disabled; nodes.rerun.textContent = rerunState.label;
       nodes.editRerun.disabled = rerunState.disabled || !!queueControls?.blocked || nodes.editorLoading || rerunState.pending || !inventory || !!jobEditor?.active || !!jobEditor?.loading;
       nodes.editRerun.textContent = nodes.editorLoading ? 'Loading parameters…' : 'Edit & rerun';
       nodes.rerunStatus.textContent = nodes.editorLoading ? 'Loading this job’s saved parameters…' : rerunState.message; nodes.rerunStatus.hidden = !nodes.rerunStatus.textContent;

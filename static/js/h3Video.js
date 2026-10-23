@@ -8,7 +8,7 @@ import { createWorkflowPipeline } from './workflowPipeline.js';
 import { createVideoBatchQueue } from './videoBatch.js';
 import { createVideoJobEditor, videoJobEditFormData } from './videoJobEdit.js';
 import { createVideoQueueControls, videoQueueField } from './videoQueue.js';
-import { createVideoJobReruns } from './videoJobRerun.js';
+import { createVideoJobReruns, BASE_RERUN_LABEL, BASE_RERUN_HELP } from './videoJobRerun.js';
 import { h3LoraStack, h3LoraIssue, createH3LoraEditor, insertH3LoraTrigger, H3_LORA_RECOMMENDED_FIELDS, h3LoraComponents } from './h3Loras.js';
 import { referenceVideoRanges, restoreReferenceVideoRanges, createReferenceVideoRangeEditor, referenceVideoRangesField } from './referenceVideoRange.js';
 import { appendVideoInputs, videoFormIssue } from './videoInputs.js';
@@ -452,9 +452,10 @@ export function showH3Video({ preferredModel = null, layout = 'classic' } = {}, 
     onError: error => { jobStatus.textContent = `Could not refresh jobs: ${error.message}`; },
   });
   overlay.appendChild(dialog); document.body.appendChild(overlay);
-  const reruns = createVideoJobReruns({ family: 'h3', request, isClosed: () => closed,
+  const reruns = createVideoJobReruns({ family: 'h3', request, getBaseConfig: () => ({ ...config(), prompt: prompt.value }), isClosed: () => closed,
+    isBaseBlocked: () => inventoryLoading || enhancing || transferBusy || submitting || !inventory || !!jobEditor?.active || !!jobEditor?.loading,
     isBlocked: () => !!queueControls?.busy || !!queueControls?.editing, onChange: () => renderJobs(),
-    onQueued: async result => { queueControls?.update(result.queue); await loadJobs({ reset: true }); },
+    onQueued: async result => { queueControls?.update(result.queue); await loadJobs(); },
   });
 
   const setError = message => {
@@ -604,7 +605,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic' } = {}, 
     queueControls?.setBlocked(editing || editLoading || batchBusy || transferBusy || enhancing || submitting || inventoryLoading || pendingStops.size > 0 || pendingDeletes.size > 0);
     for (const job of jobs) {
       const nodes = jobNodes.get(job.id); if (!nodes) continue;
-      const state = reruns.state(job); nodes.rerun.disabled = state.disabled;
+      const state = reruns.state(job); nodes.rerun.disabled = state.disabled; nodes.baseRerun.disabled = state.baseDisabled;
       nodes.editRerun.disabled = state.disabled || !!queueControls?.blocked || nodes.editorLoading || state.pending || !inventory || !!jobEditor?.active || !!jobEditor?.loading;
     }
     updateEnhancerControls();
@@ -907,8 +908,8 @@ export function showH3Video({ preferredModel = null, layout = 'classic' } = {}, 
       if (!nodes) {
         const card = el('article', 'h3-video-job'); card.dataset.jobId = job.id;
         const row = el('div', 'h3-video-toolbar');
-        const heading = el('strong'); const stop = button('Stop'); const remove = button('Delete job'), exportJob = button('Export workflow'), edit = button('Edit'), rerun = button('Retry'), editRerun = button('Edit & rerun');
-        const jobActions = el('div', 'h3-video-job-actions'); jobActions.append(edit, rerun, editRerun, exportJob, stop, remove); row.append(heading, jobActions);
+        const heading = el('strong'); const stop = button('Stop'); const remove = button('Delete job'), exportJob = button('Export workflow'), edit = button('Edit'), rerun = button('Retry'), baseRerun = button(BASE_RERUN_LABEL), editRerun = button('Edit & rerun');
+        const jobActions = el('div', 'h3-video-job-actions'); jobActions.append(edit, rerun, baseRerun, editRerun, exportJob, stop, remove); row.append(heading, jobActions);
         const description = el('p', 'h3-video-muted'); description.setAttribute('role', 'status');
         const progress = el('progress'); progress.max = 1; progress.value = 0; progress.setAttribute('aria-label', 'Video generation progress');
         const jobError = el('p', 'h3-video-error'); jobError.setAttribute('role', 'alert');
@@ -941,8 +942,10 @@ export function showH3Video({ preferredModel = null, layout = 'classic' } = {}, 
         confirmDelete.classList.add('h3-video-delete-button'); deleteActions.append(keep, confirmDelete); deletion.appendChild(deleteActions);
         const deleteError = el('p', 'h3-video-error'); deleteError.hidden = true; deleteError.setAttribute('role', 'alert'); deletion.appendChild(deleteError);
         card.append(row, description, rerunStatus, rerunError, deletion, progress, jobError, output, promptDetails, details); jobList.appendChild(card);
-        nodes = { card, heading, edit, rerun, editRerun, rerunStatus, rerunError, stop, remove, deletion, keep, confirmDelete, deleteError, description, progress, jobError, log, output, promptText, copyPrompt, copyStatus }; jobNodes.set(job.id, nodes);
+        nodes = { card, heading, edit, rerun, baseRerun, editRerun, rerunStatus, rerunError, stop, remove, deletion, keep, confirmDelete, deleteError, description, progress, jobError, log, output, promptText, copyPrompt, copyStatus }; jobNodes.set(job.id, nodes);
         edit.onclick = () => jobEditor.open(job.id);
+        baseRerun.title = BASE_RERUN_HELP; baseRerun.onclick = () => reruns.runBase(jobs.find(item => item.id === job.id) || job);
+        editRerun.title = 'Edit this job’s saved settings before queuing a new copy. Changes apply only to that copy.';
         rerun.title = 'Queue a new copy using this job’s saved prompt, settings and inputs; keep the original.';
         rerun.onclick = () => reruns.run(jobs.find(item => item.id === job.id) || job);
         editRerun.onclick = async () => {
@@ -965,7 +968,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic' } = {}, 
       const queued = job.status === 'queued';
       nodes.edit.hidden = !queued;
       const rerunState = reruns.state(job);
-      nodes.rerun.hidden = nodes.editRerun.hidden = rerunState.hidden; nodes.rerun.disabled = rerunState.disabled; nodes.rerun.textContent = rerunState.label;
+      nodes.rerun.hidden = nodes.baseRerun.hidden = nodes.editRerun.hidden = rerunState.hidden; nodes.baseRerun.disabled = rerunState.baseDisabled; nodes.rerun.disabled = rerunState.disabled; nodes.rerun.textContent = rerunState.label;
       nodes.editRerun.disabled = rerunState.disabled || !!queueControls?.blocked || nodes.editorLoading || rerunState.pending || !inventory || !!jobEditor?.active || !!jobEditor?.loading;
       nodes.editRerun.textContent = nodes.editorLoading ? 'Loading parameters…' : 'Edit & rerun';
       nodes.rerunStatus.textContent = nodes.editorLoading ? 'Loading this job’s saved parameters…' : rerunState.message; nodes.rerunStatus.hidden = !nodes.rerunStatus.textContent;

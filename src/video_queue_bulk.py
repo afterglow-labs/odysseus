@@ -1,5 +1,6 @@
 """Revision-checked queue edits and durable reruns of saved video inputs."""
 from contextlib import ExitStack
+from copy import deepcopy
 import errno
 import hashlib
 import json
@@ -130,7 +131,26 @@ def _patched(config, patch, inventory, family, inputs, *, resolved_paths=None):
     return updated
 
 
-def _prepare_locked(manager, owner, family, chosen, patch, inventory, *, queued):
+def _from_base(config, base_config, inventory, family, inputs):
+    """New-job settings with this source's media, never its cached conditioning."""
+    raw = deepcopy(base_config)
+    if family == "h3":
+        if "seed_hunter" in raw and not isinstance(raw["seed_hunter"], dict):
+            raise ValueError("Seed Hunter settings must be a JSON object")
+        if raw.get("seed_hunter", {}).get("stage") == "final":
+            raise ValueError("Choose base settings for a new job, or use Edit & rerun for a saved refinement")
+        # Clip selections and RefMod strengths describe the saved files. The
+        # base form may have unrelated attachments (or none); never substitute
+        # their indices or crop offsets into this job's reference order.
+        raw.pop("reference_video_ranges", None)
+        if "reference_video_ranges" in config:
+            raw["reference_video_ranges"] = deepcopy(config["reference_video_ranges"])
+        if isinstance(raw.get("seed_hunter"), dict):
+            raw["seed_hunter"]["refmod_strengths"] = deepcopy(config.get("seed_hunter", {}).get("refmod_strengths", []))
+    return validate(raw, inventory, inputs, family)
+
+
+def _prepare_locked(manager, owner, family, chosen, patch, inventory, *, queued, base_config=None):
     prepared, resolved_paths = [], {}
     for item in chosen:
         directory, state = _owned(manager, item["id"], owner)
@@ -144,8 +164,9 @@ def _prepare_locked(manager, owner, family, chosen, patch, inventory, *, queued)
             raise ValueError("A selected job has no usable workflow settings")
         _, _, extensions = specification(family, config)
         inputs = _inputs(directory, manifest, extensions)
-        updated = _patched(config, patch, inventory, family, inputs, resolved_paths=resolved_paths)
-        if family == "h3":
+        updated = (_from_base(config, base_config, inventory, family, inputs) if base_config is not None
+                   else _patched(config, patch, inventory, family, inputs, resolved_paths=resolved_paths))
+        if family == "h3" and base_config is None:
             from src.h3_seed_hunter import guard_saved_refinement
             guard_saved_refinement(directory, manifest, updated)
         prepared.append({"directory": directory, "state": state, "manifest": manifest, "config": updated, "inputs": inputs})
@@ -203,13 +224,13 @@ def _clone_file(source, destination):
         destination.chmod(0o600)
 
 
-def _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, receipt):
+def _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, receipt, *, base_config=None):
     inventory = manager.inventory()
     staged = []
     with _locked(manager.root.parent / "video-render.lock"), ExitStack() as stack:
         for item in sorted(chosen, key=lambda item: item["id"]):
             stack.enter_context(_locked(manager.directory(item["id"]) / "job.lock"))
-        prepared = _prepare_locked(manager, owner, family, chosen, patch, inventory, queued=False)
+        prepared = _prepare_locked(manager, owner, family, chosen, patch, inventory, queued=False, base_config=base_config)
         try:
             entries = []
             for item in prepared:
@@ -237,7 +258,7 @@ def _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, recei
                         _clone_file(value["path"], target)
                         paths.append(str(target.resolve()))
                     uploads[field] = paths if family == "h3" and field not in {"first_frame", "last_frame", "source_video"} else paths[0] if paths else []
-                if family == "h3" and (item["config"].get("seed_hunter", {}).get("stage") == "final" or item["manifest"].get("seed_hunter_input")):
+                if base_config is None and family == "h3" and (item["config"].get("seed_hunter", {}).get("stage") == "final" or item["manifest"].get("seed_hunter_input")):
                     from src.h3_seed_hunter import clone_snapshot
                     uploads["seed_hunter_input"] = clone_snapshot(item["directory"], directory, item["manifest"].get("seed_hunter_input"))
                     uploads["seed_hunter_source"] = item["manifest"].get("seed_hunter_source", {})
@@ -253,15 +274,18 @@ def _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, recei
             raise
 
 
-def rerun_jobs(manager, owner, family, chosen, patch, request_id):
+def rerun_jobs(manager, owner, family, chosen, patch, request_id, *, base_config=None):
     chosen = targets(chosen)
     if not isinstance(patch, dict):
         raise ValueError("Parameter changes must be a JSON object")
+    if base_config is not None and (not isinstance(base_config, dict) or patch):
+        raise ValueError("Supply base settings or individual parameter changes, not both")
     if not isinstance(request_id, str) or not UUID.fullmatch(request_id):
         raise ValueError("Rerun requests need a UUID request_id")
     key = uuid.UUID(request_id).hex
     digest = hashlib.sha256(f"{family}\0{owner}\0{key}".encode()).hexdigest()
-    fingerprint = hashlib.sha256(json.dumps({"jobs": sorted(chosen, key=lambda item: item["id"]), "patch": patch},
+    parameters = {"base_config": base_config} if base_config is not None else {"patch": patch}
+    fingerprint = hashlib.sha256(json.dumps({"jobs": sorted(chosen, key=lambda item: item["id"]), **parameters},
                                            sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
     # First submission verifies every source. Retrying a persisted request can
     # succeed even after the source was removed because its inputs were cloned.
@@ -281,7 +305,7 @@ def rerun_jobs(manager, owner, family, chosen, patch, request_id):
             receipt = {"owner": owner, "request_id": key, "fingerprint": fingerprint, "created_at": time.time()}
             _write(receipt_path, receipt)
         if not receipt.get("prepared"):
-            _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, receipt)
+            _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, receipt, base_config=base_config)
         jobs, errors = [], []
         for entry in receipt["entries"]:
             directory = manager.directory(entry["id"])

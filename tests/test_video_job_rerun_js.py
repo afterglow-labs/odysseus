@@ -30,8 +30,8 @@ def test_single_saved_job_empty_patch_and_labels_without_changing_draft():
     run_js(r'''
 const draft={prompt:'Unrelated current draft',steps:99,files:[new File(['image'],'new.png')]};
 const control=make();
-assert.equal(control.state(source).label,'Retry');assert.equal(control.state({...source,status:'stopped'}).label,'Retry');
-assert.equal(control.state({...source,status:'completed'}).label,'Reprocess');
+assert.equal(control.state(source).label,'Retry with original settings');assert.equal(control.state({...source,status:'stopped'}).label,'Retry with original settings');
+assert.equal(control.state({...source,status:'completed'}).label,'Reprocess with original settings');
 for(const status of ['queued','running']){assert.equal(control.state({...source,status}).hidden,true);await control.run({...source,status});}
 assert.equal(calls.length,0);await control.run(source);
 assert.equal(calls.length,1);assert.equal(calls[0].path,'/queue/rerun');
@@ -43,6 +43,43 @@ const first=calls[0].body.request_id;await control.run(source);assert.notEqual(c
 ''')
 
 
+def test_base_settings_frozen_before_revision_fetch_and_reused_without_touching_originals():
+    run_js(r'''
+const draft={prompt:'Shared base prompt',steps:20,loras:[{id:'lora',strength:.5}],seed_hunter:{stage:'preview',preview_count:3}};
+let unblock;const gate=new Promise(resolve=>unblock=resolve);
+const control=make({getBaseConfig:()=>draft,request:async(path,options)=>{if(!options)await gate;return request(path,options)}});
+const run=control.runBase({...source,revision:undefined});
+draft.prompt='Updated during revision fetch';draft.loras[0].strength=2;unblock();await run;
+assert.equal(calls.length,2);assert.equal(calls[1].body.base_config.prompt,'Shared base prompt');
+assert.equal(calls[1].body.base_config.loras[0].strength,.5);assert.equal(calls[1].body.patch,undefined);
+assert.equal(source.prompt,'Saved prompt');assert.match(control.state(source).message,/base settings above/);
+await control.runBase(source);assert.equal(calls[2].body.base_config.prompt,draft.prompt);
+assert.equal(calls[2].body.base_config.loras[0].strength,2);
+await control.run(source);assert.deepEqual(calls[3].body.patch,{});assert.equal(calls[3].body.base_config,undefined);
+''')
+
+
+def test_base_pending_request_survives_reload_and_does_not_read_changed_form():
+    run_js(r'''
+let draft={prompt:'Frozen base',steps:8},first=true;
+const handler=async(path,options)=>{const result=await request(path,options);if(first){first=false;throw Error('Response lost')}return result};
+let control=make({getBaseConfig:()=>draft,request:handler});await control.runBase(source);
+const initial=calls[0].body;assert.equal(control.state(source).baseDisabled,true);
+draft={prompt:'Changed later',steps:30};await control.runBase(source);assert.equal(calls.length,1);
+rerunSessions.clear();control=make({request:handler});
+await control.run(source);assert.deepEqual(calls[1].body,initial);assert.equal(control.state(source).pending,false);
+assert.equal(stored.size,0);
+''')
+
+
+def test_base_action_blocked_while_editing_individual_job_but_original_rerun_still_works():
+    run_js(r'''
+const control=make({getBaseConfig:()=>{throw Error('Must not read individual edit form')},isBaseBlocked:()=>true});
+assert.equal(control.state(source).baseDisabled,true);await control.runBase(source);assert.equal(calls.length,0);
+await control.run(source);assert.deepEqual(calls[0].body.patch,{});
+''')
+
+
 def test_pending_identity_survives_lost_response_reopen_and_page_refresh():
     run_js(r'''
 let first=true;const handler=async(path,options)=>{const result=await request(path,options);if(first){first=false;throw Error('Response lost')}return result};
@@ -51,7 +88,7 @@ assert.equal(control.state(source).label,'Retry request');assert.equal(stored.si
 control=make({request:handler});assert.equal(control.state(source).label,'Retry request');
 rerunSessions.clear();control=make({request:handler}); // Simulate reloading the JS while sessionStorage remains.
 await control.run({...source,revision:8});assert.deepEqual(calls[1].body,initial);
-assert.equal(control.state(source).label,'Retry');assert.equal(stored.size,0);assert.equal(refreshes,1);
+assert.equal(control.state(source).label,'Retry with original settings');assert.equal(stored.size,0);assert.equal(refreshes,1);
 ''')
 
 

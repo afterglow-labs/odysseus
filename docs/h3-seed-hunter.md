@@ -8,6 +8,24 @@ server. It is an implemented recipe, not an arbitrary Comfy graph executor.
 
 The classic editor remains available. **Cookbook → Launch → Build Pipeline** opens the separate [pipeline workspace](workflow-pipeline.md) using the same native controls and execution path. Node editing remains experimental.
 
+Finished job cards offer three separate actions in the desktop and iOS clients:
+
+- **Reprocess with base settings** starts a fresh job using the shared creation
+  form at the top and the selected job's saved files. Set the base prompt,
+  models, LoRAs, dimensions and sampling options once, then use this button on
+  each job. Each click freezes that version of the base settings. File order,
+  selected video sections and per-file RefMod strengths remain with the source.
+- **Reprocess with original settings** (or **Retry with original settings**)
+  repeats the job's saved settings, including its saved refinement latent.
+- **Edit & rerun** opens that job's individual settings; changes apply only to
+  the new copy.
+
+Base reprocessing preserves originals and queued jobs, and keeps the history
+page in place. On a refinement, it starts the base workflow again from the
+saved source files, rather than applying a different model or prompt to the old
+cached latent. An unconfirmed submission offers **Retry request**, which sends
+the same frozen request even if the base form has since changed.
+
 ## Preview, choose, refine
 
 1. Choose a Ref2VA checkpoint, encoder, VAEs and adapters. The source workflow's
