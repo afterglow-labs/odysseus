@@ -26,6 +26,42 @@ saved source files, rather than applying a different model or prompt to the old
 cached latent. An unconfirmed submission offers **Retry request**, which sends
 the same frozen request even if the base form has since changed.
 
+## Bulk and automatic refinements
+
+In Seed Hunter and Seed Scout, **Automatic refinements…** opens the existing
+refinement panel for new jobs and batches. Name a project, choose candidates
+1, 2, 3, a combination, or **All candidates**, then save the shared final size,
+steps, denoise, sampler, scheduler, latent upscaler, LoRAs and output FPS. New
+jobs snapshot those settings; changing the draft later does not alter them.
+
+For saved previews, select job cards or **Select all preview jobs**, then
+**Refine selected jobs…**. The iOS equivalent is **Refine candidates in bulk…**.
+Selection covers all history pages. Configure the same panel once and submit.
+The default **Skip candidates with an existing refinement** includes those
+results in the project folders; **Reprocess all selected candidates** adds new
+results. Failed or stopped refinements do not count as completed refinements.
+
+Each child uses its own saved candidate seed, latent, prompt, files and selected
+sections. **Keep each job's final duration** retains the individual target
+length. Scout always retains its saved duration and finishes the remaining
+original sampling schedule before the shared upscale and refinement. New
+automatic Scout jobs save all candidate partials without waiting for a manual
+choice. All children join the existing serial render queue.
+
+The server stores results under
+`outputs/video-projects/Project--account/YYYY-MM-DD/Candidate N/`.
+The date is the original preview job's submission date; the account suffix
+keeps owners separate. Filenames use
+`input-stem--candidate-N--seed-ACTUAL-SEED--JOB-ID.mp4`.
+Existing and new results are linked into the same project organization without
+overwriting any render. Files share storage through hardlinks on one filesystem.
+Deleting a job removes its organized outputs as well.
+
+Interrupted bulk requests retain one submission ID, settings and candidate
+receipt so retrying queues only unconfirmed items. Automatic submissions and
+output organization recover after server restarts. Workflow exports include
+automatic settings and their separate adapter/upscaler references or weights.
+
 ## Preview, choose, refine
 
 1. Choose a Ref2VA checkpoint, encoder, VAEs and adapters. The source workflow's

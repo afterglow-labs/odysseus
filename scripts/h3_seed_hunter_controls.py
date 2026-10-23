@@ -45,7 +45,7 @@ def validate_scout_output(config):
 
 
 def validate_options(raw):
-    if not isinstance(raw, dict) or raw.keys() - (DEFAULTS.keys() | SCOUT_UPSCALE_DEFAULTS.keys()):
+    if not isinstance(raw, dict) or raw.keys() - (DEFAULTS.keys() | SCOUT_UPSCALE_DEFAULTS.keys() | {"auto_refine"}):
         raise ValueError("Unknown Seed Hunter setting")
     # Keep legacy defaults unchanged for clients that validate their known
     # options strictly. Only opted-in submissions receive the new settings.
@@ -107,6 +107,12 @@ def validate_options(raw):
     result["refmod_strengths"] = list(strengths)
     if result["stage"] in {"single", "continuation", "final", "scout"}:
         result["preview_count"] = 1
+    if "auto_refine" in result:
+        try:
+            from scripts.h3_auto_refine_controls import validate
+        except ModuleNotFoundError:
+            from h3_auto_refine_controls import validate
+        result["auto_refine"] = validate(result["auto_refine"], result)
     return result
 
 

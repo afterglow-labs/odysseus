@@ -51,6 +51,28 @@ def transfer(tmp_path):
     return service, directory
 
 
+def test_automatic_refinement_components_export_with_local_ids_removed(tmp_path):
+    from scripts.h3_seed_hunter_controls import validate_options
+    upscaler = weights(tmp_path / "minimax_h3_latent_upscaler.safetensors")
+    adapter = weights(tmp_path / "minimax_h3_custom_lora.safetensors")
+    inventory = {"components": [{"id": "local-upscaler", "path": str(upscaler), "role": "latent_upscaler"},
+                               {"id": "local-adapter", "path": str(adapter), "role": "lora"}]}
+    options = validate_options({"auto_refine": {"project": "Our batch", "candidates": [1, 3], "existing": "skip", "refinement": {
+        "latent_upscaler": "local-upscaler", "loras": [{"id": "local-adapter", "strength": 0.7}],
+        "steps": 7, "gpu": "private-GPU", "seed_hunter": {"output_fps": 48}}}})
+    raw = {"recipe": "seed_hunter", "mode": "ref2va", "seed_hunter": options}
+    config, selected = workflow.resolve_draft(raw, inventory, "h3")
+    doc, assets = workflow.make_recipe(config, selected, {}, "h3", workflow.export_options({"include_weights": True}))
+    workflow.validate_document(doc, "h3")
+    patch = doc["config"]["seed_hunter"]["auto_refine"]["refinement"]
+    assert patch["latent_upscaler"] == "auto_latent_upscaler"
+    assert patch["loras"] == [{"id": "auto_lora_0", "strength": 0.7}]
+    assert patch["steps"] == 7 and "gpu" not in patch
+    assert {Path(a["path"]) for a in assets} == {upscaler, adapter}
+    assert "private-GPU" not in json.dumps(doc) and "local-adapter" not in json.dumps(doc)
+    assert raw["seed_hunter"]["auto_refine"]["refinement"]["latent_upscaler"] == "local-upscaler"
+
+
 def test_weight_roundtrip_is_portable_content_addressed_and_never_overwrites(tmp_path):
     source = manager(tmp_path / "source")
     original = weights(source.project / "cache/huggingface/hub/models--author--MiniMax-H3/snapshots/rev1/MiniMax_H3_FL2VA.safetensors")

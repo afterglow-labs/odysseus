@@ -48,6 +48,18 @@ await assert.rejects(()=>jsonResponse(response),error=>error.message.includes('C
 ''')
 
 
+def test_automatic_refinement_import_remaps_its_separate_models():
+    run_js(r'''
+const doc={format:'odysseus-video-workflow',version:1,family:'h3',config:{recipe:'seed_hunter',mode:'ref2va',seed_hunter:{stage:'preview',auto_refine:{project:'Imported batch',candidates:[1,3],existing:'skip',refinement:{steps:7,latent_upscaler:'auto_latent_upscaler',loras:[{id:'auto_lora_0',strength:.7}]}}}},components:{auto_latent_upscaler:{name:'up.safetensors'},auto_lora_0:{name:'h3_lora.safetensors'}}};
+const inventory={components:[{id:'new-up',name:'up.safetensors',role:'latent_upscaler'},{id:'new-lora',name:'h3_lora.safetensors',role:'lora'}]};
+const result=resolveVideoWorkflow(doc,{family:'h3',inventory});
+const patch=result.config.seed_hunter.auto_refine.refinement;
+assert.equal(patch.latent_upscaler,'new-up');assert.deepEqual(patch.loras,[{id:'new-lora',strength:.7}]);
+assert.equal(patch.steps,7);assert.equal(result.config.auto_latent_upscaler,undefined);assert.deepEqual(result.config.loras,[]);
+assert.deepEqual(result.warnings,[]);
+''')
+
+
 def test_portable_component_resolution_preserves_exact_variant_and_rejects_ambiguous_matches():
     run_js(r'''
 const component=(id,name,repo,role='model',variant='fl2va')=>({id,name,role,variant,path:`/new/cache/models--${repo.replace('/','--')}/snapshots/rev/${name}`});

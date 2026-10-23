@@ -433,6 +433,8 @@ def validate_config(raw, components, gpus, uploads):
     config["lora_scale"] = config["loras"][0]["strength"] if config["loras"] else 1
     if hunt:
         validate_scout_output(config)
+        from scripts.h3_auto_refine_controls import enabled as auto_refine_enabled, validate_dimensions
+        validate_dimensions(config)
     if hunt and (config.get("latent_upscaler") or options["stage"] == "final" or scout_upscale_enabled(config)):
         upscaler = by_id.get(config.get("latent_upscaler")) if isinstance(config.get("latent_upscaler"), str) else None
         if not upscaler or upscaler["role"] != "latent_upscaler" or not Path(upscaler["path"]).is_file():
@@ -498,6 +500,10 @@ def validate_config(raw, components, gpus, uploads):
             raise ValueError("First/last frame mode needs a first or last image and does not accept reference files")
     elif any(value for key, value in counts.items() if not (hunt and key in {"source_video", "reference_mods"})):
         raise ValueError("Text mode does not accept attachments; choose first/last frame or reference mode")
+    if hunt and auto_refine_enabled(options):
+        from src.h3_refinement_settings import resolve
+        resolve({**DEFAULTS, **raw, 'seed_hunter': options}, options['auto_refine']['refinement'], {'components': components, 'gpus': gpus}, uploads,
+                scout=options['stage'] == 'scout')
     return config
 
 
@@ -819,6 +825,10 @@ class H3JobManager:
         if result.get("error"):
             result["error"] = _redact(result["error"])
         if isinstance(config, dict) and config.get("recipe") == "seed_hunter":
+            from src.video_auto_refine import summary as auto_summary
+            automatic = auto_summary(directory, manifest, state)
+            if automatic:
+                result["auto_refine"] = automatic
             from src.h3_seed_hunter import summary
             from src.video_job_inputs import input_videos
             result["input_videos"] = input_videos(job_id, manifest)
@@ -880,6 +890,8 @@ class H3JobManager:
                 manifest["batch_video_length"] = submission["batch_video_length"]
             _write(directory / "manifest.json", manifest)
             _write(directory / "state.json", state)
+            from src.video_auto_refine import register
+            register(self, directory, config, uploads)
             env = os.environ.copy()
             env[MARKER] = directory.name
             env["PYTHONUNBUFFERED"] = "1"
@@ -985,6 +997,9 @@ class H3JobManager:
                 if state.get("id") != job_id or state.get("filename") != expected:
                     raise RuntimeError("The saved video job has inconsistent output metadata")
                 self._delete_gallery(job_id, owner, expected)
+                from src.video_auto_refine import delete_output
+                delete_output(manifest, state)
+                (self.root / ".automatic" / (job_id + ".json")).unlink(missing_ok=True)
                 from src.video_job_inputs import delete_input_video_previews
                 delete_input_video_previews(self, job_id)
                 try:
@@ -1088,6 +1103,16 @@ def _render(manifest_path, execution_lock):
                 state.update(status="completed", phase="completed", error=None)
             state["finished_at"] = state.get("finished_at") or time.time()
             _write(directory / "state.json", state)
+        # Schedule continuations and publish project outputs after releasing
+        # the job lock. Each child uses the existing exclusive GPU queue.
+        try:
+            from src.video_auto_refine import process as process_automatic
+            manager = H3JobManager(root=directory.parent, project=manifest["project_path"],
+                                   runtime=manifest["runtime_path"], worker=manifest["worker_path"],
+                                   gallery_directory=manifest["gallery_directory"])
+            process_automatic(manager, directory.name)
+        except Exception:
+            log.exception("Video completed; automatic refinement will retry on recovery")
     except BaseException as exc:
         log.exception("H3 supervisor failed")
         # Even if bookkeeping fails after spawning, do not hand the execution

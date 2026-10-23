@@ -20,6 +20,12 @@
 .h3-video-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
 .h3-video-numbers { grid-template-columns:repeat(3,minmax(0,1fr)); margin-top:14px; }
 .h3-video-field { display:flex; flex-direction:column; gap:6px; min-width:0; font-size:13px; font-weight:500; }
+.h3-auto-refine-settings { min-width:0; margin:0 0 18px; padding:16px; border:1px solid var(--border,#544c60); border-radius:10px; }
+.h3-auto-refine-settings:not([hidden]) { display:grid; gap:12px; }
+.h3-auto-refine-settings legend { padding:0 6px; font-weight:600; }
+.h3-auto-refine-settings p { font-size:13px; line-height:1.5; margin:0; }
+.h3-auto-refine-settings input[type=checkbox] { margin-right:6px; }
+.h3-auto-refine-bar { margin:16px 0; padding:12px; border:1px solid var(--border,#544c60); border-radius:10px; }
 .h3-video-field .cookbook-field-input { width:100%; min-width:0; height:38px; box-sizing:border-box; font-size:13px; }
 .h3-video-field textarea.cookbook-field-input { height:auto; min-height:100px; resize:vertical; padding:10px; line-height:1.5; }
 .h3-video-prompt-header,.h3-video-prompt-actions,.h3-video-enhancer-info { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }

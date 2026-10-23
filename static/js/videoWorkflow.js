@@ -6,6 +6,7 @@ import { validateReferenceVideoRanges } from './referenceVideoRange.js';
 const FORMAT = 'odysseus-video-workflow';
 const H3_SETTINGS = ['mode', 'width', 'height', 'frames', 'steps', 'seed', 'sampler', 'scheduler', 'shift_video', 'shift_audio', 'lora_scale', 'reference_size', 'prompt'];
 const SEED_HUNTER_OPTIONS = new Set(['stage','preview_count','final_frames','denoise','shift_enabled','first_frame_guide','last_frame_guide','force_audio','continuation_overlap','output_fps','attention_backend','sparse_method','sparse_keep_percent','sparse_start','sparse_end','sparse_min_tokens','sparse_extra_tokens','sparse_sink_conditioning','upscaler_chunking','upscaler_force_unload','ff_chunk_size','ff_chunk_threshold','low_vram_chunks','source_start_seconds','source_end_seconds','audio_start_seconds','audio_end_seconds','refmod_strengths','scout_count','scout_step','scout_mode','scout_timeout','scout_preview_mode']);
+for (const key of ['scout_upscale','scout_final_width','scout_final_height','scout_refine_steps','auto_refine']) SEED_HUNTER_OPTIONS.add(key);
 const H3_COMPONENTS = ['model', 'encoder', 'video_vae', 'audio_vae', 'lora'];
 const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -171,12 +172,13 @@ export function resolveVideoWorkflow(workflow, { family, inventory, resolvedComp
   }
   if (hunter) {
     const options = workflow.config.seed_hunter;
-    if (!object(options) || Object.keys(options).some(key => !SEED_HUNTER_OPTIONS.has(key))) throw new Error('Invalid Seed Hunter settings.');
+    if (!object(options) || Object.keys(options).some(key => !SEED_HUNTER_OPTIONS.has(key) && key !== 'auto_refine')) throw new Error('Invalid Seed Hunter settings.');
     if (options.stage === 'final') throw new Error('Import the source preview workflow; refinement needs its saved preview latent.');
     if (!['preview','single','continuation','dialogue','scout'].includes(options.stage)) throw new Error('Unknown Seed Hunter stage.');
     for (const [key,value] of Object.entries(options)) {
-      if (key === 'refmod_strengths') { if (!Array.isArray(value) || value.length > 8 || value.some(v=>typeof v !== 'number' || !Number.isFinite(v) || v<0 || v>1)) throw new Error('Invalid reference mod strengths.'); }
-      else if (value === null && ['source_end_seconds','audio_end_seconds','final_frames'].includes(key)) continue;
+      if (key === 'auto_refine') { if (!object(value) || !object(value.refinement)) throw new Error('Invalid automatic refinement settings.'); }
+      else if (key === 'refmod_strengths') { if (!Array.isArray(value) || value.length > 8 || value.some(v=>typeof v !== 'number' || !Number.isFinite(v) || v<0 || v>1)) throw new Error('Invalid reference mod strengths.'); }
+      else if (value === null && ['source_end_seconds','audio_end_seconds','final_frames','scout_final_width','scout_final_height'].includes(key)) continue;
       else if (!['string','number','boolean'].includes(typeof value) || typeof value==='number' && !Number.isFinite(value)) throw new Error(`Invalid Seed Hunter setting: ${key}.`);
     }
     config.recipe = 'seed_hunter'; config.seed_hunter = JSON.parse(JSON.stringify(options));
@@ -194,11 +196,26 @@ export function resolveVideoWorkflow(workflow, { family, inventory, resolvedComp
   if (family === 'h3' && Object.keys(workflow.components).some(key => /^lora_/.test(key) && !loraRoles.includes(key))) throw new Error('The workflow LoRA references do not match its strengths.');
   const baseRoles = hunter ? [...H3_COMPONENTS, 'latent_upscaler'] : H3_COMPONENTS;
   const roles = family === 'h3' ? stacked ? [...baseRoles.filter(role => role !== 'lora'), ...loraRoles] : baseRoles : (definition.slots || []).map(item => item.key);
+  const automatic = hunter ? config.seed_hunter?.auto_refine?.refinement : null;
+  const autoRoles = [];
+  if (automatic) {
+    delete automatic.gpu; delete automatic.vae_gpu;
+    if (automatic.latent_upscaler) autoRoles.push('auto_latent_upscaler');
+    if (automatic.loras !== undefined) {
+      if (!Array.isArray(automatic.loras) || automatic.loras.length > 8) throw new Error('Invalid automatic refinement adapters.');
+      for (const [i,row] of automatic.loras.entries()) {
+        if (!object(row) || row.id !== `auto_lora_${i}` || typeof row.strength !== 'number' || !Number.isFinite(row.strength)) throw new Error('Invalid automatic refinement adapter.');
+        autoRoles.push(row.id);
+      }
+    } else if (automatic.lora) autoRoles.push('auto_lora');
+    roles.push(...autoRoles);
+  }
   const selections = family === 'h3' ? config : (config.components = {});
   for (const role of roles) {
     selections[role] = '';
     const ref = workflow.components[role];
-    const componentRole = loraRoles.includes(role) ? 'lora' : role;
+    const localRole = role.replace(/^auto_/, '');
+    const componentRole = /^lora(?:_[0-7])?$/.test(localRole) ? 'lora' : localRole;
     if (ref === undefined || ref === null) {
       if (loraRoles.includes(role)) throw new Error(`Missing ${role} model reference.`);
       continue;
@@ -224,6 +241,12 @@ export function resolveVideoWorkflow(workflow, { family, inventory, resolvedComp
     }
   }
   if (family === 'h3') {
+    if (automatic) {
+      if (automatic.latent_upscaler) automatic.latent_upscaler = selections.auto_latent_upscaler;
+      if (automatic.lora) automatic.lora = selections.auto_lora;
+      for (const row of automatic.loras || []) row.id = selections[row.id];
+      for (const role of autoRoles) delete config[role];
+    }
     config.loras = stacked ? loraRoles.map((role, index) => ({ id: selections[role], strength: strengths[index] }))
       : config.lora ? [{ id: config.lora, strength: config.lora_scale ?? 1 }] : [];
     if (!stacked && config.loras.length) {

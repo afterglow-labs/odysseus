@@ -18,8 +18,10 @@ import logging
 
 try:
     from scripts.h3_seed_hunter_controls import scout_upscale_enabled, scout_output_size, validate_scout_output
+    from scripts.h3_auto_refine_controls import enabled as auto_refine_enabled
 except ModuleNotFoundError:
     from h3_seed_hunter_controls import scout_upscale_enabled, scout_output_size, validate_scout_output
+    from h3_auto_refine_controls import enabled as auto_refine_enabled
 
 
 def _worker():
@@ -371,8 +373,16 @@ def _publish_candidates(path, candidates):
 
 def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
     worker = _worker()
+    if config["seed_hunter"]["stage"] == "scout" and auto_refine_enabled(config["seed_hunter"]):
+        # Save every partial without choosing or completing one in this worker.
+        # The durable server queue resumes the requested candidates separately.
+        config = {**config, "seed_hunter": {**config["seed_hunter"], "scout_mode": "scout"}}
     options = config["seed_hunter"]
     _check_optional(manifest, config, media)
+    shared_refinement = manifest.get('scout_refinement')
+    if shared_refinement:
+        shared_refinement = {**shared_refinement, 'gpu': config['gpu'], 'vae_gpu': config.get('vae_gpu', '')}
+        _check_optional(manifest, shared_refinement, media)
     folder = Path(manifest["output_path"]).parent
     folder.mkdir(parents=True, exist_ok=True)
     progress = worker.Progress(manifest["status_path"], config["steps"])
@@ -464,26 +474,37 @@ def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
                 else:
                     output, denoised = sample_candidate(runtime, candidate_config, model, positive, latent, progress)
                 artifact_config = config
-                if scout_upscale_enabled(config):
+                if scout_upscale_enabled(config) or shared_refinement:
                     width, height = scout_output_size(config)
-                    refinement = {**candidate_config, "width": width, "height": height,
+                    refinement = {**(shared_refinement or {**candidate_config, "width": width, "height": height,
                                   "steps": options["scout_refine_steps"],
-                                  "seed_hunter": {**options, "stage": "final"}}
+                                  "seed_hunter": {**options, "stage": "final"}}), "seed": selected_seed}
+                    width, height = refinement['width'], refinement['height']
                     logging.info("Seed Scout final latent upscale: %dx%d -> %dx%d using %s; %d refinement steps, denoise %s",
                                  config["width"], config["height"], width, height,
-                                 Path(config["latent_upscaler"]).name, refinement["steps"], options["denoise"])
+                                 Path(refinement["latent_upscaler"]).name, refinement["steps"], refinement['seed_hunter']["denoise"])
                     progress.details.update(seed=candidate_config["seed"], width=width, height=height,
                                             scouting_width=config["width"], scouting_height=config["height"],
                                             full_schedule_steps=config["steps"], refinement_steps=refinement["steps"],
                                             latent_upscaled=True)
                     runtime.release_conditioning()
+                    if not model_settings_match(candidate_config, refinement):
+                        runtime.cleanup_model_state()
+                        runtime.model_management.unload_all_models()
+                        del model, clip, vae, audio_vae
+                        import gc
+                        gc.collect()
+                        runtime.model_management.soft_empty_cache()
+                        progress('loading_refinement_model', 0)
+                        model, clip, vae, audio_vae = runtime.load(refinement, progress)
+                        model = patch_model(runtime, refinement, model, manifest['runtime_path'])
                     denoised = upscale_latent(manifest, refinement, denoised, progress)
-                    progress.total_steps = refinement["steps"] if options["denoise"] else 0
+                    progress.total_steps = refinement["steps"] if refinement['seed_hunter']["denoise"] else 0
                     def refine_progress(_phase, step=None, **extra):
                         progress("refining_upscaled_video", step, **extra)
                     refine_progress("sampling", 0)
                     output, denoised = sample_candidate(runtime, refinement, model, base_positive, denoised, refine_progress)
-                    artifact_config = {**config, "width": width, "height": height}
+                    artifact_config = refinement
                     row.update(width=width, height=height, latent_upscaled=True)
                 latent_name = f"candidate-{index}.safetensors"
                 save_snapshot(folder / latent_name, latent=denoised, positive=base_positive,
@@ -500,7 +521,7 @@ def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
                     frames = torch.zeros((config["frames"], 64, 64, 3), dtype=torch.float32)
                 else:
                     frames, audio = runtime.decode(decode_samples, vae, audio_vae, progress)
-                if scout_upscale_enabled(config) and tuple(frames.shape[1:3]) != (height, width):
+                if (scout_upscale_enabled(config) or shared_refinement) and tuple(frames.shape[1:3]) != (height, width):
                     raise RuntimeError("Seed Scout decoded dimensions do not match the requested latent upscale")
                 frames = frames[:config["frames"]]
                 if options["stage"] == "continuation":
@@ -512,9 +533,9 @@ def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
                 if options["stage"] == "continuation":
                     join_continuation(prepared, folder / video_name)
                 output_frames = len(frames) + prepared.get("continuation_keep", 0)
-                if options["output_fps"] == 48:
+                output_fps = artifact_config['seed_hunter']["output_fps"]
+                if output_fps == 48:
                     interpolate_file(manifest, folder / video_name, progress)
-                output_fps = options["output_fps"]
                 output_frames *= output_fps // 24
                 row.update(video=video_name, status="completed", frames=output_frames, fps=output_fps,
                            duration_seconds=output_frames / output_fps)
@@ -541,6 +562,8 @@ def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
     completed_steps = options["scout_step"] if options["stage"] == "scout" and options["scout_mode"] == "scout" else config["steps"]
     if scout_upscale_enabled(config):
         completed_steps = options["scout_refine_steps"] if options["denoise"] else 0
+    if shared_refinement:
+        completed_steps = shared_refinement["steps"] if shared_refinement["seed_hunter"]["denoise"] else 0
     progress.total_steps = completed_steps
     progress("completed", completed_steps, frames=output_frames, fps=output_fps,
              duration_seconds=output_frames / output_fps, candidates=len(candidates))

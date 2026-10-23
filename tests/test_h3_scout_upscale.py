@@ -33,13 +33,16 @@ def test_final_size_cannot_shrink_or_exceed_working_bounds():
         validate_scout_output({'width': 2048, 'height': 2048, 'seed_hunter': options})
 
 
-@pytest.mark.parametrize('mode,enabled,expected', [('interactive', True, True), ('final', True, True),
-                                               ('scout', True, False), ('interactive', False, False)])
+@pytest.mark.parametrize('mode,enabled,expected,automatic', [('interactive', True, True, False), ('final', True, True, False),
+                                               ('scout', True, False, False), ('interactive', False, False, False),
+                                               ('interactive', True, False, True)])
 def test_selected_clean_latent_is_upscaled_then_refined_and_decoded_at_final_size(
-        manifest, monkeypatch, mode, enabled, expected):
+        manifest, monkeypatch, mode, enabled, expected, automatic):
     manifest['config'].update(width=256, height=256, steps=20,
         seed_hunter={'stage': 'scout', 'scout_step': 4, 'scout_mode': mode,
                      'scout_upscale': enabled, 'scout_refine_steps': 2, 'scout_timeout': 0})
+    if automatic:
+        manifest['config']['seed_hunter']['auto_refine'] = {'project': 'Test batch', 'candidates': [1, 3]}
     calls = []
     positive = [[torch.ones(1), {'identity': 'saved references'}]]
     clean = {'samples': torch.tensor(12.)}
@@ -58,6 +61,8 @@ def test_selected_clean_latent_is_upscaled_then_refined_and_decoded_at_final_siz
     def finish(_runtime, _manifest, config, *_args, base_positive=None):
         calls.append('finish chosen seed')
         assert config['steps'] == 20 and config['seed_hunter']['scout_step'] == 4
+        if automatic:
+            assert config['seed_hunter']['scout_mode'] == 'scout'
         return {'samples': torch.tensor(999.)}, clean, 43
     monkeypatch.setattr(scout, 'sample', finish)
     def upscale(_manifest, config, latent, _progress):
@@ -129,3 +134,49 @@ def test_api_persists_upscaler_and_final_controls_in_saved_job_and_portable_work
     config['seed_hunter']['scout_final_width'] = 256
     failed = backend.client().post('/api/video/h3/jobs', data={'config': json.dumps(config)})
     assert failed.status_code == 400 and 'at least' in failed.text
+
+
+def test_bulk_scout_finishes_its_own_partial_before_shared_refinement(manifest, monkeypatch):
+    from copy import deepcopy
+    manifest['config'].update(width=256, height=256, steps=20, seed=911,
+        seed_hunter={'stage':'scout', 'scout_step':4, 'scout_mode':'final', 'scout_count':1})
+    config, _ = worker.validate_job(manifest)
+    manifest['scout_refinement'] = {**deepcopy(config), 'width':512, 'height':512, 'steps':7,
+        'sampler':'er_sde', 'scheduler':'linear_quadratic',
+        'seed_hunter':{**config['seed_hunter'], 'stage':'final', 'denoise':.2}}
+    manifest['seed_hunter_input'] = {'latent':'private partial'}
+    conditioned = [[torch.ones(1), {'own refs':'source 911'}]]
+    partial = {'samples':torch.tensor(11.)}; finished = {'samples':torch.tensor(12.)}
+    calls=[]
+    class Runtime:
+        def __init__(self, *_): pass
+        def load(self, cfg, *_):
+            assert cfg['steps']==20 and cfg['seed']==911
+            return (object(),)*4
+        def cleanup_model_state(self): pass
+        def release_conditioning(self): pass
+        def decode(self, samples, *_):
+            assert samples['samples'].item()==14
+            calls.append('decode');return torch.zeros((1,1,1,3)).expand(73,512,512,3),{}
+    monkeypatch.setattr(hunter,'patch_model',lambda _r,_c,model,_p:model)
+    monkeypatch.setattr(hunter,'load_snapshot',lambda *_:({'sampling':conditioned,'refinement':conditioned},partial))
+    def resume(_r, _m, cfg, _model, positive, latent, *_args, **_kwargs):
+        assert cfg['steps']==20 and cfg['seed_hunter']['scout_step']==4 and cfg['seed']==911
+        assert latent is partial and positive is conditioned
+        calls.append('remaining 16 steps');return finished,finished,911
+    monkeypatch.setattr(scout,'resume',resume)
+    monkeypatch.setattr(scout,'sample',lambda *_a,**_kw:pytest.fail('Never restart the scouting schedule'))
+    def upscale(_m,cfg,latent,_p):
+        assert latent is finished and cfg['width']==512
+        calls.append('upscale');return {'samples':torch.tensor(13.)}
+    monkeypatch.setattr(hunter,'upscale_latent',upscale)
+    def refine(_r,cfg,_model,positive,latent,_p):
+        assert cfg['steps']==7 and cfg['seed']==911 and cfg['scheduler']=='linear_quadratic'
+        assert cfg['seed_hunter']['denoise']==.2 and positive is conditioned and latent['samples'].item()==13
+        calls.append('shared refinement');return {},{'samples':torch.tensor(14.)}
+    monkeypatch.setattr(hunter,'sample_candidate',refine)
+    worker.run_job(manifest,runtime_factory=Runtime,media_loader=lambda *_:pytest.fail('Saved references must be reused'),
+        muxer=lambda path,*_:Path(path).write_bytes(b'finished'))
+    assert calls==['remaining 16 steps','upscale','shared refinement','decode']
+    progress = json.loads(Path(manifest['status_path']).read_text())
+    assert progress['total_steps'] == 7 and progress['step'] == 7

@@ -1,3 +1,4 @@
+import { createAutoRefineSettings, autoRefineParent, allPreviewJobs } from './h3AutoRefine.js';
 import { bindWorkflowPromptHistory } from './workflowPromptHistory.js';
 import { createVideoJobPager, observePagedVideoJobEditor } from './videoJobPage.js';
 import { createVideoRefinements } from './videoRefinements.js';
@@ -107,6 +108,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
   if (!document.getElementById('h3-video-styles')) { const css = make('link'); css.id = 'h3-video-styles'; css.rel = 'stylesheet'; css.href = '/static/h3-video.css'; document.head.append(css); }
   let saved = {}; try { saved = JSON.parse(localStorage.getItem(storageKey) || '{}'); } catch {}
   if (retained) saved = { ...saved, config: retained.config };
+  const bulkSelected = new Map(); let bulkPending = saved.auto_request || null, bulkPartialResult = false;
   let inventory = null, jobs = [], closed = false, busy = false, loading = false, jobPager = null, revision = 0;
   let picker, library, queue, batchQueue, jobEditor, editingComponents = null, selection = null, finalRequest = null, finalBusy = false;
   let restoredRangeConfig = {}, optionSnapshot = {}, selecting = 0, finalComponents = [], enhancer = [], enhancing = false, enhancerController, previousPrompt = null;
@@ -245,9 +247,12 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
   upload('reference_images', 'Reference pictures (up to 9)', 'image/*', true, 9); upload('reference_videos', 'Reference videos (up to 3)', 'video/*', true, 3); upload('reference_audio', 'Reference audio (up to 3)', 'audio/*,.mka', true, 3);
   upload('reference_mods', 'Reference mod bundles (optional, up to 8)', '.safetensors', true, 8);
   const actions = make('div', 'h3-video-actions'), submit = button('Generate previews'); submit.type = 'submit'; submit.className = 'cookbook-btn'; actions.append(submit); form.append(actions);
+  const autoBar = make('section', 'h3-auto-refine-bar'), autoConfigure = button('Automatic refinements…'), autoOff = button('Turn off automatic refinements'), autoDescription = make('p', 'h3-video-muted');
+  autoBar.append(autoConfigure, autoOff, autoDescription); form.insertBefore(autoBar, actions);
+  autoConfigure.onclick = () => openAutomatic(); autoOff.onclick = () => { delete optionSnapshot.auto_refine; changed(); };
   const queueContainer = make('div'); scroll.append(queueContainer);
   const finalSection = make('section', 'h3-seed-hunter-final'); finalSection.hidden = true; const finalTitle = make('h3'), finalDescription = make('p', 'h3-video-muted'), finalForm = make('form'), finalGrid = make('div', 'h3-video-grid');
-  finalForm.append(finalGrid); finalSection.append(finalTitle, finalDescription, finalForm); scroll.append(finalSection);
+  const autoSettings = createAutoRefineSettings(() => { finalRequest = null; update(); save(); }); autoSettings.node.hidden = true; finalForm.append(autoSettings.node, finalGrid); finalSection.append(finalTitle, finalDescription, finalForm); scroll.append(finalSection);
   select(finalGrid, 'latent_upscaler', 'Latent upscaler', [], finalFields); number(finalGrid, 'width', 'Final width', 1088, 64, 4096, 32, finalFields); number(finalGrid, 'height', 'Final height', 1952, 64, 4096, 32, finalFields);
   select(finalGrid,'frames','Final output length',Array.from({length:18},(_,index)=>73+17*index).filter(frames=>frames<=362).map(frames=>[String(frames),`${(frames/24).toFixed(2)} seconds · ${frames} frames`]),finalFields);
   finalFields.frames.prepend(new Option('Choose final output length',''));finalFields.frames.required=true;
@@ -259,7 +264,11 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
   const finalActions = make('div', 'h3-video-actions'), finalSubmit = button('Render selected preview'), finalReroll = button('Randomize refinement seed'), cancelSelection = button('Clear selection'); finalSubmit.dataset.seedHunterHelpAction = 'refine_preview'; finalSubmit.type = 'submit'; finalSubmit.className = 'cookbook-btn'; finalActions.append(finalSubmit, finalReroll, cancelSelection); finalForm.append(finalActions);
   finalReroll.onclick = () => { finalFields.seed.value = randomSeed(); finalRequest = null; save(); }; cancelSelection.onclick = () => { selecting++; selection = null; finalRequest = null; finalSection.hidden = true; save(); renderJobs(); };
   finalForm.addEventListener('input', () => { finalRequest = null; describeRefinement();update();save(); }); finalForm.addEventListener('change', () => { finalRequest = null; describeRefinement();update();save(); });
-  const jobToolbar = make('div', 'h3-video-toolbar'), refreshJobs = button('Refresh jobs'); jobToolbar.append(make('h3', '', `${title} jobs`), refreshJobs); const jobStatus = make('p', 'h3-video-muted'), jobList = make('div', 'h3-video-jobs'); scroll.append(jobToolbar, jobStatus, jobList);
+  const selectAllPreviews = button('Select all preview jobs'), bulkRefine = button('Refine selected jobs…'), retryBulk = button('Retry bulk refinement submission'), finishBulk = button('Finish with queued refinements');
+  const jobToolbar = make('div', 'h3-video-toolbar'), refreshJobs = button('Refresh jobs'); jobToolbar.append(make('h3', '', `${title} jobs`), refreshJobs, selectAllPreviews, bulkRefine, retryBulk, finishBulk);
+  finishBulk.onclick = () => { if(finalBusy || !bulkPartialResult)return; bulkPending=null;bulkPartialResult=false;bulkSelected.clear();selection=null;finalSection.hidden=true;save();update(); };
+  selectAllPreviews.onclick = async () => { try { selectAllPreviews.disabled = true; const rows = await allPreviewJobs(request, scout); bulkSelected.clear(); rows.forEach(j => bulkSelected.set(j.id, j)); update(); } catch(e) { fail(e); } finally { selectAllPreviews.disabled = false; } };
+  bulkRefine.onclick = () => openAutomatic([...bulkSelected.values()]); retryBulk.onclick = () => submitAutomatic(); const jobStatus = make('p', 'h3-video-muted'), jobList = make('div', 'h3-video-jobs'); scroll.append(jobToolbar, jobStatus, jobList);
   jobPager = createVideoJobPager({ container: scroll, beforeNode: jobList, request: (path, options) => request(path.startsWith('/jobs?') ? path + (scout ? '&stage=scout' : '&stage=not_scout&group_refinements=true') : path, options), recipe: 'seed_hunter', isClosed: () => closed,
     onData: async data => {
       jobs = data.jobs.filter(job => scout ? isSeedScoutJob(job) : !isSeedScoutJob(job)); queue?.update(data.queue); renderJobs();
@@ -300,14 +309,14 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
   function currentUploads() { return Object.fromEntries(Object.entries(uploads).filter(([key]) => (key !== 'source_video' || stage.value === 'continuation') && (key !== 'first_frame' || options.first_frame_guide.checked) && (key !== 'last_frame' || options.last_frame_guide.checked)).map(([key, state]) => [key, [...state.files]])); }
   function finalConfig() { return { ...Object.fromEntries(Object.entries(finalFields).filter(([key])=>key!=='output_fps'&&(key!=='frames'||inventory?.seed_hunter?.features?.separate_final_length===true)).map(([key, n]) => [key, n.type === 'number'||key==='frames' ? Number(n.value) : n.value])), loras: finalLoras.getValue(), seed_hunter: { output_fps: Number(finalFields.output_fps.value) } }; }
   function describeRefinement() {
-    if(!selection)return;
+    if(!selection)return; if(selection.automatic){finalDescription.textContent='Shared refinement settings apply once to every selected candidate. Each job retains its own seed, saved latent, prompt, files and selected media sections.';return;}
     const preview=selection.frames,frames=inventory?.seed_hunter?.features?.separate_final_length?Number(finalFields.frames.value)||preview:preview;
     if(inventory?.seed_hunter?.features?.separate_final_length&&!finalFields.frames.value){finalDescription.textContent='Choose a final output length before rendering. '+(selection.final_length?.error||'The source video duration could not be determined.');return;}
     finalDescription.textContent=frames!==preview
       ? `Preview: ${(preview/24).toFixed(2)} seconds. Final output: ${(frames/24).toFixed(2)} seconds. The selected seed is rendered at the final length before upscaling and refinement, using the saved prompt and references.`
       : `Preview and final output: ${(preview/24).toFixed(2)} seconds. Reuses the selected preview’s latent and saved inputs.`;
   }
-  function save() { if (jobEditor?.active) return; try { localStorage.setItem(storageKey, JSON.stringify({ config: config(), sizing: { aspect: aspect.value, megapixels: megapixels.value }, dialogue_text: dialogueText.value, dialogue_tone: dialogueTone.value, dialogue_template: dialogueTemplate.value, enhancer: enhancer[Number(enhancerSelect.value)] ? {model:enhancer[Number(enhancerSelect.value)].model,endpoint_id:enhancer[Number(enhancerSelect.value)].endpoint_id} : null, selected: selection && { job_id: selection.job_id, index: selection.index }, final_config: finalConfig(), final_request: finalRequest })); } catch {} }
+  function save() { if (jobEditor?.active) return; try { localStorage.setItem(storageKey, JSON.stringify({ config: config(), sizing: { aspect: aspect.value, megapixels: megapixels.value }, dialogue_text: dialogueText.value, dialogue_tone: dialogueTone.value, dialogue_template: dialogueTemplate.value, enhancer: enhancer[Number(enhancerSelect.value)] ? {model:enhancer[Number(enhancerSelect.value)].model,endpoint_id:enhancer[Number(enhancerSelect.value)].endpoint_id} : null, auto_request: bulkPending, selected: selection && !selection.automatic && { job_id: selection.job_id, index: selection.index }, final_config: finalConfig(), final_request: finalRequest })); } catch {} }
   function changed() { revision++; error.hidden = true; update(); save(); }
   function restore(values, inputFiles = {}, retained = {}) {
     restoredRangeConfig = Object.prototype.hasOwnProperty.call(values, 'reference_video_ranges') ? {reference_video_ranges: clone(values.reference_video_ranges)} : {};
@@ -325,6 +334,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
     if(!seedHunterBatchChoices(stage.value).some(choice=>choice.field===batchQueue?.inputField))return 'Choose a supported batch input.';
     if(!['model','encoder','video_vae','audio_vae','gpu'].every(key=>fields[key].value))return 'Choose the models, VAEs and GPU first.';
     if(!prompt.value.trim())return 'Enter a prompt to use for every job.';
+    if(readOptions().auto_refine?.candidates?.length&&!readOptions().auto_refine?.project?.trim())return 'Name the automatic refinement project.';
     const issue=h3LoraIssue(loras.getValue(),effectiveComponents(),'ref2va');if(issue)return issue;
     const formIssue=videoFormIssue(form);if(formIssue)return formIssue;
     return '';
@@ -395,7 +405,22 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
     const batchBlock=busy||loading||enhancing||finalBusy||!!jobEditor?.active||!!jobEditor?.loading||!inventory?.runtime_ready;
     const batchReason=batchBlock?'Finish the current operation before adding a batch.':batchIssue();
     batchQueue?.setEnabled(!batchReason,batchReason,{snapshotEnabled:!batchBlock,snapshotReason:batchReason});
-    queue?.setBlocked(locked || loading || finalBusy || !!jobEditor?.active); finalSubmit.disabled = finalBusy || (finalFields.output_fps.value==='48'&&features.rife!==true) || !selection || !finalFields.latent_upscaler.value || features.latent_upscaler !== true || features.separate_final_length===true&&!finalFields.frames.value; finalLoras.setDisabled(finalBusy); for(const n of Object.values(finalFields))n.disabled=finalBusy;finalFields.frames.disabled||=features.separate_final_length!==true;finalFields.frames.parentElement.hidden=features.separate_final_length!==true;finalReroll.disabled=cancelSelection.disabled=finalBusy;
+    const automatic = optionSnapshot.auto_refine, autoOn = !!automatic?.candidates?.length;
+    autoBar.hidden = features.auto_refine !== true || !['preview','scout'].includes(stage.value) || scout && options.scout_mode.value==='final';
+    autoConfigure.disabled = finalBusy || locked || loading || !!jobEditor?.active;
+    autoOff.hidden = !autoOn; autoOff.disabled = autoConfigure.disabled;
+    autoDescription.textContent = autoOn ? `Automatic: ${automatic.candidates==='all'?'all candidates':'candidates '+automatic.candidates.join(', ')} · ${automatic.project} · ${automatic.existing==='rerender'?'reprocess all':'skip existing'}. Each result keeps its own seed and inputs.` : 'Optional: choose candidates and configure refinement once before queuing a batch.';
+    selectAllPreviews.hidden = bulkRefine.hidden = features.auto_refine !== true;
+    bulkRefine.textContent = `Refine selected jobs (${bulkSelected.size})…`; bulkRefine.disabled = !bulkSelected.size || finalBusy || !!bulkPending;
+    retryBulk.hidden = !bulkPending; retryBulk.disabled = finalBusy;
+    finishBulk.hidden = !bulkPending || !bulkPartialResult; finishBulk.disabled = finalBusy;
+    queue?.setBlocked(locked || loading || finalBusy || !!jobEditor?.active); finalSubmit.disabled = finalBusy || (finalFields.output_fps.value==='48'&&features.rife!==true) || !selection || !finalFields.latent_upscaler.value || features.latent_upscaler !== true || features.separate_final_length===true&&!finalFields.frames.value&&!(selection?.automatic&&autoSettings.inherit.checked); finalLoras.setDisabled(finalBusy); for(const n of Object.values(finalFields))n.disabled=finalBusy;finalFields.frames.disabled||=features.separate_final_length!==true;finalFields.frames.parentElement.hidden=features.separate_final_length!==true;finalReroll.disabled=cancelSelection.disabled=finalBusy;
+    const bulkMode=!!selection?.automatic, pendingBulk=bulkMode && !!bulkPending;
+    autoSettings.node.hidden=!bulkMode; autoSettings.setDisabled(finalBusy || pendingBulk);
+    if(pendingBulk){ for(const n of Object.values(finalFields))n.disabled=true; finalLoras.setDisabled(true); finalSubmit.disabled=finalBusy; }
+    finalFields.seed.parentElement.hidden=finalReroll.hidden=bulkMode; finalFields.seed.disabled ||= bulkMode;
+    if(bulkMode){finalFields.frames.disabled ||= autoSettings.inherit.checked; finalFields.frames.parentElement.hidden ||= scout;}
+    finalSubmit.textContent = pendingBulk ? 'Retry bulk refinement submission' : bulkMode ? selection.jobs?.length ? 'Queue bulk refinements' : 'Save automatic refinement settings' : 'Render selected preview';
     if (jobNodes.size) renderJobs();
   }
   function fill(n, items, selected, blank = false) { n.replaceChildren(); if (blank) n.add(new Option('Use model GPU', '')); for (const item of items) n.add(new Option(displayName(item), item.id)); if(selected!==undefined&&selected!==null){if(![...n.options].some(o=>o.value===String(selected)))n.add(new Option('Choose an available component',selected));n.value=selected;} }
@@ -438,6 +463,39 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
       if (!closed) { status.textContent = editedJobId ? 'Changes saved to the queued job. Its queue position is unchanged, and your previous draft has been restored.' : 'Job added to the shared video queue. Your draft remains available.'; await loadJobs({ reset: !editedJobId }); }
     } catch (e) { fail(e); } finally { busy = false; if (!closed) update(); }
   });
+  async function openAutomatic(selectedJobs = []) {
+    if (busy || finalBusy || !inventory) return;
+    if (bulkPending) { fail('Retry the pending bulk submission first to avoid duplicates.'); return; }
+    try {
+      const data = selectedJobs.length ? await request(`/jobs/${encodeURIComponent(selectedJobs[0].id)}/seed-hunter`) : {config:config()};
+      const source = data.config, settings = source.seed_hunter?.auto_refine || optionSnapshot.auto_refine || {};
+      const size = seedHunterResolution(2, source.width, source.height);
+      const values = { ...size, steps:2, seed:source.seed, frames:source.frames, denoise:.4, sampler:'er_sde', scheduler:'linear_quadratic', latent_upscaler:source.latent_upscaler || finalFields.latent_upscaler.value, ...settings.refinement };
+      selection = {automatic:true, jobs:selectedJobs.map(j=>j.id), width:source.width, height:source.height}; finalRequest=null;
+      const count = Math.max(scout ? source.seed_hunter?.scout_count || 3 : source.seed_hunter?.preview_count || 3, ...selectedJobs.map(j=>j.scout?.seeds?.length || j.seed_hunter?.candidates?.length || 1));
+      autoSettings.setValue(settings, count, scout);
+      for(const [key,n] of Object.entries(finalFields)) if(values[key] !== undefined)n.value=values[key];
+      finalFields.output_fps.value = String(settings.refinement?.seed_hunter?.output_fps ?? source.seed_hunter?.output_fps ?? 24);
+      finalComponents=h3LoraComponents(inventory.components,data.lora_components);finalLoras.setInventory(finalComponents);finalLoras.setValue(settings.refinement?.loras || h3LoraStack(source));
+      finalTitle.textContent=selectedJobs.length ? `Refine candidates from ${selectedJobs.length} jobs` : 'Automatic refinement for new jobs';
+      finalSection.hidden=false; describeRefinement(); update(); pipeline?.select('refine'); finalSection.scrollIntoView({behavior:'instant',block:'start'});
+    } catch(e){fail(e);}
+  }
+  async function submitAutomatic() {
+    if(!bulkPending || finalBusy)return;
+    finalBusy=true; save(); update();
+    try {
+      const result=await request('/auto-refine',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(bulkPending)});
+      if(!result.jobs || !Number.isInteger(result.created))throw new Error('The server did not confirm the bulk submission.');
+      const errors=Object.entries(result.errors||{});
+      bulkPartialResult=errors.length>0;
+      status.textContent=`${result.created} refinements queued · ${result.skipped} candidates already have refinements. Output folder: ${result.output_folder}`;
+      if(errors.length)fail(errors.map(([id,message])=>`${id}: ${message}`).join(' · '));
+      else {bulkPending=null;bulkSelected.clear();selection=null;finalSection.hidden=true;}
+      save(); await loadJobs();
+    } catch(e){fail(e.message+' Retry checks the same request and avoids duplicate jobs.');}
+    finally{finalBusy=false;update();}
+  }
   async function selectCandidate(job, candidate, remembered = false) {
     if (busy || finalBusy || !candidate.can_refine) return;
     const token = ++selecting;
@@ -455,10 +513,19 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
     } catch (e) { fail(e); }
   }
   finalForm.onsubmit = async event => {
-    event.preventDefault(); if (finalSubmit.disabled || !selection || !finalForm.reportValidity()) return;
+    event.preventDefault(); if (finalSubmit.disabled || !selection) return;
+    if(selection.automatic && bulkPending){await submitAutomatic();return;}
+    if(!finalForm.reportValidity())return;
     const issue = h3LoraIssue(finalLoras.getValue(), finalComponents, 'ref2va'); if(issue){fail(issue);return;}
     const values=finalConfig();
     if(values.width<selection.width||values.height<selection.height||values.width*values.height>4194304){fail('Final dimensions must be at least the selected preview size, up to 4,194,304 pixels.');return;}
+    if(selection.automatic){
+      try {
+        const settings=autoSettings.getValue(values);
+        if(selection.jobs.length){bulkPending={jobs:selection.jobs,settings,request_id:crypto.randomUUID()};save();await submitAutomatic();}
+        else {optionSnapshot.auto_refine=settings;selection=null;finalSection.hidden=true;changed();status.textContent='Automatic refinement settings saved for new jobs and batches.';}
+      } catch(e){fail(e);} return;
+    }
     const current = { candidate: selection.index, config: values };
     if (!finalRequest || finalRequest.source !== selection.job_id || JSON.stringify(finalRequest.payload) !== JSON.stringify(current)) finalRequest = { source: selection.job_id, payload: clone(current), request_id: crypto.randomUUID() };
     save(); finalBusy = true; update(); error.hidden = true;
@@ -479,11 +546,15 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
         const card = make('article', 'h3-video-job'), heading = make('h4'), line = make('p', 'h3-video-muted'), tools = make('div', 'h3-video-job-actions'), stop = button('Stop'), retry = button('Retry'), baseRerun = button(BASE_RERUN_LABEL), edit = button('Edit queued job'), editRerun = button('Edit & rerun'), remove = button('Delete job');
         const jobError = make('p', 'h3-video-error'), candidates = make('div', 'h3-seed-hunter-candidates'), output = make('div', 'h3-video-output'), details = make('details'), log = make('pre', 'h3-video-log'), promptDetails = make('details'), usedPrompt = make('pre', 'h3-video-prompt-used');
         card.dataset.jobId = job.id;
+        const bulkCheck = make('input'); bulkCheck.type='checkbox'; bulkCheck.setAttribute('aria-label','Select job for bulk refinement');
+        const bulkLabel=make('label','',' Select for bulk refinement');bulkLabel.prepend(bulkCheck);card.prepend(bulkLabel);
+        bulkCheck.onchange=()=>{if(bulkCheck.checked)bulkSelected.set(job.id,jobs.find(j=>j.id===job.id)||job);else bulkSelected.delete(job.id);update();};
+        const autoStatus=make('p','h3-video-muted');card.append(autoStatus);
         const originals = createVideoJobSources();
         const rerunStatus = make('p', 'h3-video-muted'); rerunStatus.hidden = true; rerunStatus.setAttribute('role', 'status');
         details.append(make('summary','','Runtime log'), log); promptDetails.append(make('summary','','Prompt used'),usedPrompt); tools.append(stop,retry,baseRerun,edit,editRerun,remove); card.append(heading,line,tools,rerunStatus,jobError,originals.node,candidates,output,promptDetails,details); jobList.append(card);
         const deletion = make('div','h3-video-delete-confirmation'), keep = button('Keep job'), confirm = button('Delete permanently'); deletion.hidden = true; deletion.append(make('p','','Delete this job and its saved previews, latents and outputs?'),keep,confirm); card.append(deletion);
-        nodes = {card,heading,line,stop,retry,baseRerun,rerunStatus,edit,editRerun,remove,jobError,originals,candidates,output,log,usedPrompt,previews:new Map(),deletion}; jobNodes.set(job.id,nodes);
+        nodes = {bulkCheck,bulkLabel,autoStatus,card,heading,line,stop,retry,baseRerun,rerunStatus,edit,editRerun,remove,jobError,originals,candidates,output,log,usedPrompt,previews:new Map(),deletion}; jobNodes.set(job.id,nodes);
         baseRerun.title = BASE_RERUN_HELP; baseRerun.onclick = () => reruns.runBase(jobs.find(j => j.id === job.id) || job);
         retry.title = 'Queue this job again with its original prompt, settings and saved files.';
         editRerun.title = 'Edit this job’s saved settings before queuing a new copy. Changes apply only to that copy.';
@@ -491,6 +562,10 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
         remove.onclick=()=>{deletion.hidden=false;};keep.onclick=()=>{deletion.hidden=true;};confirm.onclick=async()=>{confirm.disabled=true;try{const result=await request(`/jobs/${job.id}/record`,{method:'DELETE'});if(!result.deleted)throw new Error('Deletion was not confirmed.');if(selection?.job_id===job.id){selection=null;finalSection.hidden=true;save();}await loadJobs();}catch(e){fail(e);}finally{confirm.disabled=false;}};
       }
       if (jobList.children[index] !== nodes.card) jobList.insertBefore(nodes.card, jobList.children[index] || null);
+      nodes.bulkLabel.hidden = inventory?.seed_hunter?.features?.auto_refine!==true || !autoRefineParent(job);
+      nodes.bulkCheck.checked=bulkSelected.has(job.id);nodes.bulkCheck.disabled=finalBusy;
+      const automation=job.auto_refine;
+      nodes.autoStatus.textContent=automation?`Project: ${automation.project} · ${automation.status}. ${automation.error||automation.output_paths?.join(' · ')||automation.output_folder||''}`:'';nodes.autoStatus.hidden=!automation;
       nodes.originals.update(job.input_videos);
       if (isSeedScoutJob(job)) { if (!nodes.scout) { nodes.scout = createSeedScoutPreviews(job.id, { select: seed => request(`/jobs/${encodeURIComponent(job.id)}/scout/select`, { method: 'POST', headers: {'Content-Type':'application/json'}, body:JSON.stringify({seed}) }), render: async (seed, request_id) => { const result = await request(`/jobs/${encodeURIComponent(job.id)}/scout/render`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({seed,request_id}) }); await loadJobs(); return result; }, onError:fail }); nodes.candidates.append(nodes.scout.node); } nodes.scout.update(job); }
       const stageName=job.seed_hunter?.stage||'preview'; nodes.heading.textContent=`${stageName} · ${job.status} · ${job.id}`;nodes.line.textContent=[job.phase,job.total_steps?`Step ${job.step||0}/${job.total_steps}`:''].filter(Boolean).join(' · ');
@@ -553,9 +628,9 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
       {id:'inputs',title:'Inputs',parent:form,nodes:[stage.parentElement,batchContainer,media]},
       {id:'prepare',title:'Prompt',parent:form,nodes:[prompt.parentElement,enhancerBar,enhancerInfo,dialoguePanel.parentElement,continuationPanel.parentElement,audioPanel.parentElement]},
       {id:'setup',title:'Model setup',parent:form,nodes:[componentGrid,loras.node]},
-      {id:'generate',title:'Generate',parent:form,nodes:[dimensions,sizeTools,...(scoutUpscale?[scoutUpscale.parentElement]:[]),advanced.parentElement]},
+      {id:'generate',title:'Generate',parent:form,nodes:[dimensions,sizeTools,autoBar,...(scoutUpscale?[scoutUpscale.parentElement]:[]),advanced.parentElement]},
       {id:'review',title:scout?'Choose seed / Results':'Review',parent:scroll,nodes:[jobToolbar,jobStatus,jobPager.node,jobList,jobPager.bottomNode]},
-      ...(!scout?[{id:'refine',title:'Refine',parent:scroll,nodes:[finalSection]}]:[]),
+      {id:'refine',title:'Refine',parent:scroll,nodes:[finalSection]},
     ],actions:[actions],queueNodes:[queueContainer],
     getInputs:()=>Object.values(uploads).filter(state=>!state.wrap.hidden).flatMap(state=>[...state.retained,...state.files]),
     getSummary:()=>({model:fields.model.selectedOptions[0]?.text,loras:loras.getValue().map(row=>({...row,name:effectiveComponents().find(item=>item.id===row.id)?.display_name||effectiveComponents().find(item=>item.id===row.id)?.name||row.id}))}),

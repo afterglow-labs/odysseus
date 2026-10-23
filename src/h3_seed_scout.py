@@ -139,10 +139,19 @@ def prepare_render(manager, source_id, owner, body, directory, submission_id):
         raw = _draft(manifest['config'], inventory, 'h3')
         raw['seed'] = seed
         raw['seed_hunter'].update(scout_mode='final', scout_count=1, preview_count=1)
+        raw['seed_hunter'].pop('auto_refine', None)
         inputs = _inputs(source, manifest, UPLOAD_EXTENSIONS)
         config = validate_config(raw, inventory['components'], inventory['gpus'], inputs)
         preflight(config, current, inputs)
         uploads, names = {}, {}
+        if 'refinement' in body:
+            from src.h3_refinement_settings import resolve
+            refinement = resolve(raw, body['refinement'], inventory, inputs, scout=True)
+            # Device selection applies to the whole child; its partial latent
+            # and original sampling schedule are never replaced by bulk values.
+            config.update(gpu=refinement['gpu'], vae_gpu=refinement['vae_gpu'])
+            preflight(refinement, current, inputs)
+            uploads['scout_refinement'] = refinement
         for field, values in inputs.items():
             paths = []
             for item in values:

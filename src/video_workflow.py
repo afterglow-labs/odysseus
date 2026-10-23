@@ -1,5 +1,6 @@
 """Portable data-only video workflows with bounded, owner-scoped ZIP transfers."""
 import hashlib
+from copy import deepcopy
 import json
 import math
 import os
@@ -32,6 +33,51 @@ H3_SETTINGS = {"mode", "width", "height", "frames", "steps", "seed", "sampler",
                "scheduler", "shift_video", "shift_audio", "lora_scale", "reference_size", "prompt", "lora_strengths", "reference_video_ranges"}
 
 
+def automatic_roles(config):
+    patch = config.get("seed_hunter", {}).get("auto_refine", {}).get("refinement", {})
+    roles = {"auto_latent_upscaler"} if patch.get("latent_upscaler") else set()
+    if "loras" in patch:
+        rows = patch["loras"]
+        if not isinstance(rows, list) or len(rows) > MAX_LORAS:
+            raise ValueError("Invalid automatic refinement adapters")
+        roles |= {f"auto_lora_{i}" for i in range(len(rows))}
+    elif patch.get("lora"):
+        roles.add("auto_lora")
+    return roles
+
+
+def component_role(role):
+    role = role.removeprefix("auto_")
+    return "lora" if re.fullmatch(r"lora_[0-7]", role) else role
+
+
+def portable_automatic(config, inventory):
+    """Resolve nested refinement selections into portable component slots."""
+    config = deepcopy(config)
+    patch = config.get("seed_hunter", {}).get("auto_refine", {}).get("refinement")
+    selected = {}
+    if patch is None:
+        return config, selected
+    available = {row["id"]: row for row in inventory["components"]}
+    def select(identity, role):
+        item = available.get(identity)
+        if not item or item.get("role") != component_role(role):
+            raise ValueError("An automatic refinement model is no longer available")
+        selected[role] = item["path"]
+        return role
+    for key in ("gpu", "vae_gpu"):
+        patch.pop(key, None)
+    if patch.get("latent_upscaler"):
+        patch["latent_upscaler"] = select(patch["latent_upscaler"], "auto_latent_upscaler")
+    if "loras" in patch or patch.get("lora"):
+        rows = lora_entries(patch, components=available)
+        patch["loras"] = [{"id": select(row["id"], f"auto_lora_{i}"), "strength": row["strength"]}
+                          for i, row in enumerate(rows)]
+        patch.pop("lora", None)
+        patch.pop("lora_scale", None)
+    return config, selected
+
+
 def safe_path(value, basename=False):
     if (not isinstance(value, str) or not value or len(value) > 240
             or any(ord(c) < 32 for c in value) or "\\" in value or ":" in value
@@ -41,7 +87,7 @@ def safe_path(value, basename=False):
     return value
 
 
-def specification(family, config):
+def specification(family, config, *, include_automatic=False):
     if family == "h3":
         from src.h3_video import UPLOAD_EXTENSIONS
         roles = {"model", "encoder", "video_vae", "audio_vae"}
@@ -58,6 +104,8 @@ def specification(family, config):
             roles.add("lora")
         if config.get("recipe") == "seed_hunter":
             roles.add("latent_upscaler")
+            if include_automatic:
+                roles |= automatic_roles(config)
             return H3_SETTINGS | {"recipe", "seed_hunter"}, roles, UPLOAD_EXTENSIONS
         return H3_SETTINGS, roles, UPLOAD_EXTENSIONS
     if family == "bfs":
@@ -163,19 +211,28 @@ def validate_document(value, family):
     if "input_layout" in value and (family != "h3" or value["input_layout"] != INPUT_LAYOUT):
         raise ValueError("Unknown workflow input layout")
     portable_config(value.get("config"), family)
-    _, roles, extensions = specification(family, value["config"])
+    _, roles, extensions = specification(family, value["config"], include_automatic=True)
     components, attachments = value.get("components"), value.get("attachments")
     if not isinstance(components, dict) or components.keys() - roles or not isinstance(attachments, list):
         raise ValueError("Invalid workflow components or attachments")
     if family == "h3" and "lora_strengths" in value["config"]:
         if not {f"lora_{index}" for index in range(len(value["config"]["lora_strengths"]))} <= components.keys():
             raise ValueError("A stacked LoRA reference is missing")
+    if family == "h3":
+        patch = value["config"].get("seed_hunter", {}).get("auto_refine", {}).get("refinement", {})
+        if "gpu" in patch or "vae_gpu" in patch or not automatic_roles(value["config"]) <= components.keys():
+            raise ValueError("Automatic refinement must use portable component references")
+        if patch.get("latent_upscaler") not in (None, "", "auto_latent_upscaler") or patch.get("lora") not in (None, "", "auto_lora"):
+            raise ValueError("Invalid automatic refinement component reference")
+        for index, row in enumerate(patch.get("loras", [])):
+            if not isinstance(row, dict) or set(row) != {"id", "strength"} or row["id"] != f"auto_lora_{index}":
+                raise ValueError("Invalid automatic refinement LoRA reference")
     declared, counts = {"workflow.json"}, {}
     for role, item in components.items():
         if not isinstance(item, dict) or item.keys() - {"name", "repository", "relative_path", "revision", "archive_path", "lora_profile"}:
             raise ValueError("Invalid model download reference")
         if "lora_profile" in item:
-            if family != "h3" or not (role == "lora" or re.fullmatch(r"lora_[0-7]", role)):
+            if family != "h3" or component_role(role) != "lora":
                 raise ValueError("Only H3 LoRA references may contain a LoRA profile")
             validate_lora_profile(item["lora_profile"])
         name = safe_path(item.get("name"), True)
@@ -198,6 +255,9 @@ def validate_document(value, family):
         selections = ([(components[f"lora_{i}"], strength) for i, strength in enumerate(strengths)]
                       if strengths is not None else [(components.get("lora", {}),
                                                       value["config"].get("lora_scale", 1))])
+        selections += [(components[row["id"]], row["strength"]) for row in patch.get("loras", [])]
+        if patch.get("lora"):
+            selections.append((components["auto_lora"], patch.get("lora_scale", 1)))
         for reference, strength in selections:
             control = (validate_lora_profile(reference["lora_profile"]).get("strength_control")
                        if "lora_profile" in reference else None)
@@ -264,7 +324,7 @@ def normalize_portable_inputs(document):
 def resolve_draft(raw, inventory, family):
     if not isinstance(raw, dict):
         raise ValueError("Workflow config must be an object")
-    settings, roles, _ = specification(family, raw)
+    settings, roles, _ = specification(family, raw, include_automatic=True)
     if raw.keys() - (settings | {"gpu", "vae_gpu"} | (roles | {"loras"} if family == "h3" else {"components"})):
         raise ValueError("Unknown workflow export setting")
     identities = {r: raw.get(r) for r in roles if r != "lora" or "loras" not in raw} if family == "h3" else raw.get("components", {})
@@ -295,6 +355,8 @@ def resolve_draft(raw, inventory, family):
             paths.add(path)
             selected[f"lora_{index}"] = item["path"]
     if family == "h3":
+        config, automatic = portable_automatic(config, inventory)
+        selected.update(automatic)
         profiles = {str(Path(item["path"]).resolve()): item["lora_profile"]
                     for item in available.values() if item.get("role") == "lora"
                     and item["path"] in selected.values() and item.get("lora_profile")}
@@ -305,7 +367,7 @@ def resolve_draft(raw, inventory, family):
 
 def compatible(item, role, family, config):
     if family == "h3":
-        return item.get("role") == ("lora" if re.fullmatch(r"lora_[0-7]", role) else role)
+        return item.get("role") == component_role(role)
     from src.bfs_video import BY_ID, matches
     definition = BY_ID[config["workflow_id"]]
     slot = next(s for s in definition["slots"] if s["key"] == role)
@@ -318,7 +380,7 @@ def make_recipe(config, selected, uploads, family, options):
         config = {**config, "lora_strengths": [row["strength"] for row in rows]}
         selected = {key: value for key, value in selected.items() if key != "lora"}
         selected.update({f"lora_{index}": row["path"] for index, row in enumerate(rows)})
-    settings, roles, extensions = specification(family, config)
+    settings, roles, extensions = specification(family, config, include_automatic=True)
     document = {"format": FORMAT, "version": VERSION, "family": family,
                 "config": portable_config({k: v for k, v in config.items() if k in settings}, family),
                 "components": {}, "attachments": []}
@@ -332,7 +394,7 @@ def make_recipe(config, selected, uploads, family, options):
         if path.suffix.lower() != ".safetensors" or options["include_weights"] and not path.is_file():
             raise ValueError("A selected weight is unavailable")
         item = component_reference(path)
-        if family == "h3" and (role == "lora" or re.fullmatch(r"lora_[0-7]", role)):
+        if family == "h3" and component_role(role) == "lora":
             snapshot = config.get("lora_profiles", {})
             profile = snapshot.get(str(path.resolve())) or snapshot.get(str(path)) or read_profile(path)
             if profile:
@@ -462,6 +524,7 @@ def stream_zip(document, handles):
 def job_export(manager, job_id, owner, family, options):
     manager._state(job_id, owner)
     directory = manager.directory(job_id)
+    inventory = manager.inventory() if family == "h3" else None
     with _locked(directory / "job.lock"):
         # _state itself takes job.lock for active jobs: never nest that call.
         state = _read(directory / "state.json")
@@ -471,8 +534,11 @@ def job_export(manager, job_id, owner, family, options):
         config = manifest.get("config")
         if not isinstance(config, dict):
             raise ValueError("This job has no usable workflow config")
-        _, roles, extensions = specification(family, config)
+        _, roles, extensions = specification(family, config, include_automatic=True)
         selected = {r: config[r] for r in roles if config.get(r)}
+        if family == "h3":
+            config, automatic = portable_automatic(config, inventory)
+            selected.update(automatic)
         uploads = {}
         if options["include_attachments"]:
             from src.video_job_edit import _inputs

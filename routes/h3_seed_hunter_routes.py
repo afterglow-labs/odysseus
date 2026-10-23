@@ -10,6 +10,24 @@ from src import h3_seed_hunter as hunter
 
 
 def add_seed_hunter_routes(router, manager, owner_callback):
+    @router.post("/auto-refine")
+    async def auto_refine(request: Request):
+        from src.video_auto_refine import apply_saved
+        owner = owner_callback(request)
+        try:
+            data = bytearray()
+            async for chunk in request.stream():
+                data.extend(chunk)
+                if len(data) > 65536:
+                    raise HTTPException(413, "Automatic refinement request exceeds 64 KiB")
+            return await complete_operation(apply_saved, manager, owner, json.loads(data))
+        except FileNotFoundError as exc:
+            raise HTTPException(404, "Video job not found") from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
     @router.get("/jobs/{job_id}/seed-hunter")
     async def detail(job_id: str, request: Request):
         try:

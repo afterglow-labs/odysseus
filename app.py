@@ -1285,6 +1285,8 @@ async def _startup_event():
     # removes the feature.
     from src.cookbook_serve_lifecycle import cookbook_serve_lifecycle_loop
     _startup_tasks.append(asyncio.create_task(cookbook_serve_lifecycle_loop()))
+    from src.video_auto_refine import recovery_loop as video_auto_refine_loop
+    _startup_tasks.append(asyncio.create_task(video_auto_refine_loop()))
 
     from src.local_video_previews import local_preview_cleanup_loop
     app.state._local_preview_cleanup_task = asyncio.create_task(local_preview_cleanup_loop())
