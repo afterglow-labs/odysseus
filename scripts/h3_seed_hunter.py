@@ -131,7 +131,7 @@ def save_snapshot(path, *, latent, positive, config, seed):
     _worker().atomic_json(path.with_suffix(".json"), document)
 
 
-def snapshot_metadata(spec, config, *, allow_frame_change=False):
+def snapshot_metadata(spec, config, *, allow_frame_change=False, allow_prompt_change=False):
     metadata = Path(spec["metadata"])
     if metadata.stat().st_size > 16 * 1024 * 1024:
         raise ValueError("Candidate metadata exceeds the safe size limit")
@@ -141,9 +141,11 @@ def snapshot_metadata(spec, config, *, allow_frame_change=False):
     original = document.get("config", {})
     if config["seed_hunter"]["stage"] == "final" and original.get("seed_hunter", {}).get("stage") != "preview":
         raise ValueError("Only preview candidates can be refined")
-    # LoRAs, seed and final sampling controls may change; text, reference
-    # conditioning, transformer and codecs remain those of the selected result.
-    for key in ("model", "encoder", "video_vae", "audio_vae", "prompt") + (() if allow_frame_change else ("frames",)):
+    # An edited final prompt is re-encoded explicitly before sampling. Other
+    # snapshot consumers (including exact Scout resumes) keep their saved text.
+    editable_prompt = allow_prompt_change and config["seed_hunter"]["stage"] == "final"
+    for key in (("model", "encoder", "video_vae", "audio_vae")
+                + (() if editable_prompt else ("prompt",)) + (() if allow_frame_change else ("frames",))):
         if original.get(key) != config.get(key):
             raise ValueError(f"Candidate {key} differs from the refinement job")
     if config["width"] < original["width"] or config["height"] < original["height"]:
@@ -151,9 +153,9 @@ def snapshot_metadata(spec, config, *, allow_frame_change=False):
     return document
 
 
-def load_snapshot(spec, config, *, nested_factory=None):
+def load_snapshot(spec, config, *, nested_factory=None, allow_prompt_change=False):
     from safetensors.torch import load_file
-    document = snapshot_metadata(spec, config)
+    document = snapshot_metadata(spec, config, allow_prompt_change=allow_prompt_change)
     tensors = load_file(str(spec["latent"]), device="cpu")
     result = _decode_tree(document["tree"], tensors, nested_factory)
     if not isinstance(result, dict) or not isinstance(result.get("latent"), dict) or "positive" not in result:
@@ -170,6 +172,24 @@ def full_length_candidate_config(document, config):
     return {**original, "frames": config["frames"], "seed": seed,
             "gpu": config["gpu"], "vae_gpu": config.get("vae_gpu"),
             "seed_hunter": {**original["seed_hunter"], "stage": "preview", "preview_count": 1}}
+
+
+def reencode_refinement_prompt(runtime, config, prepared, clip, positive):
+    """Update Qwen text/image context while retaining the saved VAE references.
+
+    The selected latent, audio masks, reference order and RefMods stay intact.
+    The reference node prepares the same numbered multimodal tokenizer inputs;
+    omitting VAEs avoids encoding all of the reference latents a second time.
+    """
+    updated, unused_latent = runtime.h3.MiniMaxH3ReferenceToVideo.execute(
+        clip=clip, prompt=config["prompt"], width=config["width"], height=config["height"],
+        length=config["frames"], ref_image_size=config["reference_size"],
+        **{key: prepared.get(key, {}) for key in ("ref_images", "ref_videos", "ref_video_audios", "ref_audios")})
+    del unused_latent
+    references = next((metadata["minimax_refs"] for _, metadata in positive if "minimax_refs" in metadata), None)
+    if references is not None:
+        updated = [[embedding, {**metadata, "minimax_refs": references}] for embedding, metadata in updated]
+    return updated
 
 
 def model_settings_match(first, second):
@@ -359,19 +379,25 @@ def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
     progress.details.update(recipe="seed_hunter", stage=options["stage"], candidate_count=options["preview_count"])
     initial_config = config
     regenerate = False
+    prompt_changed = False
+    conditioning_config = config
     if options["stage"] == "final":
-        document = snapshot_metadata(manifest["seed_hunter_input"], config, allow_frame_change=True)
+        document = snapshot_metadata(manifest["seed_hunter_input"], config,
+                                     allow_frame_change=True, allow_prompt_change=True)
         regenerate = document["config"]["frames"] != config["frames"]
+        prompt_changed = document["config"]["prompt"] != config["prompt"]
+        conditioning_config = full_length_candidate_config(document, config)
         progress.details.update(preview_frames=document["config"]["frames"], final_frames=config["frames"],
-                                regeneration_required=regenerate)
+                                regeneration_required=regenerate, prompt_changed=prompt_changed)
         if regenerate:
-            initial_config = full_length_candidate_config(document, config)
+            initial_config = conditioning_config
             _check_optional(manifest, initial_config, media)
     progress("initializing_runtime")
     runtime = runtime_factory(manifest["runtime_path"])
     progress("preparing_media")
     scout_resume = options["stage"] == "scout" and bool(manifest.get("seed_hunter_input"))
-    prepared = {} if scout_resume else prepare_media(manifest, initial_config, media, media_loader, folder)
+    prepared = {} if scout_resume else prepare_media(
+        manifest, conditioning_config if prompt_changed else initial_config, media, media_loader, folder)
     import torch
     candidates = []
     with torch.inference_mode():
@@ -404,7 +430,12 @@ def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
                     model = patch_model(runtime, config, model, manifest["runtime_path"])
                 progress.total_steps = config["steps"]
             else:
-                positive, latent = load_snapshot(manifest["seed_hunter_input"], config)
+                positive, latent = load_snapshot(manifest["seed_hunter_input"], config, allow_prompt_change=True)
+            if prompt_changed:
+                progress("encoding_refinement_prompt", 0)
+                logging.info("Encoding edited refinement prompt with the original references; selected latent is retained")
+                positive = reencode_refinement_prompt(runtime, {**conditioning_config, "prompt": config["prompt"]},
+                                                      prepared, clip, positive)
             runtime.release_conditioning()
             latent = upscale_latent(manifest, config, latent, progress)
             base_positive = positive

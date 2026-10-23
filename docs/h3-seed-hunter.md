@@ -127,8 +127,17 @@ selected seed, original preview sampling settings and saved inputs. It then
 upscales and refines that full-length latent. A longer generation can differ
 from the short audition; this is not an exact continuation of its frames.
 Each child job owns its snapshot and inputs, so deleting a parent cannot
-break a queued child. Final jobs retain the original prompt, encoder, model
-and codecs; length, rendering parameters and LoRAs remain editable.
+break a queued child. Queued refinement jobs support prompt edits in the job
+editor and the bulk parameter editor, as well as Edit & rerun. A changed prompt
+is re-encoded with the original reference context before refinement; the saved
+candidate latent, reference latents, audio masks and RefMods are retained.
+If the final length differs, the initial full-length pass still uses the original
+preview prompt; the edited prompt guides the subsequent refinement. Unchanged
+prompts reuse their saved conditioning. With denoise set to zero, refinement
+only upscales the latent, so prompt changes cannot affect that output.
+Encoder, model, codecs and attachments stay fixed; length, rendering parameters
+and LoRAs remain editable. Exact Seed Scout partial resumes retain their saved
+prompt and schedule.
 
 ## Other branches
 

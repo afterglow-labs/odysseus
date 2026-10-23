@@ -35,7 +35,7 @@ def capabilities(project, runtime, components, gpus=()):
                      "scout_upscale": (extras / "latent-upscaler/nodes/minimax_h3_latent_upscaler_3d.py").is_file()
                      and any(c.get("role") == "latent_upscaler" for c in components),
                      "guides": True, "force_audio": True, "continuation": True, "dialogue": True,
-                     "separate_final_length": True,
+                     "separate_final_length": True, "refinement_prompt_edit": True,
                      "seed_scout": (runtime.parent / "seed-scout/nodes.py").is_file(),
                      "attention_backend": True, "sparse_attention": True,
                      "refmods": (extras / "refmods/core.py").is_file(),
@@ -193,7 +193,7 @@ def clone_snapshot(source_directory, destination, snapshot):
     return result
 
 
-FINAL_EDIT_SETTINGS = {"width", "height", "frames", "steps", "seed", "sampler", "scheduler", "gpu", "vae_gpu",
+FINAL_EDIT_SETTINGS = {"prompt", "width", "height", "frames", "steps", "seed", "sampler", "scheduler", "gpu", "vae_gpu",
                        "loras", "lora", "lora_scale", "latent_upscaler", "seed_hunter", "shift_video", "shift_audio"}
 FINAL_OPTIONS = {"denoise", "output_fps", "final_frames", "upscaler_chunking", "upscaler_force_unload", "shift_enabled",
                  "attention_backend", "sparse_method", "sparse_keep_percent", "sparse_start", "sparse_end",
@@ -212,7 +212,7 @@ def guard_edit(original, updated):
     if old["stage"] == "final":
         allowed = FINAL_EDIT_SETTINGS | {"lora_profiles"}
         if any(original.get(k) != updated.get(k) for k in original.keys() | updated.keys() if k not in allowed):
-            raise ValueError("Seed Hunter refinement keeps its source prompt, model, encoder, and inputs")
+            raise ValueError("Seed Hunter refinement keeps its source model, encoder, and inputs")
         if any(old.get(k) != new.get(k) for k in old.keys() | new.keys() if k not in FINAL_OPTIONS):
             raise ValueError("Saved-latent refinement keeps its source conditioning")
 

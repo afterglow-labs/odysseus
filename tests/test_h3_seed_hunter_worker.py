@@ -180,9 +180,64 @@ def test_final_uses_saved_conditioning_without_reencoding_or_reloading_media(man
     assert calls == ["release_encoder", "upscale", "sample"]
 
 
+def test_edited_final_prompt_uses_original_context_and_latent_without_reencoding_vaes(manifest, monkeypatch, tmp_path):
+    original, _ = worker.validate_job(manifest)
+    refs = [{"kind": "video", "latent": torch.tensor(5.)}, {"kind": "refmod", "latent": torch.tensor(9.)}]
+    candidate = tmp_path / 'original.safetensors'
+    hunter.save_snapshot(candidate, latent={'samples': torch.tensor(11.), 'noise_mask': torch.tensor(0.)},
+                         positive=[[torch.tensor(7.), {'minimax_refs': refs, 'pooled_output': torch.tensor(3.)}]],
+                         config=original, seed=42)
+    manifest['seed_hunter_input'] = {'latent': str(candidate), 'metadata': str(candidate.with_suffix('.json'))}
+    snapshot = candidate.read_bytes(), candidate.with_suffix('.json').read_bytes()
+    manifest['config'].update(width=960, height=1728, prompt='Make the ball green.', seed_hunter={'stage': 'final'})
+    prepared = {'ref_images': {'ref_image_1': object()}, 'ref_videos': {'ref_video_1': object()},
+                'ref_video_audios': {'ref_video_audio_1': object()}, 'ref_audios': {'ref_audio_1': object()}}
+    calls = []
+    def encode(**kwargs):
+        calls.append('encode')
+        assert 'vae' not in kwargs and 'audio_vae' not in kwargs
+        assert kwargs['prompt'] == 'Make the ball green.'
+        assert (kwargs['width'], kwargs['height'], kwargs['length']) == (480, 864, 73)
+        for key, value in prepared.items():
+            assert kwargs[key] is value
+        return [[torch.tensor(8.), {'pooled_output': torch.tensor(4.)}]], {'samples': torch.tensor(999.)}
+    class Runtime:
+        def __init__(self, *_):
+            self.h3 = SimpleNamespace(MiniMaxH3ReferenceToVideo=SimpleNamespace(execute=encode))
+        def load(self, *_): return (object(),) * 4
+        def release_conditioning(self): pass
+        def cleanup_model_state(self): pass
+        def decode(self, *_): return torch.zeros((73, 4, 4, 3)), {}
+    def media_loader(_media, config):
+        calls.append('media')
+        assert config['width'] == original['width'] and config['frames'] == original['frames']
+        return prepared
+    def upscale(_manifest, _config, latent, _progress):
+        calls.append('upscale')
+        assert latent['samples'].item() == 11 and latent['noise_mask'].item() == 0
+        return {**latent, 'samples': latent['samples'] + 1}
+    def sample(_runtime, config, _model, positive, latent, _progress):
+        calls.append('sample')
+        assert config['prompt'] == 'Make the ball green.'
+        assert positive[0][0].item() == 8 and positive[0][1]['pooled_output'].item() == 4
+        assert [r['latent'].item() for r in positive[0][1]['minimax_refs']] == [5, 9]
+        assert latent['samples'].item() == 12 and latent['noise_mask'].item() == 0
+        return latent, latent
+    monkeypatch.setattr(hunter, 'patch_model', lambda _r, _c, model, _path: model)
+    monkeypatch.setattr(hunter, 'condition', lambda *_: pytest.fail('Do not replace the saved latent or VAE context'))
+    monkeypatch.setattr(hunter, 'upscale_latent', upscale)
+    monkeypatch.setattr(hunter, 'sample_candidate', sample)
+    worker.run_job(manifest, runtime_factory=Runtime, media_loader=media_loader,
+                   muxer=lambda path, *_: Path(path).write_bytes(b'mp4'))
+    assert calls == ['media', 'encode', 'upscale', 'sample']
+    assert (candidate.read_bytes(), candidate.with_suffix('.json').read_bytes()) == snapshot
+    assert json.loads(Path(manifest['status_path']).read_text())['prompt_changed'] is True
+
+
+@pytest.mark.parametrize('changed_prompt', [False, True])
 @pytest.mark.parametrize('changed_lora', [False, True])
 def test_longer_final_regenerates_only_selected_seed_at_original_settings_before_refinement(
-        manifest, monkeypatch, tmp_path, changed_lora):
+        manifest, monkeypatch, tmp_path, changed_lora, changed_prompt):
     from copy import deepcopy
     original, _ = worker.validate_job(manifest)
     original['loras'] = []
@@ -192,6 +247,8 @@ def test_longer_final_regenerates_only_selected_seed_at_original_settings_before
     manifest['seed_hunter_input'] = {'latent': str(candidate), 'metadata': str(candidate.with_suffix('.json'))}
     manifest['config'].update(width=960, height=1728, frames=311, seed=123, steps=2,
                              scheduler='linear_quadratic', loras=[], seed_hunter={'stage': 'final'})
+    if changed_prompt:
+        manifest['config']['prompt'] = 'Make the ball green.'
     if changed_lora:
         adapter = tmp_path / 'refinement_lora.safetensors'
         adapter.touch()
@@ -218,7 +275,14 @@ def test_longer_final_regenerates_only_selected_seed_at_original_settings_before
     def condition(_runtime, config, prepared, *_):
         calls.append('condition')
         assert config['frames'] == 311 and prepared['full_reference']
+        assert config['prompt'] == original['prompt']
         return [[torch.tensor(5.), {}]], {'samples': torch.tensor(0.)}, [[torch.tensor(6.), {}]]
+    def reencode(_runtime, config, prepared, _clip, positive):
+        calls.append('edited_prompt')
+        assert config['prompt'] == 'Make the ball green.' and prepared['full_reference']
+        assert config['width'] == original['width'] and config['frames'] == 311
+        assert positive[0][0].item() == 6
+        return [[torch.tensor(8.), {}]]
     def sample(_runtime, config, _model, positive, latent, progress):
         sampled.append(deepcopy(config))
         if len(sampled) == 1:
@@ -232,7 +296,7 @@ def test_longer_final_regenerates_only_selected_seed_at_original_settings_before
             return {'samples': torch.tensor(10.)}, {'samples': torch.tensor(20.)}
         assert config['seed'] == 123 and config['steps'] == 2 and config['scheduler'] == 'linear_quadratic'
         assert config['frames'] == 311 and config['width'] == 960
-        assert positive[0][0].item() == 6 and latent['samples'].item() == 21
+        assert positive[0][0].item() == (8 if changed_prompt else 6) and latent['samples'].item() == 21
         return {'samples': torch.tensor(29.)}, {'samples': torch.tensor(30.)}
     def upscale(_manifest, config, latent, _progress):
         calls.append('upscale')
@@ -240,11 +304,13 @@ def test_longer_final_regenerates_only_selected_seed_at_original_settings_before
         return {'samples': torch.tensor(21.)}
     monkeypatch.setattr(hunter, 'patch_model', lambda _r, _c, m, _p: m)
     monkeypatch.setattr(hunter, 'condition', condition)
+    monkeypatch.setattr(hunter, 'reencode_refinement_prompt', reencode)
     monkeypatch.setattr(hunter, 'sample_candidate', sample)
     monkeypatch.setattr(hunter, 'upscale_latent', upscale)
     worker.run_job(manifest, runtime_factory=Runtime, media_loader=media_loader,
                    muxer=lambda path, *_: Path(path).write_bytes(b'mp4'))
     assert len(sampled) == 2 and calls.count('condition') == 1
+    assert calls.count('edited_prompt') == int(changed_prompt)
     assert len(loaded) == (2 if changed_lora else 1)
     if changed_lora:
         assert calls.index('unload_all') < calls.index('load', calls.index('load') + 1)

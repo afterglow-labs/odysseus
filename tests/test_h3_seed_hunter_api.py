@@ -168,7 +168,7 @@ def test_finalize_is_idempotent_copies_exact_candidate_and_survives_parent_delet
     assert len(hunter.calls) == 2
 
 
-@pytest.mark.parametrize('patch', [{'prompt': 'change it'}, {'frames': 74}, {'encoder': '/etc/passwd'},
+@pytest.mark.parametrize('patch', [{'prompt': ''}, {'frames': 74}, {'encoder': '/etc/passwd'},
                                   {'seed_hunter': {'stage': 'preview'}}, {'latent_upscaler': '/etc/passwd'}])
 def test_final_rejects_replacing_saved_conditioning_or_path_injection(hunter, patch):
     job, _ = preview(hunter)
@@ -266,22 +266,53 @@ def test_partial_bulk_edit_preserves_options_and_rejects_stage_change(hunter):
     assert response.status_code == 400, response.text
 
 
-def test_final_rerun_preserves_latent_and_rejects_prompt_edits(hunter):
+def test_final_rerun_preserves_latent_and_applies_prompt_edits(hunter):
     job, directory = preview(hunter)
     response = hunter.client().post(f"/api/video/h3/jobs/{job['id']}/seed-hunter/finalize", json=final_body(hunter))
     assert response.status_code == 201, response.text
     final = response.json()
     manager = hunter.managers['h3']
     selected = [{'id': final['id'], 'revision': 0}]
-    with pytest.raises(ValueError, match='source prompt'):
-        rerun_jobs(manager, 'corey', 'h3', selected, {'prompt': 'Nope'}, str(uuid.uuid4()))
-    rerun_jobs(manager, 'corey', 'h3', selected, {'steps': 4, 'seed_hunter': {'denoise': .3}}, str(uuid.uuid4()))
+    rerun_jobs(manager, 'corey', 'h3', selected,
+               {'prompt': 'A revised refinement prompt', 'steps': 4, 'seed_hunter': {'denoise': .3}}, str(uuid.uuid4()))
     assert len(hunter.calls) == 3
     reruns = [m for p in manager.root.iterdir() if p.is_dir() and (m := h3._read(p/'manifest.json')).get('config', {}).get('steps') == 4]
     assert len(reruns) == 1
     saved = reruns[0]
     assert saved['seed_hunter_input']['candidate'] == 2
     assert saved['config']['seed_hunter']['denoise'] == .3
+    assert saved['config']['prompt'] == 'A revised refinement prompt'
+    assert h3._read(Path(saved['seed_hunter_input']['metadata']))['config']['prompt'] == hunter.configs['h3']['prompt']
+
+
+def test_refinement_prompt_create_single_edit_and_bulk_edit_reopen_with_same_inputs(hunter):
+    job, source = preview(hunter)
+    client = hunter.client()
+    response = client.post(f"/api/video/h3/jobs/{job['id']}/seed-hunter/finalize",
+                           json=final_body(hunter, prompt='Initial refinement prompt'))
+    assert response.status_code == 201, response.text
+    final = response.json()
+    directory = hunter.managers['h3'].directory(final['id'])
+    before = h3._read(directory / 'manifest.json')
+    snapshot = (directory / 'source-latent.json').read_bytes()
+    endpoint = f"/api/video/h3/jobs/{final['id']}"
+    draft = client.get(endpoint + '/edit').json()['config']
+    assert draft['prompt'] == 'Initial refinement prompt'
+    draft['prompt'] = 'Use a purple jacket. Keep the background unchanged.'
+    response = client.patch(endpoint, data={'config': json.dumps(draft), 'revision': '0'})
+    assert response.status_code == 200, response.text
+    assert client.get(endpoint + '/edit').json()['config']['prompt'] == draft['prompt']
+    response = client.post('/api/video/h3/queue/edit', json={
+        'jobs': [{'id': final['id'], 'revision': 1}], 'patch': {'prompt': 'Use a green jacket instead.'}})
+    assert response.status_code == 200, response.text
+    reopened = client.get(endpoint + '/edit').json()
+    assert reopened['config']['prompt'] == 'Use a green jacket instead.' and reopened['revision'] == 2
+    after = h3._read(directory / 'manifest.json')
+    for key in ('seed_hunter_input', 'seed_hunter_source', 'reference_videos', 'reference_images', 'reference_audio'):
+        assert after.get(key) == before.get(key)
+    assert (directory / 'source-latent.json').read_bytes() == snapshot
+    assert h3._read(source / 'manifest.json')['config']['prompt'] == hunter.configs['h3']['prompt']
+    assert len(hunter.calls) == 2  # Saving edits does not enqueue another render.
 
 
 def test_portable_recipe_retains_stages_and_refuses_final_without_latent():

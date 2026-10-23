@@ -23,7 +23,7 @@ import { SEED_SCOUT_OPTIONS, seedScoutDraft, isSeedScoutJob, createSeedScoutPrev
 const API = '/api/video/h3', STORAGE = 'odysseus-h3-seed-hunter-v1';
 const ACTIVE = new Set(['queued', 'running']), TERMINAL = new Set(['completed', 'failed', 'stopped']);
 const OUTER = ['mode', 'model', 'encoder', 'video_vae', 'audio_vae', 'latent_upscaler', 'gpu', 'vae_gpu', 'width', 'height', 'frames', 'steps', 'seed', 'sampler', 'scheduler', 'shift_video', 'shift_audio', 'reference_size'];
-const FINAL_FIELDS = new Set(['width','height','steps','seed','sampler','scheduler','gpu','vae_gpu','latent_upscaler','shift_video','shift_audio']);
+const FINAL_FIELDS = new Set(['prompt','width','height','steps','seed','sampler','scheduler','gpu','vae_gpu','latent_upscaler','shift_video','shift_audio']);
 const FINAL_OPTIONS = new Set(['denoise','output_fps','upscaler_chunking','upscaler_force_unload','shift_enabled','attention_backend','sparse_method','sparse_keep_percent','sparse_start','sparse_end','sparse_min_tokens','sparse_extra_tokens','sparse_sink_conditioning','ff_chunk_size','ff_chunk_threshold','low_vram_chunks']);
 const NUMERIC = new Set(['width', 'height', 'frames', 'steps', 'seed', 'shift_video', 'shift_audio']);
 const NESTED = ['stage', 'preview_count', 'denoise', 'shift_enabled', 'first_frame_guide', 'last_frame_guide', 'force_audio', 'continuation_overlap', 'output_fps', 'attention_backend', 'sparse_method', 'upscaler_chunking', 'upscaler_force_unload', 'source_start_seconds', 'source_end_seconds', 'audio_start_seconds', 'audio_end_seconds'];
@@ -513,7 +513,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
   }
   function loadJobs(options = {}) { return jobPager.load(options); }
   refresh.onclick=loadInventory;refreshJobs.onclick=()=>loadJobs({reset:true});
-  jobEditor=createVideoJobEditor({form,request,isClosed:()=>closed,isBusy:()=>busy||loading||finalBusy||!!batchQueue?.busy,getDraft:()=>({config:config(),uploads:Object.fromEntries(Object.entries(uploads).map(([key,s])=>[key,[...s.files]]))}),applyEdit:value=>{editingComponents=value.lora_components||null;restore(value.config,{},value.inputs);},restoreDraft:value=>{editingComponents=null;restore(value.config,value.uploads);},onChange:update,onError:fail});
+  jobEditor=createVideoJobEditor({form,request,isClosed:()=>closed,isBusy:()=>busy||loading||finalBusy||!!batchQueue?.busy,getDraft:()=>({config:config(),uploads:Object.fromEntries(Object.entries(uploads).map(([key,s])=>[key,[...s.files]]))}),applyEdit:value=>{editingComponents=value.lora_components||null;restore(value.config,{},value.inputs);pipeline?.select('prepare');},restoreDraft:value=>{editingComponents=null;restore(value.config,value.uploads);},onChange:update,onError:fail});
   batchQueue=createVideoBatchQueue({family:'h3',recipe:'seed_hunter',sessionKey:(scout?'h3:seed_scout':'h3:seed_hunter')+(layout==='pipeline'?':pipeline':''),container:batchContainer,getSnapshot:batchSnapshot,onJob:()=>{if(!closed)loadJobs({reset:true});},onChange:()=>{if(!closed){revision++;update();}}});
   function nestedEditor(onChange, savedConfig) {
     const node=make('div','h3-video-grid'), rows=[];
@@ -524,7 +524,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
   queue=createVideoQueueControls({container:queueContainer,historyContainer:jobToolbar,historyFilter:{recipe:'seed_hunter',stage:scout?'scout':'not_scout'},family:'h3',request,reload:loadJobs,isClosed:()=>closed,onChange:update,filterJobs:job=>scout?isSeedScoutJob(job):!isSeedScoutJob(job)&&(job.recipe==='seed_hunter'||!!job.seed_hunter),targetName:title,getFields:(savedConfig,savedJob)=>{
     const final=savedConfig?.seed_hunter?.stage==='final', shared=final||!savedConfig&&!scout;
     const keys=OUTER.filter(k=>k!=='mode'&&(shared?FINAL_FIELDS.has(k):scout||k!=='latent_upscaler'));
-    return keys.map(key=>videoQueueField(key,key.replaceAll('_',' '),fields[key],NUMERIC.has(key))).concat(shared?[]:[videoQueueField('prompt','Prompt',fields.prompt,false)]).concat(!shared&&savedConfig?.reference_video_ranges?.length?[referenceVideoRangesField(savedConfig.reference_video_ranges)]:[]).concat([
+    return [videoQueueField('prompt','Prompt',fields.prompt,false)].concat(keys.map(key=>videoQueueField(key,key.replaceAll('_',' '),fields[key],NUMERIC.has(key)))).concat(!shared&&savedConfig?.reference_video_ranges?.length?[referenceVideoRangesField(savedConfig.reference_video_ranges)]:[]).concat([
       {key:'seed_hunter',label:'Seed Hunter settings',create:onChange=>nestedEditor(onChange,savedConfig)},
       {key:'loras',label:'LoRA stack',getSavedValue:h3LoraStack,create:onChange=>createH3LoraEditor({components:h3LoraComponents(inventory?.components||[],savedJob?.lora_components),value:loras.getValue(),idPrefix:'seed-hunter-queue',onChange})}]);
   }});
