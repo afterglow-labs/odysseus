@@ -126,3 +126,51 @@ def test_h3_old_client_component_ids_select_current_readable_paths(inventory):
             raw[component['role']] = old_id
     validated = h3.validate_config(raw, inventory['components'], inventory['gpus'], {})
     assert all(Path(validated[role]).is_file() for role in ('model', 'encoder', 'video_vae', 'audio_vae'))
+
+
+@pytest.mark.parametrize('old_root_first', [False, True])
+def test_checkpoint_replacement_hides_retained_version_independent_of_scan_order(tmp_path, old_root_first):
+    old = weights(tmp_path / 'old/Minimax-h3_Singularity_ref2va_Pruned_v1.3_int8.safetensors')
+    new = weights(tmp_path / 'new/Minimax-h3_Singularity_ref2va_v2_pruned_int8.safetensors')
+    old_bytes = old.read_bytes()
+    library.write_model_metadata(new.parent, 'author/Singularity', {
+        new.name: {'source_paths': [str(old)], 'size': new.stat().st_size},
+    })
+    roots = [old.parent, new.parent] if old_root_first else [new.parent, old.parent]
+    components = h3.discover_components(roots)
+    assert [c['path'] for c in components] == [str(new)]
+    assert _draft({'mode': 'ref2va', 'model': str(old)}, {'components': components}, 'h3')['model'] == components[0]['id']
+    assert old.read_bytes() == old_bytes  # In-flight workers retain the original checkpoint.
+
+
+def test_checkpoint_replacement_in_one_repository_becomes_seed_hunter_default(tmp_path):
+    from src.h3_seed_hunter import capabilities
+    root = tmp_path / 'author/Singularity'
+    old = weights(root / 'Minimax-h3_Singularity_ref2va_Pruned_v1.3_int8.safetensors')
+    new = weights(root / 'Minimax-h3_Singularity_ref2va_v2_pruned_int8.safetensors')
+    library.write_model_metadata(root, 'author/Singularity', {
+        new.name: {'source_paths': [str(old)], 'size': new.stat().st_size},
+    })
+    components = h3.discover_components([root])
+    assert len(components) == 1 and components[0]['path'] == str(new)
+    assert capabilities(tmp_path, tmp_path / 'ComfyUI', components)['defaults']['model'] == components[0]['id']
+
+
+def test_exact_scout_resume_retains_original_weights_after_library_replacement(tmp_path):
+    from src.h3_loras import frozen_inventory
+    from src.h3_seed_hunter import guard_edit
+    old = weights(tmp_path / 'minimax_h3_ref2va_v1.safetensors')
+    new = weights(tmp_path / 'minimax_h3_ref2va_v2.safetensors')
+    library.write_model_metadata(tmp_path, 'author/Singularity', {new.name: {'source_paths': [str(old)]}})
+    inventory = {'components': h3.discover_components([tmp_path])}
+    scout = {'recipe': 'seed_hunter', 'mode': 'ref2va', 'model': str(old), 'seed_hunter': {'stage': 'scout'}}
+    frozen = frozen_inventory(scout, inventory)
+    draft = _draft(scout, frozen, 'h3')
+    assert next(c['path'] for c in frozen['components'] if c['id'] == draft['model']) == str(old)
+    assert [c['path'] for c in inventory['components']] == [str(new)]
+    # A Hunter refinement may instead regenerate under the explicitly replaced
+    # checkpoint, but arbitrary checkpoint changes remain rejected.
+    final = {**scout, 'seed_hunter': {'stage': 'final'}}
+    guard_edit(final, {**final, 'model': str(new)})
+    with pytest.raises(ValueError, match='source model'):
+        guard_edit(final, {**final, 'model': str(tmp_path / 'unrelated.safetensors')})

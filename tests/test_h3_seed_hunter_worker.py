@@ -236,17 +236,25 @@ def test_edited_final_prompt_uses_original_context_and_latent_without_reencoding
 
 @pytest.mark.parametrize('changed_prompt', [False, True])
 @pytest.mark.parametrize('changed_lora', [False, True])
-def test_longer_final_regenerates_only_selected_seed_at_original_settings_before_refinement(
-        manifest, monkeypatch, tmp_path, changed_lora, changed_prompt):
+@pytest.mark.parametrize('change', ['length', 'model', 'model_and_length'])
+def test_final_regenerates_only_selected_seed_at_original_settings_before_refinement(
+        manifest, monkeypatch, tmp_path, changed_lora, changed_prompt, change):
     from copy import deepcopy
     original, _ = worker.validate_job(manifest)
     original['loras'] = []
     candidate = tmp_path / 'original.safetensors'
     hunter.save_snapshot(candidate, latent={'samples': torch.tensor(999.)},
                          positive=[[torch.tensor(999.), {}]], config=original, seed=1042)
+    snapshot = candidate.read_bytes(), candidate.with_suffix('.json').read_bytes()
     manifest['seed_hunter_input'] = {'latent': str(candidate), 'metadata': str(candidate.with_suffix('.json'))}
-    manifest['config'].update(width=960, height=1728, frames=311, seed=123, steps=2,
+    frames = 73 if change == 'model' else 311
+    manifest['config'].update(width=960, height=1728, frames=frames, seed=123, steps=2,
                              scheduler='linear_quadratic', loras=[], seed_hunter={'stage': 'final'})
+    if change != 'length':
+        replacement = tmp_path / 'replacement_ref2va.safetensors'
+        replacement.touch()
+        manifest['config']['model'] = str(replacement)
+    selected_model = manifest['config']['model']
     if changed_prompt:
         manifest['config']['prompt'] = 'Make the ball green.'
     if changed_lora:
@@ -262,45 +270,47 @@ def test_longer_final_regenerates_only_selected_seed_at_original_settings_before
         def load(self, config, _progress):
             calls.append('load')
             loaded.append(deepcopy(config))
+            assert config['model'] == selected_model
             return (object(),) * 4
         def release_conditioning(self): pass
         def cleanup_model_state(self): pass
         def decode(self, samples, *_):
             assert samples['samples'].item() == 30
-            return torch.zeros((311, 4, 4, 3)), {}
+            return torch.zeros((frames, 4, 4, 3)), {}
     def media_loader(_media, config):
         calls.append('media')
-        assert config['frames'] == 311 and config['width'] == 480
+        assert config['frames'] == frames and config['width'] == 480
         return {'full_reference': True}
     def condition(_runtime, config, prepared, *_):
         calls.append('condition')
-        assert config['frames'] == 311 and prepared['full_reference']
+        assert config['frames'] == frames and prepared['full_reference']
         assert config['prompt'] == original['prompt']
         return [[torch.tensor(5.), {}]], {'samples': torch.tensor(0.)}, [[torch.tensor(6.), {}]]
     def reencode(_runtime, config, prepared, _clip, positive):
         calls.append('edited_prompt')
         assert config['prompt'] == 'Make the ball green.' and prepared['full_reference']
-        assert config['width'] == original['width'] and config['frames'] == 311
+        assert config['width'] == original['width'] and config['frames'] == frames
         assert positive[0][0].item() == 6
         return [[torch.tensor(8.), {}]]
     def sample(_runtime, config, _model, positive, latent, progress):
         sampled.append(deepcopy(config))
+        assert config['model'] == selected_model
         if len(sampled) == 1:
             assert config['seed'] == 1042  # Actual selected branch, not base 42 or edited 123.
             assert config['steps'] == 6 and config['scheduler'] == 'beta' and config['sampler'] == 'er_sde'
-            assert config['width'] == 480 and config['frames'] == 311 and config['loras'] == []
+            assert config['width'] == 480 and config['frames'] == frames and config['loras'] == []
             assert config['seed_hunter']['preview_count'] == 1 and config['seed_hunter']['stage'] == 'preview'
             assert positive[0][0].item() == 5
             progress('sampling', 1)
             statuses.append(json.loads(Path(manifest['status_path']).read_text()))
             return {'samples': torch.tensor(10.)}, {'samples': torch.tensor(20.)}
         assert config['seed'] == 123 and config['steps'] == 2 and config['scheduler'] == 'linear_quadratic'
-        assert config['frames'] == 311 and config['width'] == 960
+        assert config['frames'] == frames and config['width'] == 960
         assert positive[0][0].item() == (8 if changed_prompt else 6) and latent['samples'].item() == 21
         return {'samples': torch.tensor(29.)}, {'samples': torch.tensor(30.)}
     def upscale(_manifest, config, latent, _progress):
         calls.append('upscale')
-        assert config['frames'] == 311 and latent['samples'].item() == 20
+        assert config['frames'] == frames and latent['samples'].item() == 20
         return {'samples': torch.tensor(21.)}
     monkeypatch.setattr(hunter, 'patch_model', lambda _r, _c, m, _p: m)
     monkeypatch.setattr(hunter, 'condition', condition)
@@ -317,7 +327,24 @@ def test_longer_final_regenerates_only_selected_seed_at_original_settings_before
         assert loaded[1]['loras'][0]['strength'] == .75
     assert statuses[0]['phase'] == 'regenerating_full_length_candidate'
     assert statuses[0]['total_steps'] == 6 and statuses[0]['source_seed'] == 1042
-    assert json.loads(Path(manifest['status_path']).read_text())['frames'] == 311
+    result = json.loads(Path(manifest['status_path']).read_text())
+    assert result['frames'] == frames and result['model_changed'] == (change != 'length')
+    assert (candidate.read_bytes(), candidate.with_suffix('.json').read_bytes()) == snapshot
+
+
+@pytest.mark.parametrize('stage', ['final', 'scout'])
+def test_snapshot_loader_rejects_other_checkpoint_latent(manifest, tmp_path, stage):
+    config, _ = worker.validate_job(manifest)
+    config['seed_hunter']['stage'] = 'preview' if stage == 'final' else 'scout'
+    candidate = tmp_path / 'original.safetensors'
+    hunter.save_snapshot(candidate, latent={'samples': torch.tensor(1.)}, positive=[], config=config, seed=42)
+    updated = {**config, 'model': '/another/model.safetensors', 'seed_hunter': {**config['seed_hunter'], 'stage': stage}}
+    spec = {'latent': str(candidate), 'metadata': str(candidate.with_suffix('.json'))}
+    with pytest.raises(ValueError, match='Candidate model differs'):
+        hunter.load_snapshot(spec, updated)
+    if stage == 'scout':
+        with pytest.raises(ValueError, match='Candidate model differs'):
+            hunter.snapshot_metadata(spec, updated, allow_model_change=True)
 
 
 def test_continuation_overlap_is_graphs_constant_half_blend():

@@ -26,6 +26,21 @@ def profile(**changes):
             "max": 8, "step": .25, "default": 1}, "recommended_settings": {"steps": 4}, **changes}
 
 
+def test_example_prompt_roundtrips_without_becoming_a_trigger_and_survives_older_edit(tmp_path):
+    example = 'subject_definitions:\n<Subject 1> comes from <Picture 1>.\n\nsummary:\nA camera follows.'
+    path = weights(tmp_path / 'minimax_h3_third_person.safetensors', True)
+    saved = write_profile(path, profile(prompt_example=example))
+    assert saved['prompt_example'] == example and saved['trigger_words'] == 'style_token'
+    write_profile(path, profile(notes='Edited from an older client'), overwrite=True)
+    assert read_profile(path)['prompt_example'] == example
+    component = h3.discover_components([tmp_path])[0]
+    assert component['lora_profile']['prompt_example'] == example
+    write_profile(path, profile(prompt_example=''), overwrite=True)
+    assert read_profile(path)['prompt_example'] == ''
+    with pytest.raises(ValueError, match='Example prompt'):
+        validate_lora_profile(profile(prompt_example='x' * 16001))
+
+
 @pytest.fixture
 def service(tmp_path, monkeypatch):
     monkeypatch.setattr(h3, "cache_roots", lambda project: [project / "models"])

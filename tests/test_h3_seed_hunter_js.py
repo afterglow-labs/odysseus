@@ -31,6 +31,19 @@ assert.throws(()=>seedHunterResolution(0,9,16));
 """)
 
 
+def test_saved_component_selection_follows_only_unambiguous_server_aliases():
+    run_js("""
+const current={id:'v2',name:'Singularity V2',aliases:['v1']};
+assert.equal(seedHunterComponentId('v1',[current]),'v2');
+assert.equal(seedHunterComponentId('v2',[current]),'v2');
+assert.equal(seedHunterComponentId('missing',[current]),'missing');
+assert.equal(seedHunterComponentId('',[current]),'');
+assert.equal(seedHunterComponentId(undefined,[current]),undefined);
+assert.equal(seedHunterComponentId('v1',[current,{id:'v1'}]),'v1');
+assert.equal(seedHunterComponentId('v1',[current,{id:'other',aliases:['v1']}]),'v1');
+""")
+
+
 def test_preview_count_is_capped_in_draft_restore_and_serialization():
     run_js("""
 for(const [value,wanted] of [[94,3],[4,3],[3,3],[2,2],[1,1],[0,1],[-5,1],[2.8,3],[undefined,3]]){

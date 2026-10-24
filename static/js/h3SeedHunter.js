@@ -36,6 +36,12 @@ const displayName = item => item.display_name || item.name;
 const clone = value => JSON.parse(JSON.stringify(value));
 const randomSeed = () => Math.floor(Math.random() * 2 ** 48);
 
+export function seedHunterComponentId(value, components = []) {
+  if (components.some(item => String(item.id) === String(value))) return value;
+  const matches = components.filter(item => item.aliases?.includes(String(value)));
+  return matches.length === 1 ? matches[0].id : value;
+}
+
 export function seedHunterBatchChoices(stage) {
   const copies={field:'copies',label:'Copies of this draft'};
   if(stage==='final')return [];
@@ -423,7 +429,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
     finalSubmit.textContent = pendingBulk ? 'Retry bulk refinement submission' : bulkMode ? selection.jobs?.length ? 'Queue bulk refinements' : 'Save automatic refinement settings' : 'Render selected preview';
     if (jobNodes.size) renderJobs();
   }
-  function fill(n, items, selected, blank = false) { n.replaceChildren(); if (blank) n.add(new Option('Use model GPU', '')); for (const item of items) n.add(new Option(displayName(item), item.id)); if(selected!==undefined&&selected!==null){if(![...n.options].some(o=>o.value===String(selected)))n.add(new Option('Choose an available component',selected));n.value=selected;} }
+  function fill(n, items, selected, blank = false) { selected=seedHunterComponentId(selected,items); n.replaceChildren(); if (blank) n.add(new Option('Use model GPU', '')); for (const item of items) n.add(new Option(displayName(item), item.id)); if(selected!==undefined&&selected!==null){if(![...n.options].some(o=>o.value===String(selected)))n.add(new Option('Choose an available component',selected));n.value=selected;} }
   async function loadInventory() {
     if (closed) return; loading = true; update();
     try {
@@ -431,7 +437,6 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
       const first = !inventory, serverDefaults = (scout ? data.seed_hunter?.scout_defaults : data.seed_hunter?.defaults) || {}, before = first ? { ...base, ...serverDefaults, steps:20, loras:[], ...(saved.config || {}), seed_hunter: { ...defaults, ...(serverDefaults.seed_hunter || {}), ...(scout ? SEED_SCOUT_OPTIONS : {}), ...(saved.config?.seed_hunter || {}) } } : config(); inventory = data;
       if(scout&&first&&before.seed_hunter.scout_upscale===undefined)before.seed_hunter.scout_upscale=data.seed_hunter?.features?.scout_upscale===true;
       optionSnapshot = clone(before.seed_hunter || {});
-      if(first && !saved.config && !scout){const authored=data.components.find(c=>c.role==='model'&&c.name==='Minimax-h3_Singularity_ref2va_Pruned_v1.3_int8.safetensors');if(authored)before.model=authored.id;}
       for (const role of ['model','encoder','video_vae','audio_vae','latent_upscaler']) fill(fields[role], (data.components || []).filter(c => c.role === role && (role !== 'model' || c.variant === 'ref2va')), before[role] || (scout&&role==='latent_upscaler'?data.components.find(c=>c.role===role)?.id:undefined));
       fill(fields.gpu, data.gpus || [], before.gpu || data.gpus?.find(g => /5090/.test(g.name))?.id); fill(fields.vae_gpu, data.gpus || [], before.vae_gpu, true);
       for (const key of OUTER.filter(key => !['model','encoder','video_vae','audio_vae','latent_upscaler','gpu','vae_gpu'].includes(key))) if (before[key] !== undefined) fields[key].value = before[key];

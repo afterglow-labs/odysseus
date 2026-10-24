@@ -20,7 +20,7 @@ export function loraProfileFromComponent(component = {}) {
     custom_strength: !!saved.strength_control,
     display_name: saved.display_name || component.display_name || '',
     trigger_words: saved.trigger_words || '', trigger_position: saved.trigger_position || 'manual',
-    notes: saved.notes || '', variant: saved.variant || component.variant || 'ref2va',
+    notes: saved.notes || '', prompt_example: saved.prompt_example || '', variant: saved.variant || component.variant || 'ref2va',
     strength_control: { kind: 'custom', label: strength.label, min: strength.min, max: strength.max,
       step: strength.step, default: strength.default, labels: strength.labels || {} },
     recommended_settings: { ...(saved.recommended_settings || {}) },
@@ -74,6 +74,8 @@ export function showH3LoraLibrary({ components = [], selectedId = '', onChange =
   field(settings, 'trigger_position', 'Trigger placement', { options: [['manual', 'Manual — insert at the prompt cursor'], ['prefix', 'Beginning of prompt'], ['suffix', 'End of prompt']] });
   field(settings, 'notes', 'Instructions and other parameter notes', { type: 'textarea', rows: 4,
     help: 'Record required inputs, compatibility details, or settings that are not supported below. Notes are shown with the LoRA and are not applied automatically.' });
+  field(settings, 'prompt_example', 'Example prompt', { type: 'textarea', rows: 6,
+    help: 'Shown in a selectable, copyable popup beside this LoRA. It never changes your draft automatically.' }).maxLength = 16000;
   const strength = make('fieldset', 'h3-lora-library-fieldset'); strength.append(make('legend', '', 'Strength control')); settings.append(strength);
   const customLabel = make('label', 'video-batch-toggle'), customSlider = make('input'); customSlider.type = 'checkbox'; customSlider.id = 'h3-library-custom-strength'; fields.custom_strength = customSlider;
   customLabel.append(customSlider, make('span', '', 'Use a custom strength slider')); strength.append(customLabel);
@@ -118,7 +120,7 @@ export function showH3LoraLibrary({ components = [], selectedId = '', onChange =
   function saveDraft() { drafts.set(`${sourceValue}:${currentSelection}`, rawDraft()); }
   function fill(profile) {
     customSlider.checked = !!profile.custom_strength;
-    for (const key of ['display_name', 'variant', 'trigger_words', 'trigger_position', 'notes']) fields[key].value = profile[key] || '';
+    for (const key of ['display_name', 'variant', 'trigger_words', 'trigger_position', 'notes', 'prompt_example']) fields[key].value = profile[key] || '';
     const control = profile.strength_control;
     fields.strength_label.value = control.label;
     for (const key of ['min', 'max', 'step', 'default']) fields[`strength_${key}`].value = control[key];
@@ -137,7 +139,7 @@ export function showH3LoraLibrary({ components = [], selectedId = '', onChange =
     const recommended_settings = {};
     for (const [key, input] of Object.entries(recommends)) if (input.value !== '') recommended_settings[key] = ['sampler', 'scheduler', 'reference_size'].includes(key) ? input.value : Number(input.value);
     return { display_name: fields.display_name.value.trim(), trigger_words: fields.trigger_words.value.trim(), trigger_position: fields.trigger_position.value,
-      variant: fields.variant.value, notes: fields.notes.value, ...(customSlider.checked ? { strength_control: control } : {}), recommended_settings };
+      variant: fields.variant.value, notes: fields.notes.value, prompt_example: fields.prompt_example.value, ...(customSlider.checked ? { strength_control: control } : {}), recommended_settings };
   }
   function renderSource() {
     installed.hidden = source.value !== 'installed'; upload.hidden = source.value !== 'upload'; hf.hidden = source.value !== 'hf';

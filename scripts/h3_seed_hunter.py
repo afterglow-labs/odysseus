@@ -133,7 +133,8 @@ def save_snapshot(path, *, latent, positive, config, seed):
     _worker().atomic_json(path.with_suffix(".json"), document)
 
 
-def snapshot_metadata(spec, config, *, allow_frame_change=False, allow_prompt_change=False):
+def snapshot_metadata(spec, config, *, allow_frame_change=False, allow_prompt_change=False,
+                      allow_model_change=False):
     metadata = Path(spec["metadata"])
     if metadata.stat().st_size > 16 * 1024 * 1024:
         raise ValueError("Candidate metadata exceeds the safe size limit")
@@ -146,7 +147,10 @@ def snapshot_metadata(spec, config, *, allow_frame_change=False, allow_prompt_ch
     # An edited final prompt is re-encoded explicitly before sampling. Other
     # snapshot consumers (including exact Scout resumes) keep their saved text.
     editable_prompt = allow_prompt_change and config["seed_hunter"]["stage"] == "final"
-    for key in (("model", "encoder", "video_vae", "audio_vae")
+    # Replacing the base checkpoint requires regenerating the selected seed;
+    # load_snapshot and exact Scout resumes must still reject mismatched models.
+    editable_model = allow_model_change and config["seed_hunter"]["stage"] == "final"
+    for key in ((() if editable_model else ("model",)) + ("encoder", "video_vae", "audio_vae")
                 + (() if editable_prompt else ("prompt",)) + (() if allow_frame_change else ("frames",))):
         if original.get(key) != config.get(key):
             raise ValueError(f"Candidate {key} differs from the refinement job")
@@ -171,7 +175,7 @@ def full_length_candidate_config(document, config):
     seed = document.get("seed")
     if type(seed) is not int or not 0 <= seed <= 2**53 - 1:
         raise ValueError("The saved preview has no valid selected seed")
-    return {**original, "frames": config["frames"], "seed": seed,
+    return {**original, "model": config["model"], "frames": config["frames"], "seed": seed,
             "gpu": config["gpu"], "vae_gpu": config.get("vae_gpu"),
             "seed_hunter": {**original["seed_hunter"], "stage": "preview", "preview_count": 1}}
 
@@ -393,12 +397,17 @@ def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
     conditioning_config = config
     if options["stage"] == "final":
         document = snapshot_metadata(manifest["seed_hunter_input"], config,
-                                     allow_frame_change=True, allow_prompt_change=True)
-        regenerate = document["config"]["frames"] != config["frames"]
+                                     allow_frame_change=True, allow_prompt_change=True, allow_model_change=True)
+        model_changed = document["config"]["model"] != config["model"]
+        regenerate = model_changed or document["config"]["frames"] != config["frames"]
         prompt_changed = document["config"]["prompt"] != config["prompt"]
         conditioning_config = full_length_candidate_config(document, config)
         progress.details.update(preview_frames=document["config"]["frames"], final_frames=config["frames"],
-                                regeneration_required=regenerate, prompt_changed=prompt_changed)
+                                regeneration_required=regenerate, prompt_changed=prompt_changed,
+                                model_changed=model_changed)
+        if model_changed:
+            logging.info("Base model replaced: %s -> %s; regenerating selected seed %s before refinement",
+                         Path(document["config"]["model"]).name, Path(config["model"]).name, document.get("seed"))
         if regenerate:
             initial_config = conditioning_config
             _check_optional(manifest, initial_config, media)

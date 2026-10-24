@@ -263,6 +263,13 @@
 .h3-lora-age-marks span:last-child { text-align:right; }
 .h3-lora-profile-summary { grid-column:1 / -1; padding:8px 10px; border-left:2px solid var(--border,#544c60); }
 .h3-lora-profile-summary p { margin:0 0 8px; white-space:pre-wrap; overflow-wrap:anywhere; }
+.h3-prompt-example-dialog { width:min(760px,calc(100vw - 32px)); box-sizing:border-box; max-height:calc(100dvh - 32px); padding:18px; border:1px solid var(--border,#544c60); border-radius:12px; background:var(--panel,#25232c); color:var(--fg,#eee); }
+.h3-prompt-example-dialog[open] { display:flex; flex-direction:column; gap:10px; }
+.h3-prompt-example-dialog::backdrop { background:rgba(0,0,0,.55); }
+.h3-prompt-example-dialog header { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; }
+.h3-prompt-example-dialog h2 { margin:0; font-size:18px; }
+.h3-prompt-example-dialog p { margin:0; overflow-wrap:anywhere; }
+.h3-prompt-example-dialog textarea { box-sizing:border-box; width:100%; height:min(55dvh,560px); min-height:120px; resize:none; padding:12px; color:inherit; background:var(--bg,#1d1b24); border:1px solid var(--border,#544c60); border-radius:6px; font:13px/1.6 ui-monospace,monospace; user-select:text; -webkit-user-select:text; }
 .h3-lora-library-dialog { width:min(900px,100%); }
 .h3-lora-library-dialog .h3-video-scroll { display:block; }
 .h3-lora-library-source,.h3-lora-profile-form { display:grid; gap:12px; margin:12px 0; }

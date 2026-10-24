@@ -259,7 +259,12 @@ def discover_components(roots):
                                    **({"strength_control": control} if role == "lora" and control else {}),
                                    **({"lora_profile": profile, "display_name": profile["display_name"] or name} if profile else {}),
                                    **({"recipe": "vfx_edit"} if vfx_edit else {})})
-    return sorted(components, key=lambda row: (row["role"], row["name"], row["path"]))
+    # A verified library migration or explicit checkpoint replacement can retain
+    # the old file for existing renders. Resolve aliases after the whole scan:
+    # alphabetical/root order must not make that retained copy selectable again.
+    superseded = {alias for row in components for alias in row.get("aliases", []) if alias != row["id"]}
+    return sorted((row for row in components if row["id"] not in superseded),
+                  key=lambda row: (row["role"], row["name"], row["path"]))
 
 
 def gpu_inventory():

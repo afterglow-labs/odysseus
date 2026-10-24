@@ -1,4 +1,5 @@
 """Owner-scoped saved candidates and explicit refinement for H3 Seed Hunter."""
+import hashlib
 import uuid
 from pathlib import Path
 
@@ -128,9 +129,9 @@ def summary(directory, config, state):
         result["candidates"].append(public)
     provenance = _read(Path(directory) / "manifest.json").get("seed_hunter_source", {})
     if isinstance(provenance, dict):
-        result.update({key: provenance[key] for key in ("source_job_id", "source_candidate", "source_seed", "preview_frames", "regeneration_required") if key in provenance})
+        result.update({key: provenance[key] for key in ("source_job_id", "source_candidate", "source_seed", "preview_frames", "regeneration_required", "model_changed") if key in provenance})
         if type(provenance.get("preview_frames")) is int:
-            result["regeneration_required"] = config["frames"] != provenance["preview_frames"]
+            result["regeneration_required"] = bool(provenance.get("model_changed")) or config["frames"] != provenance["preview_frames"]
     return result
 
 
@@ -218,6 +219,13 @@ def guard_edit(original, updated):
         raise ValueError("A queued Seed Hunter job cannot change stage")
     if old["stage"] == "final":
         allowed = FINAL_EDIT_SETTINGS | {"lora_profiles"}
+        if original.get("model") != updated.get("model") and updated.get("model"):
+            from src.model_library import component_aliases
+            old_id = hashlib.sha256(str(Path(original["model"]).resolve()).encode()).hexdigest()[:32]
+            if old_id in component_aliases(updated["model"]):
+                # Only an explicit library replacement may change a saved
+                # refinement's base. The worker regenerates its selected seed.
+                allowed |= {"model"}
         if any(original.get(k) != updated.get(k) for k in original.keys() | updated.keys() if k not in allowed):
             raise ValueError("Seed Hunter refinement keeps its source model, encoder, and inputs")
         if any(old.get(k) != new.get(k) for k in old.keys() | new.keys() if k not in FINAL_OPTIONS):
@@ -322,7 +330,8 @@ def prepare_final(manager, source_id, owner, body, directory, submission_id):
             "metadata": str(artifact(source, candidate, "metadata"))})
         saved["seed_hunter_source"] = {"source_job_id": source_id, "source_candidate": candidate,
             "source_seed": selected_seed, "preview_frames": config["frames"],
-            "regeneration_required": resolved["frames"] != config["frames"]}
+            "model_changed": resolved["model"] != config["model"],
+            "regeneration_required": resolved["model"] != config["model"] or resolved["frames"] != config["frames"]}
         _write(directory / "submission.json", {"submission_id": submission_id, "input_names": names,
                                                 "source_name": manifest.get("source_name")})
         return resolved, saved

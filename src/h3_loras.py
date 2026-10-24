@@ -1,4 +1,5 @@
 """Shared validation for ordered H3 adapter selections and saved manifests."""
+import hashlib
 import math
 from pathlib import Path
 
@@ -65,6 +66,17 @@ def frozen_inventory(config, inventory, *, resolved_paths=None):
             if control:
                 component["strength_control"] = control
         components.append(component)
+    if config.get("seed_hunter", {}).get("stage") == "scout" and config.get("model"):
+        # Exact partial-schedule resumes need their original weights, even when
+        # a newer version has replaced that model in the new-job picker.
+        path = Path(_resolved_path(config["model"], resolved_paths))
+        identity = hashlib.sha256(str(path).encode()).hexdigest()[:32]
+        replacement = next((row for row in components if row.get("role") == "model"
+                            and identity in row.get("aliases", []) and row["id"] != identity), None)
+        if replacement and path.is_file():
+            components.insert(0, {**replacement, "id": identity, "aliases": [], "path": str(path),
+                                  "name": path.name, "display_name": path.name,
+                                  "nvfp4": "nvfp4" in path.name.lower()})
     return {**inventory, "components": components}
 
 

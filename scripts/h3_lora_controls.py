@@ -58,11 +58,13 @@ def _number(value, low, high, field, *, integer=False):
 
 
 def validate_lora_profile(raw):
-    allowed = {"display_name", "trigger_words", "trigger_position", "notes", "variant", "strength_control", "recommended_settings"}
+    allowed = {"display_name", "trigger_words", "trigger_position", "notes", "prompt_example", "variant", "strength_control", "recommended_settings"}
     if not isinstance(raw, dict) or raw.keys() - allowed:
         raise ValueError("Unknown LoRA profile field")
     result = {key: _text(raw.get(key, ""), limit, key) for key, limit in (
         ("display_name", 160), ("trigger_words", 4000), ("notes", 8000))}
+    if "prompt_example" in raw:
+        result["prompt_example"] = _text(raw["prompt_example"], 16000, "Example prompt")
     for key, default, choices in (("trigger_position", "manual", {"prefix", "suffix", "manual"}),
                                   ("variant", "shared", {"ref2va", "fl2va", "shared"})):
         value = raw.get(key, default)
@@ -146,6 +148,10 @@ def write_profile(path, profile, *, overwrite=False):
         existing = read_profile(path)
         if existing is not None and not overwrite:
             return existing
+        if existing and "prompt_example" not in profile and "prompt_example" in existing:
+            # Older clients do not send this optional field. Only an explicit
+            # empty value clears an example when another profile field changes.
+            profile["prompt_example"] = existing["prompt_example"]
         if target.is_symlink():
             raise ValueError("A LoRA profile cannot be a symbolic link")
         value = json.dumps({"version": 1, "filename": path.name, "profile": profile}, ensure_ascii=False).encode()

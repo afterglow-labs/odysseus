@@ -109,6 +109,7 @@ export function createH3LoraEditor({ components = [], value = [], max = 8, onCha
     row.insertTrigger.hidden = !onInsertTrigger || !profile?.trigger_words;
     row.insertTrigger.textContent = profile?.trigger_position === 'manual' ? 'Insert trigger at cursor' : 'Insert trigger';
     row.applyRecommended.hidden = !onApplyRecommended || !Object.keys(profile?.recommended_settings || {}).length;
+    row.example.hidden = !profile?.prompt_example;
   }
   function updateStrengthControl(row, selectedByUser = false) {
     const item = components.find(value => value.id === row.select.value);
@@ -167,13 +168,13 @@ export function createH3LoraEditor({ components = [], value = [], max = 8, onCha
     const triggerText = document.createElement('p'), notes = document.createElement('p'), recommendedText = document.createElement('p');
     for (const p of [triggerText, notes, recommendedText]) p.className = 'h3-video-muted';
     const profileActions = document.createElement('div'); profileActions.className = 'h3-video-actions';
-    const editProfile = document.createElement('button'), insertTrigger = document.createElement('button'), applyRecommended = document.createElement('button');
-    for (const [button, title] of [[editProfile, 'Edit profile'], [insertTrigger, 'Insert trigger'], [applyRecommended, 'Apply recommended settings']]) {
+    const editProfile = document.createElement('button'), insertTrigger = document.createElement('button'), applyRecommended = document.createElement('button'), example = document.createElement('button');
+    for (const [button, title] of [[editProfile, 'Edit profile'], [insertTrigger, 'Insert trigger'], [applyRecommended, 'Apply recommended settings'], [example, 'Example prompt']]) {
       button.type = 'button'; button.className = 'memory-toolbar-btn'; button.textContent = title; profileActions.append(button);
     }
     profilePanel.append(triggerText, notes, recommendedText, profileActions);
     wrap.append(label, strengthLabel, remove, ageControl, profilePanel); list.appendChild(wrap);
-    const row = { wrap, select, strength, strengthText, ageControl, slider, marks, ageHelp, remove, label: text, profilePanel, triggerText, notes, recommendedText, editProfile, insertTrigger, applyRecommended };
+    const row = { wrap, select, strength, strengthText, ageControl, slider, marks, ageHelp, remove, label: text, profilePanel, triggerText, notes, recommendedText, editProfile, insertTrigger, applyRecommended, example };
     rows.push(row); options(row, item.id); renumber();
     select.addEventListener('change', () => { updateStrengthControl(row, true); updateProfile(row); refreshDisabled(); onChange(getValue()); });
     const strengthChanged = () => { updateStrengthControl(row); onChange(getValue()); };
@@ -185,6 +186,12 @@ export function createH3LoraEditor({ components = [], value = [], max = 8, onCha
     editProfile.onclick = () => onManage?.(select.value, editProfile);
     insertTrigger.onclick = () => onInsertTrigger?.(components.find(item => item.id === select.value));
     applyRecommended.onclick = () => onApplyRecommended?.(components.find(item => item.id === select.value));
+    example.onclick = async () => {
+      const component = components.find(item => item.id === select.value);
+      if (!component?.lora_profile?.prompt_example) return;
+      const { showLoraPromptExample } = await import('./h3LoraPromptExample.js');
+      if (example.isConnected) showLoraPromptExample(component, example);
+    };
   }
   add.onclick = () => { if (!add.disabled) { append(); rows.at(-1).select.focus(); } };
   manage.onclick = () => onManage?.('', manage);
