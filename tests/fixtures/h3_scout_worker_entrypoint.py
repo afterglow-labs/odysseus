@@ -14,6 +14,7 @@ assert importlib.util.find_spec('scripts') is None, 'Probe must match script lau
 import h3_video_worker as worker
 import h3_seed_hunter as hunter
 import h3_seed_scout as scout
+import h3_attention_memory
 
 # Import the installed inference modules in CPU mode, including the actual
 # upstream Scout class. A CUDA initialization would fail this subprocess.
@@ -97,7 +98,9 @@ config = dict(recipe='seed_hunter', mode='ref2va', prompt='A neutral sphere roll
               width=480, height=864, frames=73, steps=20, seed=42, gpu='0',
               sampler='euler', scheduler='simple', reference_size='max',
               seed_hunter={'stage': 'scout', 'scout_count': 3, 'scout_step': 3,
-                           'scout_mode': mode, 'scout_timeout': 1})
+                           'scout_mode': 'interactive' if mode == 'automatic' else mode, 'scout_timeout': 1})
+if mode == 'automatic':
+    config['seed_hunter']['auto_refine'] = {'candidates': 'all', 'project': 'Import regression'}
 for key in ('model', 'encoder', 'video_vae', 'audio_vae'):
     path = output / f'{key}.safetensors'
     path.touch()
@@ -114,7 +117,7 @@ previews = [['scout', seed, [20., 19., 18., 17.]] for seed in (42, 43, 44)]
 if mode == 'interactive':
     assert calls == previews + [['continue', 43, list(range(17, -1, -1)), [43.]]]
     assert [total for _, total in callbacks] == [3] * 9 + [17] * 17
-elif mode == 'scout':
+elif mode in {'scout', 'automatic'}:
     assert calls == previews
     assert [total for _, total in callbacks] == [3] * 9
 else:
@@ -129,7 +132,7 @@ if continuation:
 assert all(row['total_steps'] == 17 and row['seed'] == 43 for row in continuation)
 assert all(row['schedule_total_steps'] == 20 for row in continuation)
 chosen = 43 if mode == 'interactive' else 42
-completed_steps = 3 if mode == 'scout' else 20
+completed_steps = 3 if mode in {'scout', 'automatic'} else 20
 saved = json.loads((output / 'candidate-1.json').read_text())
 assert saved['seed'] == chosen
 assert json.loads((output / 'scout.json').read_text())['selected_seed'] == chosen
@@ -149,6 +152,7 @@ if mode != 'final':
     child_config = copy.deepcopy(config)
     child_config['seed'] = 44
     child_config['seed_hunter'].update(scout_mode='final', scout_count=1)
+    child_config['seed_hunter'].pop('auto_refine', None)
     child_manifest = {**manifest, 'config': child_config, 'output_path':str(child/'output.mp4'),
         'status_path':str(child/'progress.json'), 'seed_hunter_input':{
             'candidate':44, 'latent':str(output/'scout-44.safetensors'), 'metadata':str(output/'scout-44.json')}}

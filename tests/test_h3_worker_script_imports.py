@@ -7,7 +7,7 @@ import sys
 import pytest
 
 
-@pytest.mark.parametrize('mode', ['interactive', 'scout', 'final'])
+@pytest.mark.parametrize('mode', ['interactive', 'scout', 'final', 'automatic'])
 def test_private_python_script_imports_reach_scout_and_continue_chosen_latent(tmp_path, mode):
     project = Path(__file__).parents[1]
     if not (project / 'runtimes/minimax-h3/seed-scout/nodes.py').is_file():

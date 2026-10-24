@@ -763,3 +763,30 @@ Complete neutral regular H3 renders also passed at 256×256 and 768×512,
 5090 sampling and 4090 VAE decoding. The larger render exercised automatic
 chunking inside the real inference core and produced an MP4. These smoke tests
 do not establish quality at one step or certify a full-resolution user job.
+
+### Large refinement attention buffers
+
+The worker also bounds dense Comfy Kitchen INT8 attention temporaries. Large
+H3 attention calls process independent head groups, retaining every query,
+key and value token. The normalized block input is released after QKV
+projection, and QKV storage is released before output projection. This reduces
+overlapping allocations during full-length, high-resolution refinement without
+changing the dimensions, duration, seed, LoRAs, attention backend or schedule.
+The default temporary budget is 1 GiB; the full projections, residual stream,
+outputs and model weights still need memory. It is not a total-VRAM guarantee.
+
+Small calls, gradient/training paths, other attention implementations and custom
+sparse overrides keep their original forwards. Explicit object patches such as
+the KJ low-VRAM setting take precedence. The guard lives in the Odysseus worker;
+it does not modify the installed ComfyUI checkout or global Python packages.
+
+CPU tests compare the guarded block with the pinned native block, including
+uneven head groups, modulation segments and partial rotary normalization. A
+neutral RTX 5090 CUDA comparison used the real fused RoPE and INT8 attention
+kernels at 16,385 tokens, 56 heads and hidden width 5,376: outputs matched exactly,
+and measured peak PyTorch allocation fell from 1,848.69 to 1,576.82 MiB with a
+16 MiB test budget. This isolates attention behavior and memory; it is not a
+completed full-resolution video render or a promise that every model fits.
+
+New job workers read this change directly; the web server and iOS client do not
+need to restart. A worker that was already rendering keeps its loaded code.

@@ -770,8 +770,14 @@ class H3Runtime:
         configure_bounded_lora(BypassForwardHook, LoRAAdapter)
         import nodes
         from comfy_extras import nodes_audio, nodes_minimax_h3
-        from comfy.ldm.minimax.model import MLP
-        configure_bounded_int8_feedforward(MLP)
+        from comfy.ldm.minimax import model as minimax_model
+        from comfy.ldm.modules import attention as attention_backend
+        if __package__:
+            from .h3_attention_memory import configure_bounded_attention
+        else:
+            from h3_attention_memory import configure_bounded_attention
+        configure_bounded_int8_feedforward(minimax_model.MLP)
+        configure_bounded_attention(minimax_model, attention_backend)
         self.sd, self.sample, self.utils = comfy.sd, comfy.sample, comfy.utils
         self.nodes, self.audio, self.h3 = nodes, nodes_audio, nodes_minimax_h3
         self.model_management = comfy.model_management
