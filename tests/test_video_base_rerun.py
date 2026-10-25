@@ -82,6 +82,42 @@ def test_hunter_base_rerun_of_refinement_starts_new_previews_not_old_latent(hunt
     assert h3._read(directory / 'manifest.json') == original
 
 
+def test_base_rerun_with_three_existing_refinements_creates_one_fresh_preview_job(hunter):
+    job, source = preview(hunter)
+    client = hunter.client()
+    manager = hunter.managers['h3']
+    children = []
+    for candidate in (1, 2, 3):
+        response = client.post(f"/api/video/h3/jobs/{job['id']}/seed-hunter/finalize",
+                               json={**final_body(hunter), 'candidate': candidate})
+        assert response.status_code == 201, response.text
+        children.append(manager.directory(response.json()['id']))
+    original_files = {path: path.read_bytes() for directory in [source, *children]
+                      for path in directory.iterdir() if path.suffix in {'.json', '.mp4', '.safetensors'}}
+    base = deepcopy(hunter.configs['h3'])
+    base.update(prompt='Use the revised base prompt.', steps=20)
+    base['seed_hunter']['auto_refine'] = {
+        'project': 'Base rerun', 'candidates': 'all', 'existing': 'skip',
+        'refinement': {'width': 960, 'height': 1728, 'steps': 2, 'denoise': .4,
+                       'latent_upscaler': base['latent_upscaler'], 'loras': []}}
+    before = len(hunter.calls)
+    response = reprocess(hunter, [job], base)
+    assert response.status_code == 200, response.text
+    rows = response.json()['jobs']
+    assert len(rows) == 1 and len(hunter.calls) == before + 1
+    assert rows[0]['source_id'] == job['id']
+    new = manager.directory(rows[0]['id'])
+    manifest = h3._read(new / 'manifest.json')
+    assert manifest['config']['seed_hunter']['stage'] == 'preview'
+    assert manifest['config']['seed_hunter']['preview_count'] == 3
+    assert manifest['config']['seed_hunter']['auto_refine']['candidates'] == 'all'
+    assert manifest['config']['prompt'] == base['prompt']
+    assert not manifest.get('seed_hunter_input') and not manifest.get('seed_hunter_source')
+    assert not list(new.glob('candidate-*')) and not (new / 'auto-refine.json').exists()
+    assert saved_uploads(manifest) == saved_uploads(h3._read(source / 'manifest.json'))
+    assert all(path.read_bytes() == original for path, original in original_files.items())
+
+
 @pytest.mark.parametrize('problem', ['stale', 'other-owner', 'missing-input', 'invalid-settings', 'attachments', 'invalid-options', 'final-stage'])
 def test_invalid_base_rerun_never_launches_or_changes_source(hunter, problem):
     job, source = preview(hunter)
