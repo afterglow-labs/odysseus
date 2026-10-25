@@ -12,7 +12,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.mark.parametrize('scout,layout,width', [(False,'classic',1440), (True,'pipeline',1440), (False,'classic',430), (True,'classic',430)])
-def test_shared_panel_configures_new_batches_and_saved_candidates(tmp_path, scout, layout, width):
+def test_refinements_require_explicit_saved_candidate_action(tmp_path, scout, layout, width):
     pw = pytest.importorskip('playwright.async_api')
     chrome = shutil.which('google-chrome') or shutil.which('chromium')
     if not chrome: pytest.skip('Chrome required')
@@ -60,20 +60,8 @@ def test_shared_panel_configures_new_batches_and_saved_candidates(tmp_path, scou
                 await page.evaluate("async v=>(await import('/static/js/h3SeedHunter.js')).showH3SeedHunter(v)",{'scout':scout,'layout':layout})
                 await page.get_by_text(('H3 Seed Scout' if scout else 'H3 Seed Hunter')+' is ready.',exact=True).wait_for()
                 if layout=='pipeline':await page.locator('[data-pipeline-stage=generate]').click()
-                await page.get_by_role('button',name='Automatic refinements…',exact=True).click()
-                await page.locator('#h3-auto-project').fill('Our batch')
-                await page.get_by_label('All candidates',exact=True).uncheck()
-                await page.get_by_label('Candidate 1',exact=True).check();await page.get_by_label('Candidate 3',exact=True).check()
-                await page.locator('#seed-hunter-final-steps').fill('5')
-                await page.locator('#seed-hunter-final-output_fps').select_option('48')
-                assert not await page.locator('#seed-hunter-final-seed').is_visible()
-                assert await page.locator('#seed-hunter-final-latent_upscaler').is_visible()
-                await page.get_by_role('button',name='Save automatic refinement settings',exact=True).click()
-                await page.get_by_text('Automatic refinement settings saved for new jobs and batches.',exact=True).wait_for()
-                stored=await page.evaluate("()=>JSON.parse(localStorage.getItem('odysseus-h3-seed-"+('scout' if scout else 'hunter')+"-v1"+(':pipeline' if layout=='pipeline' else '')+"')).config")
-                auto=stored['seed_hunter']['auto_refine']
-                assert auto['candidates']==[1,3] and auto['refinement']['steps']==5 and auto['refinement']['seed_hunter']['output_fps']==48
-                assert 'seed' not in auto['refinement'] and 'frames' not in auto['refinement']
+                assert not await page.get_by_role('button',name='Automatic refinements…',exact=True).is_visible()
+                assert not requests, 'Opening a workflow must never queue refinements'
                 if layout=='pipeline':await page.locator('[data-pipeline-stage=review]').click()
                 await page.get_by_role('button',name='Select all preview jobs',exact=True).click()
                 await page.get_by_role('button',name='Refine selected jobs (2)…',exact=True).click()
@@ -81,6 +69,9 @@ def test_shared_panel_configures_new_batches_and_saved_candidates(tmp_path, scou
                 await page.get_by_label('All candidates',exact=True).check()
                 await page.get_by_label('Existing results',exact=True).select_option('rerender')
                 await page.locator('#seed-hunter-final-steps').fill('7')
+                await page.locator('#seed-hunter-final-output_fps').select_option('48')
+                assert not await page.locator('#seed-hunter-final-seed').is_visible()
+                assert await page.locator('#seed-hunter-final-latent_upscaler').is_visible()
                 await page.locator('.h3-auto-refine-settings').scroll_into_view_if_needed()
                 await page.screenshot(path=str(tmp_path/f'auto-refine-{scout}-{width}.png'))
                 await page.get_by_role('button',name='Queue bulk refinements',exact=True).click()

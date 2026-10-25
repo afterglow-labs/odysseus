@@ -17,6 +17,10 @@ def list_options(query, family):
     if grouped not in {"true", "false"} or grouped == "true" and (family != "h3" or recipe != "seed_hunter"):
         raise ValueError("group_refinements must be true or false and requires the H3 seed_hunter recipe")
     grouping = {"group_refinements": True} if grouped == "true" else {}
+    if query.get('group_batches', 'false') not in {'true', 'false'}:
+        raise ValueError('group_batches must be true or false')
+    if query.get('group_batches') == 'true':
+        grouping['group_batches'] = True
     paged = "page" in query or "page_size" in query
     if not paged:
         if "before" in query:
@@ -45,7 +49,7 @@ def _created_at(state):
     return value if isinstance(value, (int, float)) and math.isfinite(value) else 0
 
 
-def history(manager, owner, *, page=None, page_size=10, before=None, recipe=None, stage=None, group_refinements=False):
+def history(manager, owner, *, page=None, page_size=10, before=None, recipe=None, stage=None, group_refinements=False, group_batches=False):
     """Cheap state scan first, then full views for only the selected IDs.
 
     Active receipts are reconciled even when they fall outside the page. Old
@@ -53,7 +57,7 @@ def history(manager, owner, *, page=None, page_size=10, before=None, recipe=None
     """
     from src.video_queue_control import queue_status
 
-    if page is None and recipe is None:
+    if page is None and recipe is None and not group_batches:
         return {"jobs": manager.jobs(owner), "queue": queue_status(manager, owner)}
 
     anchor = time.time() if before is None else before
@@ -91,7 +95,7 @@ def history(manager, owner, *, page=None, page_size=10, before=None, recipe=None
                     if is_scout != (stage == "scout"):
                         continue
             states.append((directory.name, state))
-            if group_refinements:
+            if group_refinements or group_batches:
                 records[directory.name] = (state, h3._read(directory / "manifest.json"))
 
     counts = {status: 0 for status in ("running", "queued", "completed", "failed", "stopped")}
@@ -105,6 +109,16 @@ def history(manager, owner, *, page=None, page_size=10, before=None, recipe=None
         from src.video_job_groups import refinement_groups, attach_refinements
         parents, children = refinement_groups(manager, owner, records)
         states = [item for item in states if item[0] not in parents]
+    batch_cards = {}
+    if group_batches:
+        from src.video_job_actions import summary
+        batch_ids = {records[i][1].get('batch', {}).get('id') for i, _ in states}
+        for batch_id in batch_ids - {None}:
+            card = summary(records, batch_id)
+            batch_cards[card['id']] = card
+        states = [(i, s) for i, s in states if not records[i][1].get('batch')]
+        states.extend((i, card) for i, card in batch_cards.items())
+        states.sort(key=lambda item: (_created_at(item[1]), item[0]), reverse=True)
     if page is not None:
         states = [item for item in states if _created_at(item[1]) <= anchor]
         total = len(states)
@@ -117,6 +131,9 @@ def history(manager, owner, *, page=None, page_size=10, before=None, recipe=None
     positions = {identifier: index + 1 for index, identifier in enumerate(waiting)}
     jobs = []
     for identifier, _ in states:
+        if identifier in batch_cards:
+            jobs.append(batch_cards[identifier])
+            continue
         try:
             job = manager.view(identifier, owner, queue_positions=positions, snapshot=processes or {})
             if group_refinements:

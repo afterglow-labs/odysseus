@@ -47,6 +47,23 @@ def add_queue_routes(router, manager, family):
     from routes.h3_video_routes import _owner
     from src.video_queue_control import queue_status, set_queue_paused, cancel_queued
     from src import video_history_delete as history_delete
+    from src import video_job_actions as actions
+
+    @router.get('/batches/{batch_id}')
+    async def batch_detail(batch_id: str, request: Request, page: int = 1, page_size: int = 10):
+        return await _call(actions.batch_detail, manager, _owner(request), batch_id, page, page_size)
+
+    @router.post('/batches/{batch_id}/actions')
+    async def batch_action(batch_id: str, request: Request):
+        body = await _body(request, {'action', 'request_id'}, {'action'})
+        return await _call(actions.perform, manager, _owner(request), family, batch_id,
+                           body['action'], body.get('request_id'), batch=True)
+
+    @router.post('/jobs/{job_id}/actions')
+    async def job_action(job_id: str, request: Request):
+        body = await _body(request, {'action', 'request_id'}, {'action'})
+        return await _call(actions.perform, manager, _owner(request), family, job_id,
+                           body['action'], body.get('request_id'))
 
     @router.post('/history/delete-preview')
     async def history_preview(request: Request):

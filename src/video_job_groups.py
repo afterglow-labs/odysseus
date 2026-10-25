@@ -16,23 +16,27 @@ def refinement_groups(manager, owner, records=None):
         config = manifest.get("config", {})
         source = manifest.get("seed_hunter_source", {})
         if (state.get("owner") != owner or not isinstance(config, dict) or not isinstance(source, dict)
-                or config.get("recipe") != "seed_hunter" or config.get("seed_hunter", {}).get("stage") != "final"):
+                or config.get("recipe") != "seed_hunter" or config.get("seed_hunter", {}).get("stage") not in {"final", "scout"}):
             continue
-        parent, candidate = source.get("source_job_id"), source.get("source_candidate")
-        if not isinstance(parent, str) or parent == identifier or type(candidate) is not int or not 1 <= candidate <= 3:
+        parent, candidate = manifest.get('job_group_parent') or source.get("source_job_id"), source.get("source_candidate")
+        scout = config.get("seed_hunter", {}).get("stage") == "scout"
+        if not isinstance(parent, str) or parent == identifier:
+            continue
+        if not scout and (type(candidate) is not int or not 1 <= candidate <= 3):
             continue
         parent_state, parent_manifest = records.get(parent, ({}, {}))
         parent_config = parent_manifest.get("config", {})
         if (parent_state.get("owner") != owner or not isinstance(parent_config, dict)
                 or parent_config.get("recipe") != "seed_hunter"
-                or parent_config.get("seed_hunter", {}).get("stage") != "preview"):
+                or parent_config.get("seed_hunter", {}).get("stage") != ("scout" if scout else "preview")):
             continue
         from src.h3_seed_hunter import artifact
-        try:
-            artifact(manager.directory(parent), candidate, "video")
-        except (ValueError, FileNotFoundError):
-            # A damaged or removed preview must never hide its surviving final.
-            continue
+        if not scout and not manifest.get('job_group_parent'):
+            try:
+                artifact(manager.directory(parent), candidate, "video")
+            except (ValueError, FileNotFoundError):
+                # A damaged or removed preview must never hide its surviving final.
+                continue
         parents[identifier] = parent
         children.setdefault(parent, []).append(identifier)
     for identifiers in children.values():
@@ -52,7 +56,7 @@ def attach_refinements(manager, owner, job, children, **view_options):
 
 def detail(manager, identifier, owner):
     job = manager.view(identifier, owner)
-    if job.get("seed_hunter", {}).get("stage") not in {"preview", "final"}:
+    if job.get("seed_hunter", {}).get("stage") not in {"preview", "final", "scout"}:
         return job
     parents, children = refinement_groups(manager, owner)
     if identifier in parents:

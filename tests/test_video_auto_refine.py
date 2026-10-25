@@ -8,6 +8,12 @@ import pytest
 from src import h3_video as h3, video_auto_refine as auto
 from tests.test_video_submission import backend, send
 from tests.test_h3_seed_hunter_api import hunter, preview
+from tests.test_h3_gpu_delete import db
+
+
+@pytest.fixture(autouse=True)
+def isolated_gallery(db):
+    pass
 
 
 def settings(hunter, **patch):
@@ -86,25 +92,22 @@ def test_retry_skip_and_force_include_existing_outputs_without_copy(hunter):
     assert len(list(target.parent.glob('*.mp4'))) == 1
 
 
-def test_automatic_parent_completion_is_recoverable_and_idempotent(hunter, monkeypatch):
+def test_legacy_automatic_completion_never_creates_refinements(hunter, monkeypatch):
     hunter.configs['h3']['seed_hunter']['auto_refine'] = settings(hunter, candidates=[1, 3])
     parent, folder = preview(hunter)
     manager = hunter.managers['h3']
-    original = auto._queue_candidate
-    def interrupted(*args, **kwargs):
-        if args[4] == 3:
-            raise OSError('temporary interruption')
-        return original(*args, **kwargs)
-    monkeypatch.setattr(auto, '_queue_candidate', interrupted)
-    auto.process(manager, parent['id'])
-    assert len(hunter.calls) == 2
-    assert (manager.root / '.automatic' / (parent['id'] + '.json')).exists()
-    monkeypatch.setattr(auto, '_queue_candidate', original)
+    manifest = h3._read(folder / 'manifest.json')
+    assert 'auto_refine' not in manifest['config']['seed_hunter']
+    # Also cover already-persisted jobs/tickets from an older server.
+    manifest['config']['seed_hunter']['auto_refine'] = settings(hunter)
+    h3._write(folder / 'manifest.json', manifest)
+    ticket = manager.root / '.automatic' / (parent['id'] + '.json')
+    ticket.parent.mkdir(exist_ok=True)
+    h3._write(ticket, {'id': parent['id']})
+    monkeypatch.setattr(auto, '_queue_candidate', lambda *a, **kw: pytest.fail('unrequested refinement'))
     auto.process(manager, parent['id']); auto.process(manager, parent['id'])
-    assert len(hunter.calls) == 3
-    receipt = h3._read(folder / 'auto-refine.json')
-    assert [r['candidate'] for r in receipt['jobs']] == [1, 3]
-    assert not (manager.root / '.automatic' / (parent['id'] + '.json')).exists()
+    assert len(hunter.calls) == 1
+    assert not ticket.exists()
 
 
 def test_scout_bulk_resumes_distinct_partials_then_applies_shared_final_config(hunter):
@@ -135,11 +138,12 @@ def test_scout_bulk_resumes_distinct_partials_then_applies_shared_final_config(h
 
 @pytest.mark.parametrize('patch', [ {'refinement': {'seed': 1}}, {'project': '../escape'},
     {'candidates': [1, 1]}, {'candidates': [4]}, {'refinement': {'seed_hunter': {'stage': 'single'}}} ])
-def test_invalid_automation_rejected_before_parent_launch(hunter, patch):
+def test_legacy_automation_is_ignored_on_new_preview_submissions(hunter, patch):
     hunter.configs['h3']['seed_hunter']['auto_refine'] = settings(hunter, **patch)
     reply = send(hunter, 'h3')
-    assert reply.status_code == 400, reply.text
-    assert not hunter.calls
+    assert reply.status_code == 201, reply.text
+    assert len(hunter.calls) == 1
+    assert "auto_refine" not in h3._read(hunter.managers["h3"].directory(reply.json()["id"]) / "manifest.json")["config"]["seed_hunter"]
 
 
 def test_ownership_idempotency_conflict_and_output_symlink(hunter, tmp_path):

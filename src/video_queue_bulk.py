@@ -224,7 +224,7 @@ def _clone_file(source, destination):
         destination.chmod(0o600)
 
 
-def _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, receipt, *, base_config=None):
+def _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, receipt, *, base_config=None, new_group=False):
     inventory = manager.inventory()
     staged = []
     with _locked(manager.root.parent / "video-render.lock"), ExitStack() as stack:
@@ -262,6 +262,14 @@ def _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, recei
                     from src.h3_seed_hunter import clone_snapshot
                     uploads["seed_hunter_input"] = clone_snapshot(item["directory"], directory, item["manifest"].get("seed_hunter_input"))
                     uploads["seed_hunter_source"] = item["manifest"].get("seed_hunter_source", {})
+                if new_group:
+                    from src.video_job_actions import parent_id
+                    parent = parent_id(item['manifest'])
+                    if parent in {target['id'] for target in chosen}:
+                        uploads['job_group_parent'] = hashlib.sha256(f"rerun\0{family}\0{owner}\0{key}\0{parent}".encode()).hexdigest()[:32]
+                    batch = item['manifest'].get('batch')
+                    if batch:
+                        uploads['batch'] = {**batch, 'id': uuid.uuid5(uuid.NAMESPACE_URL, key + ':' + batch['id']).hex}
                 _write(directory / "submission.json", {"input_names": names, "source_name": input_source_name(item["inputs"], family),
                                                        "submission_id": key, "rerun_of": original_id})
                 entries.append({"id": identifier, "source_id": original_id, "config": item["config"], "uploads": uploads, "accepted": False})
@@ -274,7 +282,7 @@ def _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, recei
             raise
 
 
-def rerun_jobs(manager, owner, family, chosen, patch, request_id, *, base_config=None):
+def rerun_jobs(manager, owner, family, chosen, patch, request_id, *, base_config=None, new_group=False):
     chosen = targets(chosen)
     if not isinstance(patch, dict):
         raise ValueError("Parameter changes must be a JSON object")
@@ -285,6 +293,8 @@ def rerun_jobs(manager, owner, family, chosen, patch, request_id, *, base_config
     key = uuid.UUID(request_id).hex
     digest = hashlib.sha256(f"{family}\0{owner}\0{key}".encode()).hexdigest()
     parameters = {"base_config": base_config} if base_config is not None else {"patch": patch}
+    if new_group:
+        parameters['new_group'] = True
     fingerprint = hashlib.sha256(json.dumps({"jobs": sorted(chosen, key=lambda item: item["id"]), **parameters},
                                            sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
     # First submission verifies every source. Retrying a persisted request can
@@ -305,7 +315,7 @@ def rerun_jobs(manager, owner, family, chosen, patch, request_id, *, base_config
             receipt = {"owner": owner, "request_id": key, "fingerprint": fingerprint, "created_at": time.time()}
             _write(receipt_path, receipt)
         if not receipt.get("prepared"):
-            _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, receipt, base_config=base_config)
+            _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, receipt, base_config=base_config, new_group=new_group)
         jobs, errors = [], []
         for entry in receipt["entries"]:
             directory = manager.directory(entry["id"])

@@ -302,6 +302,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
   function fail(reason) { error.textContent = reason?.message || String(reason || ''); error.hidden = !error.textContent; }
   function readOptions() {
     const value={...optionSnapshot, refmod_strengths:uploads.reference_mods?[...uploads.reference_mods.retained,...uploads.reference_mods.files].map((_,i)=>uploads.reference_mods.strengths[i]??1):[], ...Object.fromEntries(Object.keys(options).map(key => { const n = options[key]; return [key, n.type === 'checkbox' ? n.checked : n.type === 'number' || ['preview_count','continuation_overlap','output_fps','scout_timeout'].includes(key) ? (n.value === '' ? null : Number(n.value)) : n.value]; }))};
+    delete value.auto_refine;
     if(inventory?.seed_hunter?.features?.scout_upscale!==true)for(const key of ['scout_upscale','scout_final_width','scout_final_height','scout_refine_steps'])delete value[key];
     return value;
   }
@@ -412,7 +413,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
     const batchReason=batchBlock?'Finish the current operation before adding a batch.':batchIssue();
     batchQueue?.setEnabled(!batchReason,batchReason,{snapshotEnabled:!batchBlock,snapshotReason:batchReason});
     const automatic = optionSnapshot.auto_refine, autoOn = !!automatic?.candidates?.length;
-    autoBar.hidden = features.auto_refine !== true || !['preview','scout'].includes(stage.value) || scout && options.scout_mode.value==='final';
+    autoBar.hidden = true; // Refinement is available only through explicit saved-job actions.
     autoConfigure.disabled = finalBusy || locked || loading || !!jobEditor?.active;
     autoOff.hidden = !autoOn; autoOff.disabled = autoConfigure.disabled;
     autoDescription.textContent = autoOn ? `Automatic: ${automatic.candidates==='all'?'all candidates':'candidates '+automatic.candidates.join(', ')} · ${automatic.project} · ${automatic.existing==='rerender'?'reprocess all':'skip existing'}. Each result keeps its own seed and inputs.` : 'Optional: choose candidates and configure refinement once before queuing a batch.';

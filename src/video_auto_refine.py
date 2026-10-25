@@ -15,8 +15,7 @@ log = logging.getLogger(__name__)
 
 
 def register(manager, directory, config, uploads):
-    options = config.get("seed_hunter", {})
-    if not enabled(options) and not uploads.get("auto_refine_source") and not uploads.get("project_exports"):
+    if not uploads.get("auto_refine_source") and not uploads.get("project_exports"):
         return
     root = manager.root / ".automatic"
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -266,16 +265,8 @@ def process(manager, identity):
         try:
             if manifest.get("auto_refine_source") or manifest.get("project_exports"):
                 publish_output(directory)
-            if enabled(manifest.get("config", {}).get("seed_hunter", {})):
-                receipt = _read(directory / "auto-refine.json", {"jobs": []})
-                existing = {row["candidate"] for row in receipt["jobs"]}
-                for candidate in slots(manifest["config"]["seed_hunter"]):
-                    if candidate not in existing:
-                        receipt["jobs"].append(_queue_candidate(manager, identity, state["owner"], manifest, candidate))
-                        _write(directory / "auto-refine.json", receipt)
-                receipt["status"] = "queued"
-                receipt.pop("error", None)
-                _write(directory / "auto-refine.json", receipt)
+            # Completion only publishes already-requested outputs. Even an old
+            # persisted ticket cannot silently schedule another GPU job.
             ticket.unlink(missing_ok=True)
         except Exception as exc:
             # Retain successful candidates and retry only unfinished submissions.

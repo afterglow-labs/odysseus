@@ -438,7 +438,7 @@ def validate_config(raw, components, gpus, uploads):
     config["lora_scale"] = config["loras"][0]["strength"] if config["loras"] else 1
     if hunt:
         validate_scout_output(config)
-        from scripts.h3_auto_refine_controls import enabled as auto_refine_enabled, validate_dimensions
+        from scripts.h3_auto_refine_controls import validate_dimensions
         validate_dimensions(config)
     if hunt and (config.get("latent_upscaler") or options["stage"] == "final" or scout_upscale_enabled(config)):
         upscaler = by_id.get(config.get("latent_upscaler")) if isinstance(config.get("latent_upscaler"), str) else None
@@ -505,10 +505,6 @@ def validate_config(raw, components, gpus, uploads):
             raise ValueError("First/last frame mode needs a first or last image and does not accept reference files")
     elif any(value for key, value in counts.items() if not (hunt and key in {"source_video", "reference_mods"})):
         raise ValueError("Text mode does not accept attachments; choose first/last frame or reference mode")
-    if hunt and auto_refine_enabled(options):
-        from src.h3_refinement_settings import resolve
-        resolve({**DEFAULTS, **raw, 'seed_hunter': options}, options['auto_refine']['refinement'], {'components': components, 'gpus': gpus}, uploads,
-                scout=options['stage'] == 'scout')
     return config
 
 
@@ -808,6 +804,8 @@ class H3JobManager:
         result["source_name"] = source_name if isinstance(source_name, str) else None
         result["revision"] = manifest.get("revision", 0)
         result["submission_id"] = state.get("submission_id") if isinstance(state.get("submission_id"), str) else None
+        if isinstance(manifest.get('batch'), dict):
+            result['batch'] = manifest['batch']
         length = manifest.get("batch_video_length")
         if manifest.get("revision", 0) == 0 and isinstance(length, dict) and isinstance(config, dict):
             length_frames = (config.get("seed_hunter", {}).get("final_frames")
@@ -873,6 +871,8 @@ class H3JobManager:
         # Persist the FIFO receipt before starting a lightweight supervisor. Its
         # worker will acquire the separate execution lock only when it has turn.
         with _locked(self.root.parent / "video-render.lock"):
+            from src.video_job_actions import ensure_parent_available
+            ensure_parent_available(self, uploads)
             if shutil.disk_usage(self.root).free < 512 * 1024 * 1024:
                 raise RuntimeError("At least 512 MB of free space is required for a video render")
             previous = _read(self.root.parent / "video-queue.json").get("last_order", 0)

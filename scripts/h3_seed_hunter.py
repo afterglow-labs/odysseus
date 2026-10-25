@@ -18,10 +18,8 @@ import logging
 
 try:
     from scripts.h3_seed_hunter_controls import scout_upscale_enabled, scout_output_size, validate_scout_output
-    from scripts.h3_auto_refine_controls import enabled as auto_refine_enabled
 except ModuleNotFoundError:
     from h3_seed_hunter_controls import scout_upscale_enabled, scout_output_size, validate_scout_output
-    from h3_auto_refine_controls import enabled as auto_refine_enabled
 
 
 def _worker():
@@ -377,10 +375,6 @@ def _publish_candidates(path, candidates):
 
 def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
     worker = _worker()
-    if config["seed_hunter"]["stage"] == "scout" and auto_refine_enabled(config["seed_hunter"]):
-        # Save every partial without choosing or completing one in this worker.
-        # The durable server queue resumes the requested candidates separately.
-        config = {**config, "seed_hunter": {**config["seed_hunter"], "scout_mode": "scout"}}
     options = config["seed_hunter"]
     _check_optional(manifest, config, media)
     shared_refinement = manifest.get('scout_refinement')

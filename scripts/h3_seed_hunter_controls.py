@@ -107,12 +107,9 @@ def validate_options(raw):
     result["refmod_strengths"] = list(strengths)
     if result["stage"] in {"single", "continuation", "final", "scout"}:
         result["preview_count"] = 1
-    if "auto_refine" in result:
-        try:
-            from scripts.h3_auto_refine_controls import validate
-        except ModuleNotFoundError:
-            from h3_auto_refine_controls import validate
-        result["auto_refine"] = validate(result["auto_refine"], result)
+    # Legacy drafts can contain this setting. A preview submission must never
+    # authorize future refinements; those require the explicit bulk action.
+    result.pop("auto_refine", None)
     return result
 
 

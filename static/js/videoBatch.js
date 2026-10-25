@@ -40,6 +40,7 @@ export function snapshotVideoBatch(value, family) {
 export function videoBatchFormData(item) {
   const body = new FormData();
   body.append('config', JSON.stringify(item.snapshot.config));
+  if (item.snapshot.batch) body.append('batch', JSON.stringify(item.snapshot.batch));
   if (item.snapshot.autoVideoLength) body.append('auto_video_length', 'true');
   appendVideoInputs(body, videoBatchInputs(item.file, item.snapshot));
   return body;
@@ -168,7 +169,8 @@ export class VideoBatchQueue {
           prepared.set(item,{...rowSnapshot,config});
         } else prepared.set(item,rowSnapshot);
       }
-      for(const [item,value] of prepared)item.snapshot=value;
+      const batch = {id:identity(),name:`Batch · ${new Date().toLocaleString()}`,count:prepared.size};
+      for(const [item,value] of prepared)item.snapshot={...value,batch};
     }
     this.running = true; this.pauseRequested = false; this.onChange();
     try {

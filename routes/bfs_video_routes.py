@@ -87,9 +87,11 @@ def setup_bfs_video_routes(manager=None):
                 limited = _limited_request(request, None if limit is None else limit + 2 * 65536,
                                            f'BFS inputs exceed {format_byte_limit(limit)} per job' if limit is not None else None,
                                            space_directory=manager.root)
-                async with limited.form(max_files=4, max_fields=2, max_part_size=65536) as form:
-                    if any(key not in {'config', 'server_inputs', *UPLOAD_EXTENSIONS} for key in form):
+                async with limited.form(max_files=4, max_fields=3, max_part_size=65536) as form:
+                    if any(key not in {'config', 'server_inputs', 'batch', *UPLOAD_EXTENSIONS} for key in form):
                         raise ValueError('Unknown BFS upload field')
+                    from src.video_job_actions import batch_metadata
+                    batch = batch_metadata(form)
                     raw = form.get('config')
                     if not isinstance(raw, str):
                         raise ValueError('Missing BFS config JSON')
@@ -104,6 +106,8 @@ def setup_bfs_video_routes(manager=None):
                         directory = pending.stage()
                         pending.save_metadata(uploads, "bfs")
                         saved = await store_uploads(directory, uploads, limit)
+                        if batch:
+                            saved['batch'] = batch
                         return await launch_job(manager, directory, owner, config, saved)
         except ValueError as exc:
             raise HTTPException(400, 'Invalid BFS config JSON' if isinstance(exc, json.JSONDecodeError) else str(exc)) from exc

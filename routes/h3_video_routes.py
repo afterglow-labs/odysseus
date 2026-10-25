@@ -205,9 +205,11 @@ def setup_h3_video_routes(manager=None):
                 if existing is not None:
                     return existing
                 limited = _limited_request(request, None if limit is None else limit + 2 * 65536, space_directory=manager.root)
-                async with limited.form(max_files=25, max_fields=3, max_part_size=65536) as form:
-                    if any(key not in {"config", "auto_video_length", "server_inputs", *UPLOAD_EXTENSIONS} for key in form):
+                async with limited.form(max_files=25, max_fields=4, max_part_size=65536) as form:
+                    if any(key not in {"config", "auto_video_length", "server_inputs", "batch", *UPLOAD_EXTENSIONS} for key in form):
                         raise HTTPException(400, "Unknown video upload field")
+                    from src.video_job_actions import batch_metadata
+                    batch = batch_metadata(form)
                     auto_lengths = form.getlist("auto_video_length")
                     if len(auto_lengths) > 1 or (auto_lengths and auto_lengths[0] not in {"true", "false"}):
                         raise HTTPException(400, "auto_video_length must be true or false")
@@ -239,6 +241,8 @@ def setup_h3_video_routes(manager=None):
                         directory = pending.stage()
                         pending.save_metadata(uploads, "h3")
                         saved = await _store_uploads(directory, uploads, limit)
+                        if batch:
+                            saved['batch'] = batch
                         if auto_length:
                             from src.h3_video_length import select_batch_video_length
                             from src.h3_video import _read, _write
