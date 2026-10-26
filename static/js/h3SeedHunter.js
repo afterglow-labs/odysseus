@@ -275,7 +275,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
   finishBulk.onclick = () => { if(finalBusy || !bulkPartialResult)return; bulkPending=null;bulkPartialResult=false;bulkSelected.clear();selection=null;finalSection.hidden=true;save();update(); };
   selectAllPreviews.onclick = async () => { try { selectAllPreviews.disabled = true; const rows = await allPreviewJobs(request, scout); bulkSelected.clear(); rows.forEach(j => bulkSelected.set(j.id, j)); update(); } catch(e) { fail(e); } finally { selectAllPreviews.disabled = false; } };
   bulkRefine.onclick = () => openAutomatic([...bulkSelected.values()]); retryBulk.onclick = () => submitAutomatic(); const jobStatus = make('p', 'h3-video-muted'), jobList = make('div', 'h3-video-jobs'); scroll.append(jobToolbar, jobStatus, jobList);
-  jobPager = createVideoJobPager({ container: scroll, beforeNode: jobList, request: (path, options) => request(path.startsWith('/jobs?') ? path + (scout ? '&stage=scout' : '&stage=not_scout&group_refinements=true') : path, options), recipe: 'seed_hunter', isClosed: () => closed,
+  jobPager = createVideoJobPager({ container: scroll, beforeNode: jobList, historyKey: scout ? 'h3-scout' : 'h3-hunter', request: (path, options) => request(path.startsWith('/jobs?') ? path + (scout ? '&stage=scout' : '&stage=not_scout&group_refinements=true') : path, options), recipe: 'seed_hunter', isClosed: () => closed,
     onData: async data => {
       jobs = data.jobs.filter(job => scout ? isSeedScoutJob(job) : !isSeedScoutJob(job)); queue?.update(data.queue); renderJobs();
       await observePagedVideoJobEditor(jobEditor, data.legacyJobs || jobs.flatMap(job => [job, ...(job.refinements || [])]), request, () => closed);
@@ -567,12 +567,16 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
         stop.onclick = () => stopJob(job); retry.onclick = () => reruns.run(jobs.find(j => j.id===job.id)||job); edit.onclick = () => jobEditor.open(job.id); editRerun.onclick = () => queue.openRerun(job.id,async(source,patch)=>{const result=await reruns.run(source,patch,true);return {result,...reruns.state(source)};});
         remove.onclick=()=>{deletion.hidden=false;};keep.onclick=()=>{deletion.hidden=true;};confirm.onclick=async()=>{confirm.disabled=true;try{const result=await request(`/jobs/${job.id}/record`,{method:'DELETE'});if(!result.deleted)throw new Error('Deletion was not confirmed.');if(selection?.job_id===job.id){selection=null;finalSection.hidden=true;save();}await loadJobs();}catch(e){fail(e);}finally{confirm.disabled=false;}};
       }
-      if (jobList.children[index] !== nodes.card) jobList.insertBefore(nodes.card, jobList.children[index] || null);
+      jobPager.place(job, nodes.card);
       nodes.bulkLabel.hidden = inventory?.seed_hunter?.features?.auto_refine!==true || !autoRefineParent(job);
       nodes.bulkCheck.checked=bulkSelected.has(job.id);nodes.bulkCheck.disabled=finalBusy;
       const automation=job.auto_refine;
       nodes.autoStatus.textContent=automation?`Project: ${automation.project} · ${automation.status}. ${automation.error||automation.output_paths?.join(' · ')||automation.output_folder||''}`:'';nodes.autoStatus.hidden=!automation;
       nodes.originals.update(job.input_videos);
+      const candidateIDs = new Set((job.seed_hunter?.candidates || []).map(c => c.index));
+      for (const [id, preview] of nodes.previews) if (!candidateIDs.has(id)) {
+        releaseVideoJobMedia(preview.card); preview.card.remove(); nodes.previews.delete(id);
+      }
       if (isSeedScoutJob(job)) { if (!nodes.scout) { nodes.scout = createSeedScoutPreviews(job.id, { select: seed => request(`/jobs/${encodeURIComponent(job.id)}/scout/select`, { method: 'POST', headers: {'Content-Type':'application/json'}, body:JSON.stringify({seed}) }), render: async (seed, request_id) => { const result = await request(`/jobs/${encodeURIComponent(job.id)}/scout/render`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({seed,request_id}) }); await loadJobs(); return result; }, onError:fail }); nodes.candidates.append(nodes.scout.node); } nodes.scout.update(job); }
       const stageName=job.seed_hunter?.stage||'preview'; nodes.heading.textContent=`${stageName} · ${job.status} · ${job.id}`;nodes.line.textContent=[job.phase,job.total_steps?`Step ${job.step||0}/${job.total_steps}`:''].filter(Boolean).join(' · ');
       const state=reruns.state(job);nodes.retry.hidden=nodes.baseRerun.hidden=nodes.editRerun.hidden=state.hidden;nodes.retry.disabled=state.disabled;nodes.editRerun.disabled=state.disabled||state.pending;nodes.retry.textContent=state.label;nodes.baseRerun.disabled=state.baseDisabled;nodes.edit.hidden=job.status!=='queued';nodes.stop.hidden=!ACTIVE.has(job.status);nodes.remove.hidden=!TERMINAL.has(job.status);
@@ -599,6 +603,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
       }
       if(job.status==='completed'&&stageName!=='preview'&&!(job.seed_hunter?.candidates?.length)&&!nodes.output.childElementCount){nodes.output.append(createVideoJobMedia(`${API}/jobs/${encodeURIComponent(job.id)}/video`).node);}
     }
+    jobPager.finish(jobNodes);
   }
   function loadJobs(options = {}) { return jobPager.load(options); }
   refresh.onclick=loadInventory;refreshJobs.onclick=()=>loadJobs({reset:true});

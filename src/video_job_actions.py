@@ -61,23 +61,28 @@ def summary(saved, identity):
     roots, all_ids = members(saved, identity, batch=True)
     counts = dict(Counter(saved[i][0].get('status') for i in all_ids))
     metadata = saved[roots[0]][1]['batch']
+    config = saved[roots[0]][1].get('config', {})
     status = next((s for s in ('running', 'queued', 'failed', 'stopped', 'completed') if counts.get(s)), 'queued')
     return {'id': 'batch-' + identity, 'batch': metadata, 'batch_count': len(roots), 'counts': counts,
             'source_name': metadata['name'], 'status': status, 'phase': 'batch',
             'created_at': min(saved[i][0].get('created_at', 0) for i in roots),
-            'prompt': '', 'refinements': []}
+            'prompt': '', 'refinements': [], 'recipe': config.get('recipe', 'h3'),
+            **({'seed_hunter': {'stage': config['seed_hunter'].get('stage')}} if config.get('seed_hunter') else {})}
 
 
-def batch_detail(manager, owner, identity, page=1, page_size=10):
+def batch_detail(manager, owner, identity, page=1, page_size=10, active_only=False):
     if page < 1 or not 1 <= page_size <= 50:
         raise ValueError('Invalid batch page')
     saved = records(manager, owner)
     roots, _ = members(saved, identity, batch=True)
     roots.sort(key=lambda i: (saved[i][0].get('created_at', 0), i))
-    pages = max(1, (len(roots) + page_size - 1) // page_size)
-    page = min(page, pages)
     from src.video_job_groups import refinement_groups, attach_refinements
     _, children = refinement_groups(manager, owner, saved)
+    if active_only:
+        roots = [i for i in roots if any(saved[child][0].get('status') in h3.ACTIVE
+                                       for child in [i, *children.get(i, ())])]
+    pages = max(1, (len(roots) + page_size - 1) // page_size)
+    page = min(page, pages)
     jobs = []
     positions = {p.name: n + 1 for n, (p, s) in enumerate(h3._queue_entries(manager.root)) if s['status'] == 'queued'}
     for i in roots[(page - 1) * page_size:page * page_size]:

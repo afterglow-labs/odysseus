@@ -43,6 +43,18 @@ const first=calls[0].body.request_id;await control.run(source);assert.notEqual(c
 ''')
 
 
+def test_failed_retry_accepts_same_job_identity_without_reporting_a_copy():
+    run_js(r'''
+const failed={id:'b'.repeat(32),revision:0,status:'failed'};
+const control=make({request:async(path,options)=>({succeeded:1,failed:0,request_id:JSON.parse(options.body).request_id,
+  jobs:[{id:failed.id,source_id:failed.id,status:'queued',retried:true}]})});
+await control.run(failed);
+assert.equal(control.state(failed).error,'');assert.equal(control.state(failed).pending,false);
+assert.match(control.state(failed).message,/previous error was cleared/);
+assert.equal(refreshes,1);assert.equal(stored.size,0);
+''')
+
+
 def test_base_settings_frozen_before_revision_fetch_and_reused_without_touching_originals():
     run_js(r'''
 const draft={prompt:'Shared base prompt',steps:20,loras:[{id:'lora',strength:.5}],seed_hunter:{stage:'preview',preview_count:3}};

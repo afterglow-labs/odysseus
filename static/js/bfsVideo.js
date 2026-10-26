@@ -154,7 +154,7 @@ export function showBfsVideo({ preferred = null, layout = 'classic' } = {}, anch
   const jobsStatus = el('p', 'h3-video-muted', 'Loading jobs…'); jobsStatus.setAttribute('role', 'status'); scroll.appendChild(jobsStatus);
   const queueContainer = el('div'); scroll.appendChild(queueContainer);
   const jobList = el('div', 'h3-video-jobs'); scroll.appendChild(jobList);
-  jobPager = createVideoJobPager({ container: scroll, beforeNode: jobList, request, isClosed: () => closed,
+  jobPager = createVideoJobPager({ container: scroll, beforeNode: jobList, historyKey: 'bfsVideo', request, isClosed: () => closed,
     onData: async data => {
       queueControls?.update(data.queue); jobs = data.jobs.filter(job => !deletedJobs.has(job.id)); renderJobs();
       await observePagedVideoJobEditor(jobEditor, data.legacyJobs || jobs, request, () => closed);
@@ -441,7 +441,7 @@ export function showBfsVideo({ preferred = null, layout = 'classic' } = {}, anch
         confirmDelete.onclick = () => deleteJob(job.id);
         exportJob.onclick = () => showVideoWorkflowExportOptions(options => videoWorkflow.downloadJobWorkflow('bfs', job.id, options), exportJob);
       }
-      if (jobList.children[index] !== nodes.card) jobList.insertBefore(nodes.card, jobList.children[index] || null);
+      jobPager.place(job, nodes.card);
       const queued = job.status === 'queued';
       nodes.edit.hidden = !queued;
       const rerunState = reruns.state(job);
@@ -478,6 +478,7 @@ export function showBfsVideo({ preferred = null, layout = 'classic' } = {}, anch
       }
     }
     updateReady();
+    jobPager.finish(jobNodes);
   }
   function loadJobs(options = {}) { return jobPager.load(options); }
   async function stopJob(id) {

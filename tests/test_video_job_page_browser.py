@@ -58,6 +58,8 @@ def test_top_and_bottom_job_pages_in_all_classic_and_pipeline_workflows(tmp_path
                     await handler.fulfill(json=inventory)
                 elif path.endswith('/prompt-enhancer'):
                     await handler.fulfill(json={'models': []})
+                elif path == '/api/workflows/prompt-history':
+                    await handler.fulfill(json={'prompts': [], 'has_more': False})
                 elif path.endswith('/gpus'):
                     await handler.fulfill(json={'gpus': inventory['gpus']})
                 elif path.endswith('/jobs'):

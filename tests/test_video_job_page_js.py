@@ -12,8 +12,8 @@ def run_js(script):
     node = shutil.which('node')
     if not node:
         pytest.skip('Node.js is required')
-    source = '\n'.join((ROOT / 'static/js' / name).read_text()
-                       for name in ('videoJobPage.js', 'videoJobMedia.js'))
+    source = '\n'.join((ROOT / 'static/js' / name).read_text().replace("import { createVideoBatchHistory } from './videoBatchHistory.js';", '')
+                       for name in ('videoBatchHistory.js', 'videoJobPage.js', 'videoJobMedia.js'))
     result = subprocess.run([node, '--input-type=module'],
                             input="import assert from 'node:assert/strict';\n" + source + '\n' + script,
                             text=True, capture_output=True)
@@ -35,8 +35,9 @@ class Element {
  async play(){this.paused=false;}
  pause(){this.paused=true;}
  load(){this.loads++;}
+ remove(){}
 }
-globalThis.document={createElement:tag=>new Element(tag)};
+globalThis.document={createElement:tag=>new Element(tag),createTextNode:text=>({textContent:text})};
 const flush=()=>new Promise(resolve=>setTimeout(resolve,0));
 '''
 
@@ -77,7 +78,7 @@ const polling=pager.load();await flush();pager.load({page:2});
 finish({jobs:[{id:'obsolete'}],pagination:{page:1,total:100,total_pages:10,before:10}});await flush();
 assert.match(calls.at(-1),/page=2.*before=10/);
 pager.load({reset:true});finish({jobs:[{id:'also-obsolete'}],pagination:{page:2,total:100,total_pages:10,before:10}});await flush();
-assert.equal(calls.at(-1),'/jobs?page=1&page_size=10');
+assert.equal(calls.at(-1),'/jobs?page=1&page_size=10&group_batches=true');
 finish({jobs:[{id:'new-job'}],pagination:{page:1,total:101,total_pages:11,before:20}});await polling;
 assert.deepEqual(pages,['initial','new-job']);assert.equal(pager.total,101);
 pager.destroy();await pager.load();assert.equal(calls.length,4);

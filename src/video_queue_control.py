@@ -34,6 +34,7 @@ def _revision(manifest):
 def queue_status(manager, owner):
     counts = {key: 0 for key in ("queued", "running", "completed", "failed", "stopped")}
     shared = dict(counts)
+    current_jobs = []
     for current in _managers(manager, "all"):
         for directory in _directories(current):
             state = h3._read(directory / "state.json")
@@ -42,12 +43,19 @@ def queue_status(manager, owner):
                 shared[status] += 1
                 if current.root == manager.root:
                     counts[status] += 1
+                if status == 'running':
+                    progress = h3._read(directory / 'progress.json')
+                    current_jobs.append({'id': directory.name, 'family': current.root.name,
+                                         'source_name': state.get('source_name') or directory.name,
+                                         'phase': progress.get('phase', state.get('phase', 'running')),
+                                         'step': progress.get('step', 0),
+                                         'total_steps': progress.get('total_steps', state.get('steps', 0))})
     control = h3._read(manager.root.parent / "video-queue-control.json")
     paused = control.get("paused_owners", {})
     return {"paused": bool(isinstance(paused, dict) and paused.get(str(owner))),
             "family": manager.root.name, "counts": counts, "shared_counts": shared,
             "queued": counts["queued"], "running": counts["running"],
-            "total_queued": shared["queued"], "total_running": shared["running"]}
+            "total_queued": shared["queued"], "total_running": shared["running"], "current_jobs": current_jobs}
 
 
 def _targets_unlocked(manager, owner, scope):

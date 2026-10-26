@@ -1,3 +1,4 @@
+import { createVideoBatchHistory } from './videoBatchHistory.js';
 // Job history stays bounded while the queue itself remains shared and unfiltered.
 export function createVideoJobPageState({ pageSize = 10, recipe = '' } = {}) {
   let page = 1, before = null, total = 0, totalPages = 1, counts = {};
@@ -36,8 +37,18 @@ export function createVideoJobPageState({ pageSize = 10, recipe = '' } = {}) {
   };
 }
 
-export function createVideoJobPager({ container, beforeNode, request, recipe = '', onData, onError, isClosed = () => false }) {
+export function createVideoJobPager({ container, beforeNode, request, recipe = '', historyKey = recipe || 'video', onData, onError, isClosed = () => false }) {
   const state = createVideoJobPageState({ recipe });
+  const activity = document.createElement('div'); activity.className = 'video-queue-activity';
+  const status = document.createElement('span'); status.setAttribute('role', 'status');
+  const filter = document.createElement('label'), active = document.createElement('input'); active.type = 'checkbox';
+  const key = `odysseus-video-active-only:${historyKey}`;
+  try { active.checked = localStorage.getItem(key) === 'true'; } catch {}
+  filter.append(active, document.createTextNode(' Active only')); activity.append(status, filter);
+  // Outside the scrolling body: no jumping or disappearing with job polling.
+  container.parentElement?.insertBefore(activity, container);
+  const groups = createVideoBatchHistory({ list: beforeNode, request, reload: () => load({page: state.page}), onError, activeOnly: () => active.checked });
+  active.onchange = () => { try { localStorage.setItem(key, String(active.checked)); } catch {} groups.resetPages(); load({reset:true}); };
   function controls(bottom = false) {
     const node = document.createElement('nav'); node.className = 'video-job-pager';
     node.setAttribute('aria-label', bottom ? 'Job history pages below results' : 'Job history pages');
@@ -72,18 +83,25 @@ export function createVideoJobPager({ container, beforeNode, request, recipe = '
       while (pending && alive()) {
         const options = pending; pending = null;
         try {
-          const response = await request(state.query(options));
+          const response = await request(state.query(options) + '&group_batches=true' + (active.checked ? '&active_only=true' : ''));
           if (!alive()) return;
           if (pending) continue;
           const data = state.accept(response, options);
-          await onData(data);
+          const grouped = await groups.prepare(data);
+          if (!alive() || pending) continue;
+          const q = data.queue || {}, current = q.current_jobs?.[0];
+          status.textContent = [q.paused ? 'Queue paused' : `${q.total_running ?? q.running ?? 0} running`, `${q.total_queued ?? q.queued ?? 0} waiting`,
+            current?.source_name, current?.phase, current?.total_steps ? `Step ${current.step || 0}/${current.total_steps}` : ''].filter(Boolean).join(' · ');
+          await onData(grouped);
         } catch (error) { if (alive() && !pending) onError(error); }
       }
     }).finally(() => { task = null; if (alive()) render(); });
     render(); return task;
   }
   render();
-  return { node: top.node, bottomNode: bottom.node, load, get counts() { return state.counts; }, get total() { return state.total; }, destroy() { destroyed = true; pending = null; } };
+  return { node: top.node, bottomNode: bottom.node, load, place: groups.place, finish: groups.finish,
+    get counts() { return state.counts; }, get total() { return state.total; },
+    destroy() { destroyed = true; pending = null; groups.destroy(); activity.remove(); } };
 }
 
 export async function observePagedVideoJobEditor(editor, jobs, request, isClosed = () => false) {

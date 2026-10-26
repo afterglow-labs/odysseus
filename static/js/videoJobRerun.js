@@ -67,13 +67,15 @@ export function createVideoJobReruns({ family, request, getBaseConfig, isBaseBlo
       const copy = Array.isArray(result.jobs) && result.jobs.length === 1 ? result.jobs[0] : null;
       const sameRequest = String(result.request_id || '').replaceAll('-', '').toLowerCase() === value.body.request_id.replaceAll('-', '').toLowerCase();
       if (!sameRequest || Number(result.succeeded ?? result.rerun) !== 1 || Number(result.failed || 0)
-        || !copy || copy.source_id !== job.id || !/^[a-f0-9]{32}$/i.test(copy.id || '') || copy.id === job.id) {
+        || !copy || copy.source_id !== job.id || !/^[a-f0-9]{32}$/i.test(copy.id || '')
+        || (copy.id === job.id && (copy.retried !== true || value.body.base_config || Object.keys(value.body.patch || {}).length))) {
         const detail = result.errors?.map(item => item.error || item.message || '').filter(Boolean).join('\n');
         throw new Error(detail || 'The server has not confirmed the new copy. Retry the same request safely.');
       }
       const base = !!value.body.base_config, edited = Object.keys(value.body.patch || {}).length > 0;
       persist(job.id, null);
-      value.message = `New job ${copy.id} added to the queue using this job’s saved inputs${base ? ' and the base settings above' : edited ? ' and updated parameters' : ', prompt and settings'}. The original is kept.`;
+      value.message = copy.retried ? 'This job is queued again with its saved inputs, prompt and settings. The previous error was cleared.'
+        : `New job ${copy.id} added to the queue using this job’s saved inputs${base ? ' and the base settings above' : edited ? ' and updated parameters' : ', prompt and settings'}. The original is kept.`;
     } catch (error) {
       // The source-revision conflict is raised before the server stages any
       // copy. A fresh click can safely fetch the edited source's new revision.

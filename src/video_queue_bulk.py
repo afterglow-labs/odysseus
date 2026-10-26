@@ -235,6 +235,10 @@ def _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, recei
             entries = []
             for item in prepared:
                 original_id = item["state"]["id"]
+                if not patch and base_config is None and not new_group and item['state']['status'] in {'failed', 'stopped'}:
+                    entries.append({'id': original_id, 'source_id': original_id, 'config': item['config'],
+                                    'retry': True, 'revision': revision(item['manifest']), 'accepted': False})
+                    continue
                 identifier = hashlib.sha256(f"rerun\0{family}\0{owner}\0{key}\0{original_id}".encode()).hexdigest()[:32]
                 directory = manager.directory(identifier)
                 # Only this owner's durable request receipt authorizes recovery
@@ -320,7 +324,16 @@ def rerun_jobs(manager, owner, family, chosen, patch, request_id, *, base_config
         for entry in receipt["entries"]:
             directory = manager.directory(entry["id"])
             state = _read(directory / "state.json")
-            if state:
+            if entry.get('retry'):
+                try:
+                    from src.video_job_retry import retry_job
+                    if not entry.get('accepted'):
+                        state = retry_job(manager, owner, entry['id'], entry['config'], entry['revision'], key)
+                    entry['accepted'] = True
+                except (FileNotFoundError, OSError, RuntimeError) as exc:
+                    errors.append({'id': entry['id'], 'error': str(exc)})
+                    continue
+            elif state:
                 if state.get("owner") != owner:
                     errors.append({"id": entry["id"], "error": "The rerun job is unavailable"})
                     continue
@@ -351,6 +364,7 @@ def rerun_jobs(manager, owner, family, chosen, patch, request_id, *, base_config
             # No full view here: 200 jobs should not read 200 render log tails
             # or enumerate all system processes 200 times.
             jobs.append({"id": entry["id"], "source_id": entry["source_id"], "status": state.get("status"),
+                         "retried": bool(entry.get('retry')),
                          "revision": revision(_read(directory / "manifest.json")), "source_name": state.get("source_name")})
         return {"rerun": len(jobs), "succeeded": len(jobs), "failed": len(errors), "jobs": jobs,
                 "errors": errors, "request_id": key}

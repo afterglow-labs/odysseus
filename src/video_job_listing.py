@@ -17,6 +17,10 @@ def list_options(query, family):
     if grouped not in {"true", "false"} or grouped == "true" and (family != "h3" or recipe != "seed_hunter"):
         raise ValueError("group_refinements must be true or false and requires the H3 seed_hunter recipe")
     grouping = {"group_refinements": True} if grouped == "true" else {}
+    if query.get('active_only', 'false') not in {'true', 'false'}:
+        raise ValueError('active_only must be true or false')
+    if query.get('active_only') == 'true':
+        grouping['active_only'] = True
     if query.get('group_batches', 'false') not in {'true', 'false'}:
         raise ValueError('group_batches must be true or false')
     if query.get('group_batches') == 'true':
@@ -49,7 +53,7 @@ def _created_at(state):
     return value if isinstance(value, (int, float)) and math.isfinite(value) else 0
 
 
-def history(manager, owner, *, page=None, page_size=10, before=None, recipe=None, stage=None, group_refinements=False, group_batches=False):
+def history(manager, owner, *, page=None, page_size=10, before=None, recipe=None, stage=None, group_refinements=False, group_batches=False, active_only=False):
     """Cheap state scan first, then full views for only the selected IDs.
 
     Active receipts are reconciled even when they fall outside the page. Old
@@ -57,7 +61,7 @@ def history(manager, owner, *, page=None, page_size=10, before=None, recipe=None
     """
     from src.video_queue_control import queue_status
 
-    if page is None and recipe is None and not group_batches:
+    if page is None and recipe is None and not group_batches and not active_only:
         return {"jobs": manager.jobs(owner), "queue": queue_status(manager, owner)}
 
     anchor = time.time() if before is None else before
@@ -111,14 +115,20 @@ def history(manager, owner, *, page=None, page_size=10, before=None, recipe=None
         states = [item for item in states if item[0] not in parents]
     batch_cards = {}
     if group_batches:
-        from src.video_job_actions import summary
+        from src.video_job_actions import summary, members
         batch_ids = {records[i][1].get('batch', {}).get('id') for i, _ in states}
+        covered = set()
         for batch_id in batch_ids - {None}:
             card = summary(records, batch_id)
             batch_cards[card['id']] = card
-        states = [(i, s) for i, s in states if not records[i][1].get('batch')]
+            covered.update(members(records, batch_id, batch=True)[1])
+        states = [(i, s) for i, s in states if i not in covered]
         states.extend((i, card) for i, card in batch_cards.items())
         states.sort(key=lambda item: (_created_at(item[1]), item[0]), reverse=True)
+    if active_only:
+        states = [(i, s) for i, s in states if s.get('status') in h3.ACTIVE
+                  or any(records[child][0].get('status') in h3.ACTIVE for child in children.get(i, ()))
+                  or any(s.get('counts', {}).get(status) for status in h3.ACTIVE)]
     if page is not None:
         states = [item for item in states if _created_at(item[1]) <= anchor]
         total = len(states)
