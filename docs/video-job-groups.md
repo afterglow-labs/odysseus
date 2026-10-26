@@ -30,3 +30,10 @@ manual/bulk refinement actions continue to publish their requested outputs.
 
 The grouped history API is opt-in (`group_batches=true`); existing flat-history
 clients retain their previous response format. Group actions are owner-scoped.
+
+Single-job parameter editors read `GET /queue/jobs?status=finished&job_id=<id>`
+under the H3 or BFS API. The server resolves only that owned job's editable
+configuration; unrelated history is not loaded into the editor. Missing or
+foreign jobs return 404, and the status filter still applies. Omitting `job_id`
+keeps the existing bulk-selection response. Clients talking to older servers
+must filter to the requested ID before applying the 1,000-job bulk limit.

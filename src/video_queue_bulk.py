@@ -63,11 +63,18 @@ def _light(directory, state, inventory, family, *, resolved_paths=None):
     return result
 
 
-def list_jobs(manager, owner, family, status="queued"):
+def list_jobs(manager, owner, family, status="queued", job_id=None):
     if status not in {"queued", "finished", "all"}:
         raise ValueError("Choose queued, finished, or all jobs")
     entries = []
-    if manager.root.is_dir():
+    if job_id is not None:
+        # A single-job editor must not scan/project the owner's whole history.
+        # Resolve ownership before inventory or filesystem work for this job.
+        directory, state = _owned(manager, job_id, owner)
+        if (status == "all" or status == "queued" and state.get("status") == "queued"
+                or status == "finished" and state.get("status") in TERMINAL):
+            entries.append((directory, state))
+    elif manager.root.is_dir():
         for directory in manager.root.iterdir():
             if not directory.is_dir() or directory.is_symlink() or not JOB_ID.fullmatch(directory.name):
                 continue

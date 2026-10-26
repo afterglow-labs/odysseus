@@ -6,11 +6,56 @@ from pathlib import Path
 
 import pytest
 
-from src import h3_video as h3
+from src import h3_video as h3, video_queue_bulk as bulk
 from src.h3_loras import frozen_components
 from src.video_job_edit import _draft
 from tests.test_video_queue_bulk import create
 from tests.test_video_submission import backend
+
+
+@pytest.mark.parametrize('family', ['h3', 'bfs'])
+def test_single_job_snapshot_ignores_large_unrelated_history(backend, monkeypatch, family):
+    job = create(backend, family)
+    manager = backend.managers[family]
+    directory = manager.directory(job['id'])
+    h3._write(directory / 'state.json', {**h3._read(directory / 'state.json'), 'status': 'completed'})
+    original = (directory / 'manifest.json').read_bytes()
+    for index in range(1600):
+        history = manager.root / f'{index:032x}'
+        history.mkdir()
+        h3._write(history / 'state.json', {'id': history.name, 'status': 'completed', 'owner': 'corey'})
+        # A damaged/unavailable unrelated manifest must not block this editor.
+        (history / 'manifest.json').write_text('{broken')
+    projected, light = [], bulk._light
+
+    def track(path, *args, **kwargs):
+        projected.append(path.name)
+        return light(path, *args, **kwargs)
+
+    monkeypatch.setattr(bulk, '_light', track)
+    response = backend.client().get(f'/api/video/{family}/queue/jobs',
+                                    params={'status': 'finished', 'job_id': job['id']})
+    assert response.status_code == 200, response.text
+    rows = response.json()['jobs']
+    assert [row['id'] for row in rows] == projected == [job['id']]
+    saved = h3._read(directory / 'manifest.json')['config']
+    assert (rows[0]['config']['width'], rows[0]['config']['height']) == (saved['width'], saved['height'])
+    assert (directory / 'manifest.json').read_bytes() == original
+
+
+@pytest.mark.parametrize('family', ['h3', 'bfs'])
+def test_single_job_snapshot_keeps_ownership_and_status_filters(backend, family):
+    job, other = create(backend, family), create(backend, family, owner='other')
+    client = backend.client()
+    url = f'/api/video/{family}/queue/jobs'
+    response = client.get(url, params={'status': 'queued', 'job_id': job['id']})
+    assert response.status_code == 200
+    assert [row['id'] for row in response.json()['jobs']] == [job['id']]
+    assert client.get(url, params={'status': 'finished', 'job_id': job['id']}).json()['jobs'] == []
+    for identifier in (other['id'], 'f' * 32, '../state'):
+        response = client.get(url, params={'status': 'all', 'job_id': identifier})
+        assert response.status_code == 404, response.text
+        assert 'config' not in response.json()
 
 
 @pytest.mark.parametrize('family', ['h3', 'bfs'])

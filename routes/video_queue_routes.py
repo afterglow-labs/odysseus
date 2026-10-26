@@ -82,9 +82,9 @@ def add_queue_routes(router, manager, family):
         return await _call(queue_status, manager, _owner(request))
 
     @router.get('/queue/jobs')
-    async def snapshot(request: Request, status: str = 'queued'):
+    async def snapshot(request: Request, status: str = 'queued', job_id: str | None = None):
         owner = _owner(request)
-        jobs = await _call(bulk.list_jobs, manager, owner, family, status)
+        jobs = await _call(bulk.list_jobs, manager, owner, family, status, job_id=job_id)
         return {"jobs": jobs, "queue": await _call(queue_status, manager, owner)}
 
     @router.post('/queue/pause')
