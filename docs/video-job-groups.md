@@ -13,8 +13,9 @@ render or resume a paused queue. Long-press a card for group actions:
 - Stop all processes: stop running work and cancel waiting descendants.
 - Refine all unrefined: open the shared candidate/refinement settings panel.
 - Duplicate: create fresh source jobs using their saved inputs and settings.
-- Rerun all: explicitly rerun sources and existing refinements with their own
-  saved seeds and settings, grouped under the new source jobs.
+- Rerun all: restart finished sources and existing refinements in the same
+  group with their saved seeds, settings and inputs. Queued/running items stay
+  in place. Repeated clicks do not create duplicate jobs or extra batches.
 - Delete job and all files: stop and remove the entire owned group, including
   queued children, previews, saved input copies, latents and registered outputs.
   Original source media and model files are not job storage and remain intact.

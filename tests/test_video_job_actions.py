@@ -132,9 +132,55 @@ def test_duplicate_does_not_refine_and_rerun_all_is_explicit_and_idempotent(hunt
     rerun=act(hunter,parent["id"],"rerun_all")
     assert rerun.status_code==200 and len(rerun.json()["jobs"])==3,rerun.text
     mapping={j['source_id']:j['id'] for j in rerun.json()['jobs']}
+    assert all(source == retried for source, retried in mapping.items())
+    assert rerun.json()['queued_again'] == 1 and rerun.json()['skipped_active'] == 2
     for child in children:
         manifest=h3._read(hunter.managers['h3'].directory(mapping[child['job_id']])/'manifest.json')
-        assert manifest['job_group_parent']==mapping[parent['id']]
+        assert actions.parent_id(manifest)==parent['id']
     assert act(hunter,parent['id'],'delete').json()['failed']==0
     # Lost responses retry the same accepted copies after source cleanup.
     assert first.json()==act(hunter,parent['id'],'duplicate',key=key).json()
+
+
+@pytest.mark.parametrize('family', ['h3', 'bfs'])
+def test_rerun_batch_updates_same_items_across_pages_and_skips_active(backend, family):
+    batch = {'id': uuid.uuid4().hex, 'name': 'Twelve files', 'count': 12}
+    jobs = [send(backend, family, name=f'clip-{i}.mp4', extra=[('batch', (None, json.dumps(batch)))]).json() for i in range(12)]
+    manager = backend.managers[family]
+    original = {}; active = {}
+    for job, status in zip(jobs, ['completed', 'stopped', *['failed'] * 8, 'queued', 'running']):
+        folder = manager.directory(job['id']); path = folder / 'state.json'
+        state = {**h3._read(path), 'status': status}
+        if status in h3.TERMINAL: state.update(supervisor=None, worker=None, error='old attempt')
+        h3._write(path, state)
+        original[job['id']] = h3._read(folder / 'manifest.json')
+        if status in h3.ACTIVE: active[job['id']] = path.read_bytes()
+    key = uuid.uuid4().hex
+    def rerun(request_key):
+        return backend.client().post(f'/api/video/{family}/batches/{batch["id"]}/actions',
+            json={'action': 'rerun_all', 'request_id': request_key})
+    result = rerun(key)
+    assert result.status_code == 200, result.text
+    assert result.json()['queued_again'] == 10 and result.json()['skipped_active'] == 2
+    assert result.json()['failed'] == 0
+    assert {j['id'] for j in result.json()['jobs']} == set(original)
+    assert all(j['id'] == j['source_id'] for j in result.json()['jobs'])
+    assert len(backend.calls) == 22
+    for identity, manifest in original.items():
+        folder = manager.directory(identity)
+        saved = h3._read(folder/'manifest.json')
+        assert saved['batch'] == batch and saved['config'] == manifest['config']
+        for field in manifest['input_names']: assert saved[field] == manifest[field]
+        if identity in active: assert (folder/'state.json').read_bytes() == active[identity]
+        else:
+            state = h3._read(folder/'state.json')
+            assert state['status'] == 'queued' and state['error'] is None
+    assert rerun(key).json()['jobs'] == result.json()['jobs']
+    again = rerun(uuid.uuid4().hex).json()
+    assert again['queued_again'] == 0 and again['skipped_active'] == 12
+    assert len(backend.calls) == 22
+    listing = backend.client().get(f'/api/video/{family}/jobs?page=1&group_batches=true').json()
+    assert listing['pagination']['total'] == 1 and listing['jobs'][0]['batch_count'] == 12
+    page = backend.client().get(f'/api/video/{family}/batches/{batch["id"]}?page=2').json()
+    assert page['pagination']['total'] == 12 and len(page['jobs']) == 2
+    assert all(j['status'] in h3.ACTIVE for j in page['jobs'])

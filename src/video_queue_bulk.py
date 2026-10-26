@@ -10,7 +10,7 @@ import shutil
 import time
 import uuid
 
-from src.h3_video import JOB_ID, TERMINAL, _locked, _read, _write
+from src.h3_video import ACTIVE, JOB_ID, TERMINAL, _locked, _read, _write
 from src.video_job_edit import _draft, _inputs, revision, validate, persist_legacy_inputs, input_source_name
 from src.video_submission import UUID, ensure_upload_space
 from src.video_workflow import specification
@@ -150,13 +150,16 @@ def _from_base(config, base_config, inventory, family, inputs):
     return validate(raw, inventory, inputs, family)
 
 
-def _prepare_locked(manager, owner, family, chosen, patch, inventory, *, queued, base_config=None):
+def _prepare_locked(manager, owner, family, chosen, patch, inventory, *, queued, base_config=None, in_place=False):
     prepared, resolved_paths = [], {}
     for item in chosen:
         directory, state = _owned(manager, item["id"], owner)
         if queued and (state.get("status") != "queued" or (directory / "cancel").exists()):
             raise RuntimeError("A selected job has started or left the queue. Refresh before editing.")
         manifest = _read(directory / "manifest.json")
+        if in_place and state.get('status') in ACTIVE:
+            prepared.append({'directory': directory, 'state': state, 'manifest': manifest, 'already_active': True})
+            continue
         if revision(manifest) != item["revision"]:
             raise RuntimeError("A selected job was edited elsewhere. Refresh to load its latest settings.")
         config = manifest.get("config")
@@ -224,17 +227,24 @@ def _clone_file(source, destination):
         destination.chmod(0o600)
 
 
-def _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, receipt, *, base_config=None, new_group=False):
+def _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, receipt, *, base_config=None, new_group=False, in_place=False):
     inventory = manager.inventory()
     staged = []
     with _locked(manager.root.parent / "video-render.lock"), ExitStack() as stack:
         for item in sorted(chosen, key=lambda item: item["id"]):
             stack.enter_context(_locked(manager.directory(item["id"]) / "job.lock"))
-        prepared = _prepare_locked(manager, owner, family, chosen, patch, inventory, queued=False, base_config=base_config)
+        prepared = _prepare_locked(manager, owner, family, chosen, patch, inventory, queued=False, base_config=base_config, in_place=in_place)
         try:
             entries = []
             for item in prepared:
                 original_id = item["state"]["id"]
+                if item.get('already_active'):
+                    entries.append({'id': original_id, 'source_id': original_id, 'skipped_active': True, 'accepted': True})
+                    continue
+                if in_place:
+                    entries.append({'id': original_id, 'source_id': original_id, 'config': item['config'],
+                                    'retry': True, 'allow_completed': True, 'revision': revision(item['manifest']), 'accepted': False})
+                    continue
                 if not patch and base_config is None and not new_group and item['state']['status'] in {'failed', 'stopped'}:
                     entries.append({'id': original_id, 'source_id': original_id, 'config': item['config'],
                                     'retry': True, 'revision': revision(item['manifest']), 'accepted': False})
@@ -286,12 +296,14 @@ def _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, recei
             raise
 
 
-def rerun_jobs(manager, owner, family, chosen, patch, request_id, *, base_config=None, new_group=False):
+def rerun_jobs(manager, owner, family, chosen, patch, request_id, *, base_config=None, new_group=False, in_place=False):
     chosen = targets(chosen)
     if not isinstance(patch, dict):
         raise ValueError("Parameter changes must be a JSON object")
     if base_config is not None and (not isinstance(base_config, dict) or patch):
         raise ValueError("Supply base settings or individual parameter changes, not both")
+    if in_place and (patch or base_config is not None or new_group):
+        raise ValueError('Rerun in place uses the saved settings and job group')
     if not isinstance(request_id, str) or not UUID.fullmatch(request_id):
         raise ValueError("Rerun requests need a UUID request_id")
     key = uuid.UUID(request_id).hex
@@ -299,6 +311,8 @@ def rerun_jobs(manager, owner, family, chosen, patch, request_id, *, base_config
     parameters = {"base_config": base_config} if base_config is not None else {"patch": patch}
     if new_group:
         parameters['new_group'] = True
+    if in_place:
+        parameters['in_place'] = True
     fingerprint = hashlib.sha256(json.dumps({"jobs": sorted(chosen, key=lambda item: item["id"]), **parameters},
                                            sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
     # First submission verifies every source. Retrying a persisted request can
@@ -319,7 +333,7 @@ def rerun_jobs(manager, owner, family, chosen, patch, request_id, *, base_config
             receipt = {"owner": owner, "request_id": key, "fingerprint": fingerprint, "created_at": time.time()}
             _write(receipt_path, receipt)
         if not receipt.get("prepared"):
-            _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, receipt, base_config=base_config, new_group=new_group)
+            _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, receipt, base_config=base_config, new_group=new_group, in_place=in_place)
         jobs, errors = [], []
         for entry in receipt["entries"]:
             directory = manager.directory(entry["id"])
@@ -328,7 +342,9 @@ def rerun_jobs(manager, owner, family, chosen, patch, request_id, *, base_config
                 try:
                     from src.video_job_retry import retry_job
                     if not entry.get('accepted'):
-                        state = retry_job(manager, owner, entry['id'], entry['config'], entry['revision'], key)
+                        state = retry_job(manager, owner, entry['id'], entry['config'], entry['revision'], key,
+                                          allow_completed=entry.get('allow_completed', False))
+                        entry['skipped_active'] = state.get('retry_request_id') != key
                     entry['accepted'] = True
                 except (FileNotFoundError, OSError, RuntimeError) as exc:
                     errors.append({'id': entry['id'], 'error': str(exc)})
@@ -364,7 +380,10 @@ def rerun_jobs(manager, owner, family, chosen, patch, request_id, *, base_config
             # No full view here: 200 jobs should not read 200 render log tails
             # or enumerate all system processes 200 times.
             jobs.append({"id": entry["id"], "source_id": entry["source_id"], "status": state.get("status"),
-                         "retried": bool(entry.get('retry')),
+                         "retried": bool(entry.get('retry')) and not entry.get('skipped_active', False),
+                         "skipped_active": bool(entry.get('skipped_active')),
                          "revision": revision(_read(directory / "manifest.json")), "source_name": state.get("source_name")})
         return {"rerun": len(jobs), "succeeded": len(jobs), "failed": len(errors), "jobs": jobs,
+                "queued_again": sum(job['retried'] for job in jobs),
+                "skipped_active": sum(job['skipped_active'] for job in jobs),
                 "errors": errors, "request_id": key}

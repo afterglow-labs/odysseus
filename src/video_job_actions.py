@@ -171,7 +171,8 @@ def perform(manager, owner, family, identity, action, request_id=None, *, batch=
                 chosen = roots if action == 'duplicate' else selected
                 targets = [{'id': i, 'revision': saved[i][1].get('revision', 0)} for i in chosen]
             h3._write(path, {'spec': spec, 'targets': targets})
-            return rerun_jobs(manager, owner, family, targets, {}, request_id, new_group=True)
+            return rerun_jobs(manager, owner, family, targets, {}, request_id,
+                              new_group=action == 'duplicate', in_place=action == 'rerun_all')
     saved = records(manager, owner)
     previous = h3._read(tombstone)
     if action == 'delete' and previous.get('owner') == owner:

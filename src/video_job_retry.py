@@ -9,7 +9,7 @@ from src import h3_video as h3
 from src.video_job_edit import revision
 
 
-def retry_job(manager, owner, identifier, config, expected_revision, request_id):
+def retry_job(manager, owner, identifier, config, expected_revision, request_id, *, allow_completed=False):
     directory = manager.directory(identifier)
     state = h3._read(directory / 'state.json')
     if not state or state.get('owner') != owner:
@@ -23,11 +23,16 @@ def retry_job(manager, owner, identifier, config, expected_revision, request_id)
         # attempt has already completed or failed before the client reconnects.
         if state.get('retry_request_id') == request_id:
             return state
+        # A second group action may have prepared before the first requeued
+        # this item. Never restart or duplicate work that is already active.
+        if allow_completed and state.get('status') in h3.ACTIVE:
+            return state
         staged = manifest.get('retry_request_id') == request_id and revision(manifest) == expected_revision + 1
         if revision(manifest) != expected_revision and not staged:
             raise RuntimeError('A selected job was edited elsewhere. Refresh to load its latest settings.')
-        if state.get('status') not in {'failed', 'stopped'}:
-            raise RuntimeError('This job is no longer failed or stopped. Refresh jobs.')
+        allowed = h3.TERMINAL if allow_completed else {'failed', 'stopped'}
+        if state.get('status') not in allowed:
+            raise RuntimeError('This job is no longer finished. Refresh jobs.')
         if h3._live_record(state.get('supervisor')) or h3._owned_workers(directory):
             raise RuntimeError('The previous video process is still exiting. Retry once it has stopped.')
         from src.video_job_actions import ensure_parent_available
