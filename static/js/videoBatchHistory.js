@@ -6,7 +6,8 @@ export function createVideoBatchHistory({ list, request, reload, onError, active
   const button = text => { const n = document.createElement('button'); n.type = 'button'; n.className = 'memory-toolbar-btn'; n.textContent = text; return n; };
   function create(job) {
     const card = document.createElement('article'); card.className = 'h3-video-job video-batch-master'; card.dataset.batchId = job.batch.id;
-    const heading = button(''), counts = document.createElement('p'), tools = document.createElement('div'), content = document.createElement('div');
+    const heading = button(''), counts = document.createElement('p'), tools = document.createElement('div'), content = document.createElement('div'), notice = document.createElement('p');
+    notice.className = 'h3-video-muted video-batch-notice'; notice.setAttribute('role', 'status'); notice.hidden = true;
     heading.classList.add('video-batch-heading'); heading.setAttribute('aria-expanded', 'false');
     content.hidden = true; content.className = 'video-batch-children'; tools.className = 'h3-video-job-actions';
     const previous = button('Previous files'), next = button('Next files'), range = document.createElement('span'), pager = document.createElement('nav');
@@ -21,15 +22,19 @@ export function createVideoBatchHistory({ list, request, reload, onError, active
         if (value.busy) return;
         if (action === 'delete' && !globalThis.confirm('Delete this entire batch, its queued items, saved inputs, previews and results?')) return;
         value.busy = true; for (const b of tools.children) b.disabled = true;
+        notice.hidden = false; notice.textContent = action === 'rerun_all' ? 'Requeuing batch…' : 'Updating batch…';
         try {
           const result = await request(`/batches/${encodeURIComponent(job.batch.id)}/actions`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({action, request_id: globalThis.crypto.randomUUID()}) });
           if (result.failed) throw new Error(result.errors?.map(e => e.error).join('\n') || 'Some batch items could not be updated.');
+          notice.textContent = action === 'rerun_all'
+            ? `${result.queued_again ?? result.succeeded ?? 0} queued again in this batch · ${result.skipped_active ?? 0} already queued or running`
+            : 'Batch updated.';
           await reload();
-        } catch (error) { onError(error); }
+        } catch (error) { notice.textContent = error.message || String(error); onError(error); }
         finally { value.busy = false; for (const b of tools.children) b.disabled = false; }
       };
     }
-    card.append(heading, counts, tools, content, pager); return value;
+    card.append(heading, counts, tools, notice, content, pager); return value;
   }
   return {
     async prepare(data) {

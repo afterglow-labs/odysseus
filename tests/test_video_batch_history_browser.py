@@ -46,6 +46,11 @@ def test_batch_master_retry_and_active_bar_in_all_workflows(tmp_path):
                     visible = [master] if query.get('active_only')!=['true'] or master['status']=='queued' else []
                     return await handler.fulfill(json=dict(jobs=visible, queue=q, counts=master['counts'], pagination=dict(page=1,total=len(visible),total_pages=1,before=100)))
                 if '/batches/' in path:
+                    if path.endswith('/actions'):
+                        assert handler.request.post_data_json['action'] == 'rerun_all'
+                        changed = sum(r['status'] not in {'queued', 'running'} for r in rows)
+                        for row in rows: row.update(status='queued', error=None)
+                        return await handler.fulfill(json=dict(succeeded=len(rows), failed=0, queued_again=changed, skipped_active=len(rows)-changed))
                     visible = rows if query.get('active_only')!=['true'] else [r for r in rows if r['status']=='queued']
                     return await handler.fulfill(json=dict(batch=master,jobs=visible,queue=q,pagination=dict(page=1,total=len(visible),total_pages=1)))
                 if path.endswith('/queue/rerun'):
@@ -87,6 +92,17 @@ def test_batch_master_retry_and_active_bar_in_all_workflows(tmp_path):
                 assert await page.evaluate('window.card===document.querySelector("[data-job-id]")')
                 assert calls[-1]['active_only']==['true']
                 await active.uncheck(); await pw.expect(master.locator('[data-job-id]')).to_have_count(2)
+                bar_height = (await bar.bounding_box())['height']
+                await master.get_by_role('button', name='Rerun all', exact=True).click()
+                assert (await bar.bounding_box())['height'] == bar_height
+                await pw.expect(master.locator('.video-batch-notice')).to_have_text('1 queued again in this batch · 1 already queued or running')
+                await pw.expect(master.locator('.video-batch-notice')).to_be_visible()
+                await pw.expect(master.locator('[data-job-id]')).to_have_count(2)
+                for child in await master.locator('[data-job-id]').all():
+                    await pw.expect(child).to_contain_text('queued', ignore_case=True)
+                await master.get_by_role('button', name='Rerun all', exact=True).press('Enter')
+                await pw.expect(master.locator('.video-batch-notice')).to_have_text('0 queued again in this batch · 2 already queued or running')
+                await pw.expect(dialog.locator('.video-batch-master')).to_have_count(1)
                 await page.screenshot(path=str(tmp_path/f'{module}-{stage}-batch.png'))
                 await dialog.get_by_role('button',name='Close',exact=True).click()
             assert not errors, errors

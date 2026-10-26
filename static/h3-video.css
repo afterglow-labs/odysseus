@@ -5,7 +5,10 @@
 .h3-video-scroll { padding:18px 22px 24px; overflow-y:auto; overscroll-behavior:contain; min-width:0; }
 .video-queue-activity { flex-shrink:0; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 22px; background:var(--panel,#25232c); border-bottom:1px solid var(--border,#544c60); font-size:13px; }
 .video-queue-activity > span { min-width:0; overflow-wrap:anywhere; }
-.video-queue-activity label { display:flex; align-items:center; gap:6px; flex-shrink:0; cursor:pointer; }
+.video-queue-activity label { display:flex; align-items:center; gap:6px; flex-shrink:0; white-space:nowrap; cursor:pointer; }
+/* The generic input padding changes native checkbox size on blur, moving the
+   job buttons between mouse-down and mouse-up. Keep this pinned filter stable. */
+.video-queue-activity input[type=checkbox] { width:18px; height:18px; flex:0 0 18px; padding:0; margin:0; border:0; accent-color:var(--accent,var(--red)); }
 .video-batch-heading { width:100%; text-align:left; font-weight:600; white-space:normal; }
 .video-batch-master { border-width:2px; }
 .video-batch-master > nav { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:12px; }
