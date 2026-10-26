@@ -16,12 +16,14 @@ def refinement_groups(manager, owner, records=None):
         config = manifest.get("config", {})
         source = manifest.get("seed_hunter_source", {})
         if (state.get("owner") != owner or not isinstance(config, dict) or not isinstance(source, dict)
-                or config.get("recipe") != "seed_hunter" or config.get("seed_hunter", {}).get("stage") not in {"final", "scout"}):
+                or config.get("recipe") != "seed_hunter" or (config.get("seed_hunter", {}).get("stage") not in {"final", "scout"} and not manifest.get('result_edit'))):
             continue
         parent, candidate = manifest.get('job_group_parent') or source.get("source_job_id"), source.get("source_candidate")
         scout = config.get("seed_hunter", {}).get("stage") == "scout"
         if not isinstance(parent, str) or parent == identifier:
             continue
+        if manifest.get('result_edit', {}).get('workflow_stage') == 'scout':
+            scout = True
         if not scout and (type(candidate) is not int or not 1 <= candidate <= 3):
             continue
         parent_state, parent_manifest = records.get(parent, ({}, {}))
@@ -56,7 +58,7 @@ def attach_refinements(manager, owner, job, children, **view_options):
 
 def detail(manager, identifier, owner):
     job = manager.view(identifier, owner)
-    if job.get("seed_hunter", {}).get("stage") not in {"preview", "final", "scout"}:
+    if job.get("seed_hunter", {}).get("stage") not in {"preview", "final", "scout"} and not job.get('result_edit'):
         return job
     parents, children = refinement_groups(manager, owner)
     if identifier in parents:

@@ -70,6 +70,7 @@ export function createVideoQueueControls({ container, family, request, getFields
   const editor = el('form', 'video-queue-editor'); editor.hidden = true;
   const editorTitle = el('h3'); editor.appendChild(editorTitle);
   const editorHelp = el('p', 'h3-video-muted'); editor.appendChild(editorHelp);
+  const editorError = el('p', 'h3-video-error'); editorError.hidden = true; editorError.setAttribute('role', 'alert'); editor.append(editorError);
   const targetLabel = el('label', 'h3-video-field'); targetLabel.appendChild(el('span', '', 'Jobs to run again'));
   const targetScope = el('select', 'cookbook-field-input'); targetScope.setAttribute('aria-label', 'Jobs to run again');
   targetScope.add(new Option('Finished jobs (completed, failed or canceled)', 'finished'));
@@ -88,6 +89,7 @@ export function createVideoQueueControls({ container, family, request, getFields
   editActions.append(abandon, apply); editor.appendChild(editActions); panel.appendChild(editor); container.appendChild(panel);
   function alive() { return !dead && !isClosed(); }
   function error(text = '') {
+    editorError.textContent = text; editorError.hidden = !text;
     errors.textContent = text; errors.hidden = !text;
     confirmationError.textContent = text; confirmationError.hidden = !text;
     if (historyOperation) { historyError.textContent = text; historyError.hidden = !text; }
@@ -119,7 +121,7 @@ export function createVideoQueueControls({ container, family, request, getFields
       if (row.custom) row.custom.setDisabled(disabled);
       else row.control.disabled = disabled;
     }
-    apply.textContent = retryRerun ? singleJob ? 'Retry request' : 'Retry remaining copies safely' : singleJob ? 'Queue edited copy' : mode === 'rerun' ? `Queue ${targets.length} new ${targets.length === 1 ? 'job' : 'jobs'}` : `Apply to ${targets.length} queued ${targets.length === 1 ? 'job' : 'jobs'}`;
+    apply.textContent = retryRerun ? singleJob ? 'Retry request' : 'Retry remaining copies safely' : singleJob ? mode === 'edit' ? 'Save job settings' : singleJob.status === 'completed' ? 'Queue edited copy' : 'Retry with these settings' : mode === 'rerun' ? `Queue ${targets.length} new ${targets.length === 1 ? 'job' : 'jobs'}` : `Apply to ${targets.length} queued ${targets.length === 1 ? 'job' : 'jobs'}`;
     apply.disabled = locked || !targets.length || (!singleJob && !approve.checked)
       || ((mode === 'edit' || (singleJob && !retryRerun)) && !rows.some(row => row.check.checked));
   }
@@ -283,7 +285,7 @@ export function createVideoQueueControls({ container, family, request, getFields
     for (const job of targets) targetList.appendChild(el('li', '', `${job.source_name || job.id} · ${job.status}`));
     render();
   }
-  function closeEditor() { selectionVersion++; retryRerun = false; requestKey = ''; requestId = ''; singleJob = null; singleSubmit = null; mode = null; targets = []; editor.hidden = true; approve.checked = false; render(); onChange(); }
+  function closeEditor() { selectionVersion++; retryRerun = false; requestKey = ''; requestId = ''; singleJob = null; singleSubmit = null; mode = null; targets = []; editor.hidden = true; panel.append(editor); approve.checked = false; render(); onChange(); }
   function openEditor(action) {
     run(async () => {
       mode = action; editor.hidden = false; closeConfirmation(); notice(); targetScope.value = 'finished'; buildFields();
@@ -295,19 +297,20 @@ export function createVideoQueueControls({ container, family, request, getFields
     });
   }
   edit.onclick = () => openEditor('edit'); rerun.onclick = () => openEditor('rerun');
-  function openRerun(id, submit) {
+  function openRerun(id, submit, { container: destination, queued = false } = {}) {
     if (!alive() || busy || blocked || mode || typeof submit !== 'function') return Promise.resolve({ error: 'Finish the current workflow operation or close the parameter editor, then try Edit & rerun again.' });
     return run(async () => {
-      const result = await request('/queue/jobs?status=finished');
+      const result = await request(`/queue/jobs?status=${queued ? 'queued' : 'finished'}`);
       if (!alive()) return;
       const job = result.jobs?.filter(filterJobs).find(item => item.id === id);
-      if (!job || !Number.isInteger(job.revision) || !job.config || !['completed', 'failed', 'stopped'].includes(job.status)) throw new Error('This finished job is unavailable. Refresh jobs and retry.');
-      singleJob = job; singleSubmit = submit; mode = 'rerun'; targets = [job]; retryRerun = false;
+      if (!job || !Number.isInteger(job.revision) || !job.config || !(queued ? ['queued'] : ['completed', 'failed', 'stopped']).includes(job.status)) throw new Error('This job has changed. Refresh jobs and retry.');
+      singleJob = job; singleSubmit = submit; mode = queued ? 'edit' : 'rerun'; targets = [job]; retryRerun = false;
+      (destination || panel).append(editor);
       editor.hidden = false; closeConfirmation(); notice(); updateQueue(result.queue);
       targetLabel.hidden = approveLabel.hidden = refreshSelection.hidden = targetNames.hidden = true;
-      editorTitle.textContent = `Edit & rerun · ${job.source_name || job.id}`;
-      editorHelp.textContent = 'These are this job’s saved parameters. Edit them to queue a new copy; its existing result and your current draft stay unchanged.';
-      fieldHelp.textContent = 'Change a parameter, then choose Queue edited copy. Saved images, videos and audio are reused automatically; opening this editor does not start a job.';
+      editorTitle.textContent = `Quick edit · ${job.source_name || job.id}`;
+      editorHelp.textContent = queued ? 'Save changes to this waiting job in its existing queue position.' : job.status === 'completed' ? 'Edit this job’s saved settings, then queue a new run.' : 'Edit this failed or stopped job, then retry it in place. Its old error is cleared.';
+      fieldHelp.textContent = 'These settings belong to this job. Saved images, videos and audio are reused. Opening this editor does not start a render.';
       targetStatus.textContent = `One ${selectedName} job selected · ${job.id}`;
       buildFields(job.config, job); render(); editor.scrollIntoView({ block: 'start', behavior: 'smooth' });
       editor.querySelector('textarea')?.focus({ preventScroll: true });
@@ -322,7 +325,7 @@ export function createVideoQueueControls({ container, family, request, getFields
       if (singleJob) {
         const outcome = await singleSubmit(singleJob, patch);
         if (!alive()) return;
-        if (outcome?.result) { closeEditor(); receipt(outcome.result, 'added as a new copy'); }
+        if (outcome?.result) { const verb = mode === 'edit' ? 'updated' : singleJob.status === 'completed' ? 'added as a new copy' : 'queued again'; closeEditor(); receipt(outcome.result, verb); }
         else { retryRerun = !!outcome?.pending; error(outcome?.error || 'Could not queue this job again.'); }
         return;
       }

@@ -12,8 +12,8 @@ def run_js(script):
     node = shutil.which('node')
     if not node:
         pytest.skip('Node.js is required')
-    source = '\n'.join((ROOT / 'static/js' / name).read_text().replace("import { createVideoBatchHistory } from './videoBatchHistory.js';", '')
-                       for name in ('videoBatchHistory.js', 'videoJobPage.js', 'videoJobMedia.js'))
+    source = '\n'.join((ROOT / 'static/js' / name).read_text().replace("import { createVideoBatchHistory } from './videoBatchHistory.js';", '').replace("import { videoActionMessage } from './videoJobActions.js';", '')
+                       for name in ('videoJobActions.js', 'videoBatchHistory.js', 'videoJobPage.js', 'videoJobMedia.js'))
     result = subprocess.run([node, '--input-type=module'],
                             input="import assert from 'node:assert/strict';\n" + source + '\n' + script,
                             text=True, capture_output=True)
@@ -22,7 +22,8 @@ def run_js(script):
 
 DOM = r'''
 class Element {
- constructor(tag){this.tag=tag;this.children=[];this.attrs={};this.listeners={};this.isConnected=true;this.paused=true;this.loads=0;}
+ constructor(tag){this.tag=tag;this.children=[];this.style={};this.value='all';this.attrs={};this.listeners={};this.isConnected=true;this.paused=true;this.loads=0;}
+ add(option){this.children.push(option);}
  setAttribute(key,value){this.attrs[key]=value;}
  getAttribute(key){return this.attrs[key]??null;}
  removeAttribute(key){delete this.attrs[key];}
@@ -37,6 +38,7 @@ class Element {
  load(){this.loads++;}
  remove(){}
 }
+globalThis.Option=class {constructor(text,value){this.text=text;this.value=value;}};
 globalThis.document={createElement:tag=>new Element(tag),createTextNode:text=>({textContent:text})};
 const flush=()=>new Promise(resolve=>setTimeout(resolve,0));
 '''

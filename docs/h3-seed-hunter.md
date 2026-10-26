@@ -37,6 +37,15 @@ jobs snapshot those settings; changing the draft later does not alter them.
 For saved previews, select job cards or **Select all preview jobs**, then
 **Refine selected jobs…**. The iOS equivalent is **Refine candidates in bulk…**.
 Selection covers all history pages. Configure the same panel once and submit.
+On the web, **Search jobs** filters the full history by source/reference filename,
+prompt, job ID, status, stage or project name. Search words are case-insensitive
+and all must match; the page count reflects the filtered results. Hunter cards
+also match their refinements' metadata and retain sibling refinements for context.
+**Select all matching preview jobs** selects eligible matches across every page.
+Changing the search clears the selection and any unsubmitted bulk configuration.
+An already submitted request keeps its original settings and ID for a safe retry.
+The shared queue and its controls still cover all jobs, regardless of the search.
+
 The default **Skip candidates with an existing refinement** includes those
 results in the project folders; **Reprocess all selected candidates** adds new
 results. Failed or stopped refinements do not count as completed refinements.
@@ -55,14 +64,43 @@ keeps owners separate. Filenames use
 `input-stem--candidate-N--seed-ACTUAL-SEED--JOB-ID.mp4`.
 Existing and new results are linked into the same project organization without
 overwriting any render. Files share storage through hardlinks on one filesystem.
-Deleting a job removes its organized outputs as well.
+Each Candidate folder also includes the job's complete saved source/reference
+videos, named with the original filename stem, source/reference role and job ID.
+These are real video files; other filesystems receive atomic copies instead of
+hardlinks. Selected reference ranges remain in the job settings; the context
+video preserves the complete saved input. Deleting a job removes its organized
+results and source-video links, while the user's original input stays intact.
+Organizing an existing completed refinement again adds any missing context files.
 
 Interrupted bulk requests retain one submission ID, settings and candidate
 receipt so retrying queues only unconfirmed items. Automatic submissions and
 output organization recover after server restarts. Workflow exports include
 automatic settings and their separate adapter/upscaler references or weights.
+Bulk refinement submission is exempt from the web server's generic 45-second
+request deadline so large batches can finish recording their candidates. It
+retains the existing authenticated request limits and duplicate protection.
 
 ## Preview, choose, refine
+
+Each job card contains its own stop/cancel, queue-priority, retry, edit and delete
+controls. **Process now** moves a waiting job to queue position 1; the current
+render finishes first. Pending actions disable repeated taps, and their outcome
+stays visible across status polls. **View videos & prompts** opens a batch's file
+cards, source players and saved prompts, with separate file-page navigation.
+History supports Today, Yesterday and All dates in the client's local timezone.
+Active-only history follows dispatch order, including grouped refinements.
+
+**Refine this preview with default settings** and **Refine all previews with
+default settings** queue saved candidates without an additional settings form.
+They retain each candidate's seed and skip existing queued or completed results.
+The adjusted-settings action opens its editor inside the selected job card.
+Quick-editing a failed/stopped job retries that same record and its saved inputs.
+
+Completed results offer **Ask for a change**: describe one change, review/copy
+the prepared preservation prompt, and queue a Ref2VA edit using that result as
+Video 1. This uses a full sampling schedule without adapters. Original audio is
+copied into the result by default. Visual preservation still depends on model
+inference; the instructions do not make it pixel-exact.
 
 1. Choose a Ref2VA checkpoint, encoder, VAEs and adapters. The source workflow's
    instance selects Singularity Ref2VA; its internal FL2VA loader default is

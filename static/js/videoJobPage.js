@@ -1,4 +1,17 @@
 import { createVideoBatchHistory } from './videoBatchHistory.js';
+export function videoJobDateBounds(selection, now = new Date()) {
+  if (!['today', 'yesterday'].includes(selection)) return {};
+  const start = new Date(now); start.setHours(0, 0, 0, 0);
+  if (selection === 'yesterday') start.setDate(start.getDate() - 1);
+  const end = new Date(start); end.setDate(end.getDate() + 1);
+  return { created_after: start.getTime() / 1000, created_before: end.getTime() / 1000 };
+}
+
+export function checkedJobDateResponse(data, bounds) {
+  if (Object.keys(bounds).some(key => data.date_filter?.[key] !== bounds[key]))
+    throw new Error('Update the Odysseus server before filtering jobs by date.');
+  return data;
+}
 // Job history stays bounded while the queue itself remains shared and unfiltered.
 export function createVideoJobPageState({ pageSize = 10, recipe = '' } = {}) {
   let page = 1, before = null, total = 0, totalPages = 1, counts = {};
@@ -37,7 +50,7 @@ export function createVideoJobPageState({ pageSize = 10, recipe = '' } = {}) {
   };
 }
 
-export function createVideoJobPager({ container, beforeNode, request, recipe = '', historyKey = recipe || 'video', onData, onError, isClosed = () => false }) {
+export function createVideoJobPager({ container, beforeNode, request, recipe = '', historyKey = recipe || 'video', onData, onError, onFilterChange = () => {}, refineBatch, isClosed = () => false }) {
   const state = createVideoJobPageState({ recipe });
   const activity = document.createElement('div'); activity.className = 'video-queue-activity';
   const status = document.createElement('span'); status.setAttribute('role', 'status');
@@ -45,10 +58,19 @@ export function createVideoJobPager({ container, beforeNode, request, recipe = '
   const key = `odysseus-video-active-only:${historyKey}`;
   try { active.checked = localStorage.getItem(key) === 'true'; } catch {}
   filter.append(active, document.createTextNode(' Active only')); activity.append(status, filter);
+  filter.title = 'Show running and queued jobs in processing order. Position 1 runs next.';
+  const dates = document.createElement('label'), date = document.createElement('select');
+  dates.className = 'video-job-date-filter'; date.className = 'cookbook-field-input';
+  date.add(new Option('All dates', 'all')); date.add(new Option('Today', 'today')); date.add(new Option('Yesterday', 'yesterday'));
+  const dateKey = `odysseus-video-date:${historyKey}`;
+  try { const saved = localStorage.getItem(dateKey); if (['all', 'today', 'yesterday'].includes(saved)) date.value = saved; } catch {}
+  dates.append(document.createTextNode('Created '), date); activity.append(dates);
   // Outside the scrolling body: no jumping or disappearing with job polling.
   container.parentElement?.insertBefore(activity, container);
-  const groups = createVideoBatchHistory({ list: beforeNode, request, reload: () => load({page: state.page}), onError, activeOnly: () => active.checked });
-  active.onchange = () => { try { localStorage.setItem(key, String(active.checked)); } catch {} groups.resetPages(); load({reset:true}); };
+  const groups = createVideoBatchHistory({ list: beforeNode, request, reload: () => load({page: state.page}), onError, activeOnly: () => active.checked, refineBatch });
+  const changed = () => { onFilterChange(); groups.resetPages(); load({reset:true}); };
+  active.onchange = () => { try { localStorage.setItem(key, String(active.checked)); } catch {} changed(); };
+  date.onchange = () => { try { localStorage.setItem(dateKey, date.value); } catch {} changed(); };
   function controls(bottom = false) {
     const node = document.createElement('nav'); node.className = 'video-job-pager';
     node.setAttribute('aria-label', bottom ? 'Job history pages below results' : 'Job history pages');
@@ -83,9 +105,11 @@ export function createVideoJobPager({ container, beforeNode, request, recipe = '
       while (pending && alive()) {
         const options = pending; pending = null;
         try {
-          const response = await request(state.query(options) + '&group_batches=true' + (active.checked ? '&active_only=true' : ''));
+          const bounds = videoJobDateBounds(date.value), dateQuery = new URLSearchParams(bounds).toString();
+          const response = await request(state.query(options) + '&group_batches=true' + (active.checked ? '&active_only=true' : '') + (dateQuery ? '&' + dateQuery : ''));
           if (!alive()) return;
           if (pending) continue;
+          checkedJobDateResponse(response, bounds);
           const data = state.accept(response, options);
           const grouped = await groups.prepare(data);
           if (!alive() || pending) continue;
@@ -99,7 +123,8 @@ export function createVideoJobPager({ container, beforeNode, request, recipe = '
     render(); return task;
   }
   render();
-  return { node: top.node, bottomNode: bottom.node, load, place: groups.place, finish: groups.finish,
+  return { node: top.node, bottomNode: bottom.node, activity, load, place: groups.place, finish: groups.finish,
+    get filters() { return { ...videoJobDateBounds(date.value), ...(active.checked ? { active_only: 'true' } : {}) }; },
     get counts() { return state.counts; }, get total() { return state.total; },
     destroy() { destroyed = true; pending = null; groups.destroy(); activity.remove(); } };
 }

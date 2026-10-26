@@ -539,6 +539,12 @@ def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
                 output_fps = artifact_config['seed_hunter']["output_fps"]
                 if output_fps == 48:
                     interpolate_file(manifest, folder / video_name, progress)
+                if manifest.get('result_edit'):
+                    try:
+                        from scripts.h3_result_edit import preserve_soundtrack
+                    except ModuleNotFoundError:
+                        from h3_result_edit import preserve_soundtrack
+                    preserve_soundtrack(manifest, folder / video_name, ffmpeg_binary())
                 output_frames *= output_fps // 24
                 row.update(video=video_name, status="completed", frames=output_frames, fps=output_fps,
                            duration_seconds=output_frames / output_fps)

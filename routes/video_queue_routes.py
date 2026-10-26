@@ -122,10 +122,10 @@ def add_queue_routes(router, manager, family):
     @router.post('/queue/rerun')
     async def rerun(request: Request):
         owner = _owner(request)
-        body = await _body(request, {'jobs', 'patch', 'base_config', 'request_id'}, {'jobs', 'request_id'})
+        body = await _body(request, {'jobs', 'patch', 'base_config', 'request_id', 'retry_failed'}, {'jobs', 'request_id'})
         if ('patch' in body) == ('base_config' in body) or not isinstance(body.get('base_config', body.get('patch')), dict):
             raise HTTPException(400, 'Supply base settings or individual parameter changes, not both')
         result = await _call(bulk.rerun_jobs, manager, owner, family, body['jobs'], body.get('patch', {}), body['request_id'],
-                             base_config=body.get('base_config'))
+                             base_config=body.get('base_config'), retry_failed=body.get('retry_failed', False))
         result['queue'] = await _call(queue_status, manager, owner)
         return result

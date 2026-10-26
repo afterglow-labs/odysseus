@@ -227,7 +227,7 @@ def _clone_file(source, destination):
         destination.chmod(0o600)
 
 
-def _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, receipt, *, base_config=None, new_group=False, in_place=False):
+def _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, receipt, *, base_config=None, new_group=False, in_place=False, retry_failed=False):
     inventory = manager.inventory()
     staged = []
     with _locked(manager.root.parent / "video-render.lock"), ExitStack() as stack:
@@ -245,7 +245,7 @@ def _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, recei
                     entries.append({'id': original_id, 'source_id': original_id, 'config': item['config'],
                                     'retry': True, 'allow_completed': True, 'revision': revision(item['manifest']), 'accepted': False})
                     continue
-                if not patch and base_config is None and not new_group and item['state']['status'] in {'failed', 'stopped'}:
+                if (not patch or retry_failed) and base_config is None and not new_group and item['state']['status'] in {'failed', 'stopped'}:
                     entries.append({'id': original_id, 'source_id': original_id, 'config': item['config'],
                                     'retry': True, 'revision': revision(item['manifest']), 'accepted': False})
                     continue
@@ -276,6 +276,10 @@ def _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, recei
                     from src.h3_seed_hunter import clone_snapshot
                     uploads["seed_hunter_input"] = clone_snapshot(item["directory"], directory, item["manifest"].get("seed_hunter_input"))
                     uploads["seed_hunter_source"] = item["manifest"].get("seed_hunter_source", {})
+                if base_config is None and item['manifest'].get('result_edit'):
+                    uploads['result_edit'] = deepcopy(item['manifest']['result_edit'])
+                    uploads['job_group_parent'] = item['manifest'].get('job_group_parent')
+                    uploads['seed_hunter_source'] = item['manifest'].get('seed_hunter_source', {})
                 if new_group:
                     from src.video_job_actions import parent_id
                     parent = parent_id(item['manifest'])
@@ -296,8 +300,10 @@ def _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, recei
             raise
 
 
-def rerun_jobs(manager, owner, family, chosen, patch, request_id, *, base_config=None, new_group=False, in_place=False):
+def rerun_jobs(manager, owner, family, chosen, patch, request_id, *, base_config=None, new_group=False, in_place=False, retry_failed=False):
     chosen = targets(chosen)
+    if type(retry_failed) is not bool or retry_failed and (base_config is not None or new_group or in_place):
+        raise ValueError('Retry uses this job’s saved inputs and individual parameter changes')
     if not isinstance(patch, dict):
         raise ValueError("Parameter changes must be a JSON object")
     if base_config is not None and (not isinstance(base_config, dict) or patch):
@@ -313,6 +319,8 @@ def rerun_jobs(manager, owner, family, chosen, patch, request_id, *, base_config
         parameters['new_group'] = True
     if in_place:
         parameters['in_place'] = True
+    if retry_failed:
+        parameters['retry_failed'] = True
     fingerprint = hashlib.sha256(json.dumps({"jobs": sorted(chosen, key=lambda item: item["id"]), **parameters},
                                            sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
     # First submission verifies every source. Retrying a persisted request can
@@ -333,7 +341,7 @@ def rerun_jobs(manager, owner, family, chosen, patch, request_id, *, base_config
             receipt = {"owner": owner, "request_id": key, "fingerprint": fingerprint, "created_at": time.time()}
             _write(receipt_path, receipt)
         if not receipt.get("prepared"):
-            _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, receipt, base_config=base_config, new_group=new_group, in_place=in_place)
+            _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, receipt, base_config=base_config, new_group=new_group, in_place=in_place, retry_failed=retry_failed)
         jobs, errors = [], []
         for entry in receipt["entries"]:
             directory = manager.directory(entry["id"])

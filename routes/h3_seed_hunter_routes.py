@@ -10,6 +10,39 @@ from src import h3_seed_hunter as hunter
 
 
 def add_seed_hunter_routes(router, manager, owner_callback):
+    @router.get('/jobs/{job_id}/edit-result')
+    async def edit_result_detail(job_id: str, request: Request):
+        from routes.video_queue_routes import _call
+        from src.video_result_edit import detail
+        return await _call(detail, manager, job_id, owner_callback(request))
+
+    @router.post('/jobs/{job_id}/edit-result', status_code=201)
+    async def edit_result(job_id: str, request: Request):
+        from routes.video_queue_routes import _body
+        from src.video_result_edit import prepare
+        owner = owner_callback(request)
+        body = await _body(request, {'change', 'preserve_audio', 'steps', 'request_id'}, {'change', 'request_id'})
+        try:
+            key = body['request_id']
+            if not isinstance(key, str) or not UUID.fullmatch(key):
+                raise ValueError('A request ID is required for safe edit retries')
+            manager.directory(job_id)
+            async with submission(manager, owner, 'h3-result-edit-' + job_id, uuid.UUID(key).hex) as pending:
+                existing = await asyncio.to_thread(pending.existing)
+                if existing is not None:
+                    return existing
+                directory = pending.stage()
+                config, inputs = await complete_operation(prepare, manager, job_id, owner, body, directory, pending.key)
+                return await launch_job(manager, directory, owner, config, inputs)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, 'Completed video not found') from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except UploadSpaceError as exc:
+            raise HTTPException(507, str(exc)) from exc
+
     @router.post("/auto-refine")
     async def auto_refine(request: Request):
         from src.video_auto_refine import apply_saved

@@ -8,6 +8,23 @@ from src import h3_video as h3
 from tests.test_video_submission import backend, send
 from tests.test_video_queue_bulk import request
 
+@pytest.mark.parametrize('family', ['h3', 'bfs'])
+def test_quick_edit_retry_updates_failed_item_without_leaving_failed_copy(backend, family):
+    job = send(backend, family).json()
+    manager = backend.managers[family]; directory = manager.directory(job['id'])
+    h3._write(directory/'state.json', {**h3._read(directory/'state.json'), 'status': 'failed', 'supervisor': None})
+    manifest = h3._read(directory/'manifest.json')
+    body = {'jobs': [{'id': job['id'], 'revision': 0}], 'patch': {'steps': 9},
+            'retry_failed': True, 'request_id': str(uuid.uuid4())}
+    result = backend.client().post(f'/api/video/{family}/queue/rerun', json=body)
+    assert result.status_code == 200, result.text
+    assert result.json()['jobs'][0]['id'] == job['id']
+    updated = h3._read(directory/'manifest.json')
+    assert updated['config']['steps'] == 9 and updated['revision'] == 1
+    assert updated['input_names'] == manifest['input_names']
+    assert len(backend.client().get(f'/api/video/{family}/jobs').json()['jobs']) == 1
+    assert backend.client().post(f'/api/video/{family}/queue/rerun', json=body).json()['jobs'] == result.json()['jobs']
+
 
 @pytest.mark.parametrize('family', ['h3', 'bfs'])
 @pytest.mark.parametrize('status', ['failed', 'stopped'])

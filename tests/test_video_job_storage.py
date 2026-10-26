@@ -19,6 +19,15 @@ def test_gallery_video_shares_data_and_either_name_can_be_removed(tmp_path):
     assert gallery.read_bytes() == b'synthetic immutable video'
 
 
+def test_publish_accepts_a_maximum_length_output_basename(tmp_path):
+    source = tmp_path / 'output.mp4'
+    source.write_bytes(b'video with a long original name')
+    target = tmp_path / ('x' * 251 + '.mp4')
+    publish_gallery_video(source, target)
+    assert target.read_bytes() == source.read_bytes()
+    assert not list(tmp_path.glob('*.tmp'))
+
+
 def test_republishing_replaces_gallery_name_without_changing_previous_job(tmp_path):
     source, gallery, older = (tmp_path / name for name in ('output.mp4', 'gallery.mp4', 'old.mp4'))
     source.write_bytes(b'old result')

@@ -184,3 +184,19 @@ def test_rerun_batch_updates_same_items_across_pages_and_skips_active(backend, f
     page = backend.client().get(f'/api/video/{family}/batches/{batch["id"]}?page=2').json()
     assert page['pagination']['total'] == 12 and len(page['jobs']) == 2
     assert all(j['status'] in h3.ACTIVE for j in page['jobs'])
+
+
+def test_active_history_and_batch_follow_dispatch_order(backend):
+    batch=uuid.uuid4().hex
+    extra=[('batch',(None,json.dumps({'id':batch,'name':'Queue order','count':3})))]
+    jobs=[send(backend,'h3',extra=extra).json() for _ in range(3)]
+    manager=backend.managers['h3']
+    for job in jobs:
+        path=manager.directory(job['id'])/'state.json';h3._write(path,{**h3._read(path),'status':'queued'})
+    assert act(backend,jobs[-1]['id'],'process_now').status_code==200
+    response=backend.client().get('/api/video/h3/jobs?page=1&active_only=true',headers={'x-user':'corey'})
+    assert response.status_code==200,response.text
+    assert [j['id'] for j in response.json()['jobs']]==[jobs[-1]['id'],jobs[0]['id'],jobs[1]['id']]
+    detail=actions.batch_detail(manager,'corey',batch,active_only=True)
+    assert [j['id'] for j in detail['jobs']]==[jobs[-1]['id'],jobs[0]['id'],jobs[1]['id']]
+    assert [j['queue_position'] for j in detail['jobs']]==[1,2,3]

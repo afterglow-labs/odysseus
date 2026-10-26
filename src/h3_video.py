@@ -806,6 +806,8 @@ class H3JobManager:
         result["submission_id"] = state.get("submission_id") if isinstance(state.get("submission_id"), str) else None
         if isinstance(manifest.get('batch'), dict):
             result['batch'] = manifest['batch']
+        if isinstance(manifest.get('result_edit'), dict):
+            result['result_edit'] = {key: manifest['result_edit'][key] for key in ('source_job_id', 'change', 'preserve_audio', 'workflow_stage') if key in manifest['result_edit']}
         length = manifest.get("batch_video_length")
         if manifest.get("revision", 0) == 0 and isinstance(length, dict) and isinstance(config, dict):
             length_frames = (config.get("seed_hunter", {}).get("final_frames")

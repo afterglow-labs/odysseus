@@ -75,7 +75,7 @@ def test_batch_master_retry_and_active_bar_in_all_workflows(tmp_path):
                 await master.locator('.video-batch-heading').click()
                 await pw.expect(master.locator('[data-job-id]')).to_have_count(2)
                 first=master.locator('[data-job-id]').first
-                await first.get_by_role('button', name='Retry with original settings', exact=True).click()
+                await first.get_by_role('button', name='Retry', exact=True).click()
                 await pw.expect(first).to_contain_text('queued', ignore_case=True)
                 await pw.expect(master.locator('[data-job-id]')).to_have_count(2)
                 active=dialog.get_by_role('checkbox',name='Active only',exact=True)

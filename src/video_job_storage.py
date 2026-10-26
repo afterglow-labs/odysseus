@@ -8,7 +8,8 @@ import uuid
 
 def publish_gallery_video(source, target):
     source, target = Path(source), Path(target)
-    temporary = target.with_name(target.name + "." + uuid.uuid4().hex + ".tmp")
+    # The final basename may already use the filesystem's full 255-byte limit.
+    temporary = target.with_name(".video-" + uuid.uuid4().hex + ".tmp")
     try:
         try:
             os.link(source, temporary)

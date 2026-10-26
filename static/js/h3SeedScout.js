@@ -2,7 +2,7 @@
 export const SEED_SCOUT_OPTIONS = Object.freeze({ stage: 'scout', scout_count: 3, scout_step: 3, scout_mode: 'interactive', scout_timeout: 0, scout_preview_mode: 'vae' });
 const retainedDrafts = new Map();
 export function seedScoutDraft(value, key = 'classic') { if (value !== undefined) retainedDrafts.set(key,value); return retainedDrafts.get(key); }
-export function isSeedScoutJob(job) { return job?.seed_hunter?.stage === 'scout' || job?.config?.seed_hunter?.stage === 'scout' || !!job?.scout; }
+export function isSeedScoutJob(job) { return job?.seed_hunter?.stage === 'scout' || job?.config?.seed_hunter?.stage === 'scout' || !!job?.scout || job?.result_edit?.workflow_stage === 'scout'; }
 const element = (tag, cls = '', text) => { const n = document.createElement(tag); n.className = cls; if (text !== undefined) n.textContent = text; return n; };
 export function createSeedScoutPreviews(jobId, { select, render, onError = () => {} }) {
   const node = element('section', 'h3-scout-previews'); node.setAttribute('aria-label', 'Seed Scout choices');
@@ -42,7 +42,7 @@ export function createSeedScoutPreviews(jobId, { select, render, onError = () =>
           renderState.busy = true; renderState.requestId ||= crypto.randomUUID(); update(current);
           try {
             const result = await render(seed, renderState.requestId);
-            renderStatus.textContent = `Full result queued · ${result.id || result.job?.id}. It appears as a separate job.`;
+            renderStatus.textContent = `Full result queued · ${result.id || result.job?.id}. It appears beneath these saved previews.`;
             renderState.requestId = null;
           } catch (error) { onError(error); }
           finally { renderState.busy = false; update(current); }
@@ -57,7 +57,7 @@ export function createSeedScoutPreviews(jobId, { select, render, onError = () =>
       }
       card.renderButton.hidden = !render || !preview || !(['completed','failed','stopped'].includes(job.status) || job.status==='running' && scout.selected_seed != null && !waiting);
       card.renderButton.disabled = card.renderState.busy;
-      card.renderButton.textContent = card.renderState.busy ? 'Queuing…' : preview?.can_resume ? 'Resume this seed → full result' : 'Render this seed → full result';
+      card.renderButton.textContent = card.renderState.busy ? 'Queuing…' : 'Refine this preview with default settings';
       card.renderButton.title = preview?.can_resume ? 'Continue the saved partial through its remaining steps, then apply the saved final upscale settings.' : 'This older job has no saved partial. Repeat this seed’s full schedule with the saved settings.';
       card.choose.hidden = !waiting && scout.selected_seed !== seed;
       card.choose.disabled = selecting || !waiting || !preview;

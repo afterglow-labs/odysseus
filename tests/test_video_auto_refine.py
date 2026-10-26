@@ -1,5 +1,7 @@
 import copy
+import errno
 import json
+import os
 from pathlib import Path
 import uuid
 
@@ -10,10 +12,10 @@ from tests.test_video_submission import backend, send
 from tests.test_h3_seed_hunter_api import hunter, preview
 from tests.test_h3_gpu_delete import db
 
-
 @pytest.fixture(autouse=True)
 def isolated_gallery(db):
     pass
+
 
 
 def settings(hunter, **patch):
@@ -74,22 +76,157 @@ def test_retry_skip_and_force_include_existing_outputs_without_copy(hunter):
     manager = hunter.managers['h3']
     folder, manifest = complete(manager, child)
     auto.process(manager, child)
-    target = next((manager.project / 'outputs/video-projects').rglob('*.mp4'))
+    saved = h3._read(folder / 'state.json')
+    target = Path(saved['project_output_paths'][0])
+    source_target = Path(saved['project_source_paths'][0])
     assert target.name == f'clip01--candidate-2--seed-2000--{child}.mp4'
     assert target.stat().st_ino == Path(manifest['output_path']).stat().st_ino
+    assert source_target.name == f'clip01--reference-video-1--{child}.mp4'
+    assert source_target.read_bytes() == b'video fixture'
+    assert source_target.samefile(manifest['reference_videos'][0])
     assert apply(hunter, [parent['id']], options, key).json() == first
+    # An old project export may already have the render but no context video.
+    source_target.unlink()
+    saved.pop('project_source_paths')
+    h3._write(folder / 'state.json', saved)
     skipped = apply(hunter, [parent['id']], options).json()
     assert skipped['created'] == 0 and skipped['skipped'] == 1
+    assert source_target.read_bytes() == b'video fixture'
     assert len(hunter.calls) == 2
     forced = apply(hunter, [parent['id']], {**options, 'existing': 'rerender'}).json()
     new_id = forced['jobs'][parent['id']][0]['job_id']
     assert new_id != child
     complete(manager, new_id, b'another render'); auto.process(manager, new_id)
-    assert len(list(target.parent.glob('*.mp4'))) == 2
+    assert len(list(target.parent.glob('*--candidate-*.mp4'))) == 2
+    assert len(list(target.parent.glob('*--reference-video-*.mp4'))) == 2
     assert target.read_bytes() == b'finished video'
     manager.delete(child, 'corey')
     assert not target.exists()
-    assert len(list(target.parent.glob('*.mp4'))) == 1
+    assert not source_target.exists()
+    assert len(list(target.parent.glob('*--candidate-*.mp4'))) == 1
+    assert len(list(target.parent.glob('*--reference-video-*.mp4'))) == 1
+    assert Path(h3._read(manager.directory(new_id) / 'manifest.json')['reference_videos'][0]).read_bytes() == b'video fixture'
+
+
+def completed_refinement(hunter):
+    parent, _ = preview(hunter)
+    response = apply(hunter, [parent['id']], settings(hunter, candidates=[1])).json()
+    identity = response['jobs'][parent['id']][0]['job_id']
+    manager = hunter.managers['h3']
+    folder, manifest = complete(manager, identity)
+    return manager, folder, manifest
+
+
+def test_project_includes_all_saved_videos_with_stable_safe_names(hunter):
+    manager, folder, manifest = completed_refinement(hunter)
+    second, source = folder / 'second.mkv', folder / 'source.mov'
+    second.write_bytes(b'second reference'); source.write_bytes(b'continuation source')
+    manifest['reference_videos'].append(str(second))
+    manifest['source_video'] = str(source)
+    manifest['input_names'] = {'reference_videos': ['same.mp4', 'C:\\clips\\same.mkv'],
+                               'source_video': ['../' + '映像' * 150 + '.mov']}
+    h3._write(folder / 'manifest.json', manifest)
+    auto.publish_output(folder)
+    state = h3._read(folder / 'state.json')
+    targets = [Path(value) for value in state['project_source_paths']]
+    assert len(targets) == 3 and len(set(targets)) == 3
+    assert {p.read_bytes() for p in targets} == {b'video fixture', b'second reference', b'continuation source'}
+    assert all(p.parent == Path(state['project_output_paths'][0]).parent and len(p.name.encode()) <= 255 for p in targets)
+    assert any(p.name == f'same--reference-video-2--{folder.name}.mkv' for p in targets)
+    assert all(not p.is_symlink() for p in targets)
+    before = {p: (p.stat().st_ino, p.stat().st_mtime_ns) for p in targets}
+    auto.publish_output(folder)
+    assert before == {p: (p.stat().st_ino, p.stat().st_mtime_ns) for p in targets}
+    assert auto.summary(folder, manifest, h3._read(folder / 'state.json'))['source_paths'] == state['project_source_paths']
+    # A hardlink is a complete file, so deleting a snapshot name cannot break it.
+    second.unlink()
+    assert next(p for p in targets if '--reference-video-2--' in p.name).read_bytes() == b'second reference'
+    auto.delete_output(manifest, state)
+    assert not any(p.exists() for p in targets)
+
+
+@pytest.mark.parametrize('kind', ['outside', 'symlink', 'missing', 'directory'])
+def test_project_source_must_be_a_regular_saved_snapshot(hunter, tmp_path, kind):
+    manager, folder, manifest = completed_refinement(hunter)
+    outside = tmp_path / 'private.mkv'; outside.write_bytes(b'not job media')
+    chosen = folder / 'source.mkv'
+    if kind == 'outside':
+        chosen = outside
+    elif kind == 'symlink':
+        chosen.symlink_to(outside)
+    elif kind == 'directory':
+        chosen.mkdir()
+    manifest['source_video'] = str(chosen)
+    h3._write(folder / 'manifest.json', manifest)
+    with pytest.raises(ValueError, match='saved source video'):
+        auto.publish_output(folder)
+    assert not (manager.project / 'outputs/video-projects').exists()
+    assert outside.read_bytes() == b'not job media'
+
+
+def test_source_export_falls_back_to_copy_on_another_filesystem(hunter, monkeypatch):
+    manager, folder, manifest = completed_refinement(hunter)
+    def other_volume(*args, **kwargs):
+        raise OSError(errno.EXDEV, 'Other filesystem')
+    monkeypatch.setattr(os, 'link', other_volume)
+    auto.publish_output(folder)
+    target = Path(h3._read(folder / 'state.json')['project_source_paths'][0])
+    assert target.read_bytes() == Path(manifest['reference_videos'][0]).read_bytes()
+    assert not target.samefile(manifest['reference_videos'][0])
+    assert not list(target.parent.glob('*.tmp'))
+
+
+@pytest.mark.parametrize('kind', ['directory', 'symlink'])
+def test_source_export_rejects_unsafe_existing_destination(hunter, tmp_path, kind):
+    manager, folder, manifest = completed_refinement(hunter)
+    auto.publish_output(folder)
+    target = Path(h3._read(folder / 'state.json')['project_source_paths'][0])
+    target.unlink()
+    outside = tmp_path / 'outside.mkv'; outside.write_bytes(b'leave unchanged')
+    if kind == 'symlink':
+        target.symlink_to(outside)
+    else:
+        target.mkdir()
+    with pytest.raises(ValueError, match='Project'):
+        auto.publish_output(folder)
+    assert outside.read_bytes() == b'leave unchanged'
+    assert Path(manifest['reference_videos'][0]).read_bytes() == b'video fixture'
+
+
+def test_source_export_retry_preserves_render_and_successful_inputs(hunter, monkeypatch):
+    from src import video_job_storage
+    manager, folder, manifest = completed_refinement(hunter)
+    second = folder / 'another.mkv'; second.write_bytes(b'another reference')
+    manifest['reference_videos'].append(str(second))
+    h3._write(folder / 'manifest.json', manifest)
+    publish = video_job_storage.publish_gallery_video
+    def interrupted(source, target):
+        if source == second:
+            raise OSError(errno.ENOSPC, 'No space')
+        return publish(source, target)
+    monkeypatch.setattr(video_job_storage, 'publish_gallery_video', interrupted)
+    auto.process(manager, folder.name)
+    assert h3._read(folder / 'state.json')['status'] == 'completed'
+    assert h3._read(folder / 'auto-refine.json')['status'] == 'retrying'
+    published = {p: p.stat().st_ino for p in (manager.project / 'outputs/video-projects').rglob('*.mp4')}
+    assert len(published) == 2
+    monkeypatch.setattr(video_job_storage, 'publish_gallery_video', publish)
+    auto.process(manager, folder.name)
+    state = h3._read(folder / 'state.json')
+    assert len(state['project_source_paths']) == 2
+    assert published == {p: p.stat().st_ino for p in published}
+    assert not (manager.root / '.automatic' / (folder.name + '.json')).exists()
+
+
+def test_invalid_legacy_input_does_not_block_owned_job_deletion(hunter):
+    manager, folder, manifest = completed_refinement(hunter)
+    auto.publish_output(folder)
+    state = h3._read(folder / 'state.json')
+    manifest['reference_videos'].append(17)
+    h3._write(folder / 'manifest.json', manifest)
+    manager.delete(folder.name, 'corey')
+    assert not folder.exists()
+    assert not any(Path(path).exists() for path in state['project_output_paths'] + state['project_source_paths'])
 
 
 def test_legacy_automatic_completion_never_creates_refinements(hunter, monkeypatch):

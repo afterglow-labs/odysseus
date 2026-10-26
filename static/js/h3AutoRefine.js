@@ -1,3 +1,4 @@
+import { checkedJobDateResponse } from './videoJobPage.js';
 const make = (tag, text) => { const n = document.createElement(tag); if (text) n.textContent = text; return n; };
 
 export function autoRefineParent(job) {
@@ -5,12 +6,24 @@ export function autoRefineParent(job) {
     (job.seed_hunter?.stage === 'preview' || job.seed_hunter?.stage === 'scout' && !job.seed_hunter?.source_job_id && job.scout?.mode !== 'final');
 }
 
-export async function allPreviewJobs(request, scout) {
+export function checkedJobSearchResponse(result, search) {
+  if (search.trim() && result.search_query !== search.trim())
+    throw new Error('Update the Odysseus server before using job search. No matching jobs were selected.');
+  return result;
+}
+
+export async function allPreviewJobs(request, scout, search = '', { signal, filters = {} } = {}) {
   const found = []; let page = 1, before;
   do {
+    signal?.throwIfAborted();
     const query = new URLSearchParams({page: String(page), page_size: '50', recipe: 'seed_hunter', stage: scout ? 'scout' : 'not_scout'});
+    if (!scout) query.set('group_refinements', 'true');
+    if (search.trim()) query.set('q', search.trim());
+    for (const [key, value] of Object.entries(filters)) query.set(key, String(value));
     if (before !== undefined) query.set('before', String(before));
-    const result = await request(`/jobs?${query}`);
+    const result = checkedJobSearchResponse(await request(`/jobs?${query}`, { signal }), search);
+    checkedJobDateResponse(result, Object.fromEntries(Object.entries(filters).filter(([key]) => key.startsWith('created_'))));
+    signal?.throwIfAborted();
     found.push(...(result.jobs || []).filter(autoRefineParent));
     if (found.length > 1000) throw new Error('Select at most 1,000 preview jobs per bulk operation.');
     before = result.pagination?.before;

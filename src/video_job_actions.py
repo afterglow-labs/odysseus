@@ -78,13 +78,18 @@ def batch_detail(manager, owner, identity, page=1, page_size=10, active_only=Fal
     roots.sort(key=lambda i: (saved[i][0].get('created_at', 0), i))
     from src.video_job_groups import refinement_groups, attach_refinements
     _, children = refinement_groups(manager, owner, saved)
+    positions = {p.name: n + 1 for n, (p, s) in enumerate(
+        (entry for entry in h3._queue_entries(manager.root) if entry[1]['status'] == 'queued'))}
     if active_only:
         roots = [i for i in roots if any(saved[child][0].get('status') in h3.ACTIVE
                                        for child in [i, *children.get(i, ())])]
+        def rank(identifier):
+            return min((0, 0) if saved[i][0].get('status') == 'running' else (1, positions.get(i, float('inf')))
+                       for i in [identifier, *children.get(identifier, ())] if saved[i][0].get('status') in h3.ACTIVE)
+        roots.sort(key=rank)
     pages = max(1, (len(roots) + page_size - 1) // page_size)
     page = min(page, pages)
     jobs = []
-    positions = {p.name: n + 1 for n, (p, s) in enumerate(h3._queue_entries(manager.root)) if s['status'] == 'queued'}
     for i in roots[(page - 1) * page_size:page * page_size]:
         try:
             jobs.append(attach_refinements(manager, owner, manager.view(i, owner, queue_positions=positions), children, queue_positions=positions))

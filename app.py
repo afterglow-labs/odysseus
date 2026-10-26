@@ -199,7 +199,12 @@ _TIMEOUT_EXEMPT_PREFIXES = (
 class _RequestTimeoutMiddleware(_BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         path = request.url.path or ""
-        if any(path.startswith(p) for p in _TIMEOUT_EXEMPT_PREFIXES):
+        # This bounded, authenticated bulk operation durably records each
+        # candidate and continues after disconnects. A generic 504 would report
+        # failure while those jobs are still being queued. Keep the exemption
+        # exact so history, unrelated video operations and GET remain timed.
+        bulk_refinement = request.method == "POST" and path == "/api/video/h3/auto-refine"
+        if bulk_refinement or any(path.startswith(p) for p in _TIMEOUT_EXEMPT_PREFIXES):
             return await call_next(request)
         try:
             return await _asyncio.wait_for(call_next(request), timeout=REQUEST_HARD_TIMEOUT)

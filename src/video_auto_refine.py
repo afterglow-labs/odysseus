@@ -67,6 +67,35 @@ def _safe_output_parent(target, project, *, create=False):
         raise ValueError("Project output file cannot be a symbolic link")
 
 
+def _source_videos(manifest, *, strict=True):
+    """Describe saved video snapshots without opening/probing the originals."""
+    from src.video_job_inputs import VIDEO_FIELDS, _videos
+    from src.video_server_files import VIDEO_EXTENSIONS
+    names = manifest.get("input_names", {})
+    result = []
+    for field in VIDEO_FIELDS:
+        labels = names.get(field, []) if isinstance(names, dict) else []
+        for index, value in enumerate(_videos(manifest, field)):
+            if not isinstance(value, str) or Path(value).suffix.lower() not in VIDEO_EXTENSIONS:
+                if strict:
+                    raise ValueError("A saved source video is invalid")
+                continue
+            path = Path(value)
+            label = labels[index] if isinstance(labels, list) and index < len(labels) else path.name
+            label = str(label).replace('\\', '/').rsplit('/', 1)[-1]
+            result.append((field, index, path, label))
+    return result
+
+
+def _source_output_path(target, state, video):
+    field, index, path, label = video
+    role = "source-video" if field == "source_video" else "reference-video"
+    suffix = f"--{role}-{index + 1}--{state['id']}{path.suffix.lower()}"
+    label = re.sub(r'[\x00-\x1f/\\:*?"<>|]', '_', Path(label).stem).strip(' .') or role
+    label = label.encode('utf-8')[:255 - len(suffix.encode('utf-8'))].decode('utf-8', errors='ignore')
+    return target.with_name(label + suffix)
+
+
 def publish_output(directory):
     from src.video_job_storage import publish_gallery_video
     with _locked(directory / "job.lock"):
@@ -79,7 +108,11 @@ def publish_output(directory):
         source = Path(manifest["output_path"])
         if source.is_symlink() or source.parent != directory.resolve() or not source.is_file():
             raise ValueError("Completed video is unavailable")
-        paths = []
+        videos = _source_videos(manifest)
+        for _, _, path, _ in videos:
+            if path.is_symlink() or path.parent != directory.resolve() or not path.is_file():
+                raise ValueError("A saved source video is unavailable or outside its job")
+        paths, source_paths = [], []
         for spec in exports:
             target = _output_path(manifest, state, spec)
             if target is None:
@@ -88,7 +121,16 @@ def publish_output(directory):
             if not target.exists():
                 publish_gallery_video(source, target)
             paths.append(str(target))
+            for video in videos:
+                source_target = _source_output_path(target, state, video)
+                _safe_output_parent(source_target, manifest["project_path"])
+                if source_target.exists() and not source_target.is_file():
+                    raise ValueError("Project source video must be a regular file")
+                if not source_target.exists():
+                    publish_gallery_video(video[2], source_target)
+                source_paths.append(str(source_target))
         state["project_output_paths"] = list(dict.fromkeys(paths))
+        state["project_source_paths"] = list(dict.fromkeys(source_paths))
         state.pop("automation_error", None)
         _write(directory / "state.json", state)
 
@@ -102,6 +144,12 @@ def delete_output(manifest, state):
         if target is not None:
             _safe_output_parent(target, manifest["project_path"])
             target.unlink(missing_ok=True)
+            # Invalid old inputs were never exported and must not prevent
+            # deleting an otherwise owned, terminal job.
+            for video in _source_videos(manifest, strict=False):
+                source_target = _source_output_path(target, state, video)
+                _safe_output_parent(source_target, manifest["project_path"])
+                source_target.unlink(missing_ok=True)
 
 
 def existing_refinements(manager, source_id, owner, config, candidate):
@@ -291,6 +339,7 @@ def summary(directory, manifest, state):
     return {"project": (source or settings).get("project"), "candidates": slots(options) if enabled(options) else [source["candidate"]],
             "status": receipt.get("status", state.get("status")), "jobs": receipt.get("jobs", []),
             "error": receipt.get("error"), "output_paths": state.get("project_output_paths", []),
+            "source_paths": state.get("project_source_paths", []),
             "output_folder": str(project_directory(manifest["project_path"], state["owner"], (source or settings)["project"]))}
 
 

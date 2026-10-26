@@ -39,7 +39,7 @@ export function createVideoJobReruns({ family, request, getBaseConfig, isBaseBlo
       hidden: !terminal.has(job.status) && !value.body,
       disabled: value.busy || isBlocked(),
       baseDisabled: value.busy || isBlocked() || isBaseBlocked() || !!value.body || !getBaseConfig,
-      label: value.busy ? 'Queuing…' : value.body ? 'Retry request' : job.status === 'completed' ? 'Reprocess with original settings' : 'Retry with original settings',
+      label: value.busy ? 'Queuing…' : value.body ? 'Retry request' : job.status === 'completed' ? 'Rerun' : 'Retry',
       message: value.message || (value.body ? 'Previous request is unconfirmed. Retry checks the same request without adding a duplicate.' : ''),
       error: value.error,
       pending: !!value.body,
@@ -61,20 +61,21 @@ export function createVideoJobReruns({ family, request, getBaseConfig, isBaseBlo
           throw new Error('This job is no longer ready to run again. Refresh jobs and retry.');
         }
         if (isClosed()) return;
-        persist(job.id, { jobs: [{ id: job.id, revision: source.revision }], [useBase ? 'base_config' : 'patch']: parameters, request_id: globalThis.crypto.randomUUID() });
+        persist(job.id, { jobs: [{ id: job.id, revision: source.revision }], [useBase ? 'base_config' : 'patch']: parameters,
+          ...(fromEditor && ['failed','stopped'].includes(source.status) ? {retry_failed:true} : {}), request_id: globalThis.crypto.randomUUID() });
       }
       result = await request('/queue/rerun', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value.body) });
       const copy = Array.isArray(result.jobs) && result.jobs.length === 1 ? result.jobs[0] : null;
       const sameRequest = String(result.request_id || '').replaceAll('-', '').toLowerCase() === value.body.request_id.replaceAll('-', '').toLowerCase();
       if (!sameRequest || Number(result.succeeded ?? result.rerun) !== 1 || Number(result.failed || 0)
         || !copy || copy.source_id !== job.id || !/^[a-f0-9]{32}$/i.test(copy.id || '')
-        || (copy.id === job.id && (copy.retried !== true || value.body.base_config || Object.keys(value.body.patch || {}).length))) {
+        || (copy.id === job.id && (copy.retried !== true || value.body.base_config))) {
         const detail = result.errors?.map(item => item.error || item.message || '').filter(Boolean).join('\n');
         throw new Error(detail || 'The server has not confirmed the new copy. Retry the same request safely.');
       }
       const base = !!value.body.base_config, edited = Object.keys(value.body.patch || {}).length > 0;
       persist(job.id, null);
-      value.message = copy.retried ? 'This job is queued again with its saved inputs, prompt and settings. The previous error was cleared.'
+      value.message = copy.retried ? `This job is queued again${edited ? ' with your edited settings' : ' with its saved settings'}. The previous error was cleared.`
         : `New job ${copy.id} added to the queue using this job’s saved inputs${base ? ' and the base settings above' : edited ? ' and updated parameters' : ', prompt and settings'}. The original is kept.`;
     } catch (error) {
       // The source-revision conflict is raised before the server stages any
