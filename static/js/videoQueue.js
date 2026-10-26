@@ -1,5 +1,6 @@
 // Shared queue controls. Parameter patches deliberately exclude workflow modes
 // and uploaded inputs: each job keeps its own media and unchecked settings.
+import { VIDEO_ASPECTS, videoResolution, videoAspect } from './videoSizing.js';
 const el = (tag, className = '', text) => {
   const node = document.createElement(tag); node.className = className;
   if (text !== undefined) node.textContent = text;
@@ -37,6 +38,7 @@ export function createVideoQueueControls({ container, family, request, getFields
   let queue = null, busy = false, blocked = false, dead = false, mode = null, targets = [], rows = [];
   let requestKey = '', requestId = '', selectionVersion = 0, retryRerun = false;
   let singleJob = null, singleSubmit = null;
+  let sizeControls = null;
   let historySnapshot = null, historyRetryErrors = false, historyOperation = false, confirmationTrigger = null;
   const panel = el('section', 'video-queue-panel'); panel.setAttribute('aria-label', `${familyName} queue controls`);
   const heading = el('div', 'h3-video-toolbar'), title = el('h3', '', 'Queue controls');
@@ -121,8 +123,10 @@ export function createVideoQueueControls({ container, family, request, getFields
       if (row.custom) row.custom.setDisabled(disabled);
       else row.control.disabled = disabled;
     }
+    sizeControls?.render(locked || retryRerun);
     apply.textContent = retryRerun ? singleJob ? 'Retry request' : 'Retry remaining copies safely' : singleJob ? mode === 'edit' ? 'Save job settings' : singleJob.status === 'completed' ? 'Queue edited copy' : 'Retry with these settings' : mode === 'rerun' ? `Queue ${targets.length} new ${targets.length === 1 ? 'job' : 'jobs'}` : `Apply to ${targets.length} queued ${targets.length === 1 ? 'job' : 'jobs'}`;
     apply.disabled = locked || !targets.length || (!singleJob && !approve.checked)
+      || !!sizeControls?.invalid
       || ((mode === 'edit' || (singleJob && !retryRerun)) && !rows.some(row => row.check.checked));
   }
   function updateQueue(value) { if (value && typeof value.paused === 'boolean') queue = value; render(); }
@@ -237,7 +241,7 @@ export function createVideoQueueControls({ container, family, request, getFields
     closeConfirmation(); receipt(result, action === 'delete' ? 'deleted' : 'canceled'); await reload();
   }, historyOperation);
   function buildFields(savedConfig = null, savedJob = null) {
-    rows = []; fieldGrid.replaceChildren();
+    rows = []; sizeControls = null; fieldGrid.replaceChildren();
     const seen = new Set();
     for (const descriptor of getFields(savedConfig, savedJob)) {
       const { key, label, control: original, numeric } = descriptor;
@@ -272,6 +276,65 @@ export function createVideoQueueControls({ container, family, request, getFields
       control.addEventListener('change', () => { if (singleJob) check.checked = true; approve.checked = false; render(); });
       row.append(toggle, control); fieldGrid.appendChild(row); rows.push({ key, control, check, numeric });
     }
+    buildSizeControls();
+  }
+  function buildSizeControls() {
+    const width = rows.find(row => row.key === 'width'), height = rows.find(row => row.key === 'height');
+    if (!width?.control || !height?.control) return;
+    const section = el('div', 'video-queue-field video-queue-field-wide');
+    const toggle = el('label', 'video-queue-field-toggle'), check = el('input'); check.type = 'checkbox';
+    check.hidden = !!singleJob; check.setAttribute('aria-label', 'Change aspect ratio and size');
+    toggle.append(check, el('strong', '', 'Aspect ratio & size')); section.append(toggle);
+    const controls = el('div', 'h3-video-grid');
+    const ratioLabel = el('label', 'h3-video-field'), ratio = el('select', 'cookbook-field-input');
+    ratio.setAttribute('aria-label', 'New aspect ratio'); ratio.dataset.queueSize = 'aspect';
+    ratioLabel.append(el('span', '', 'Aspect ratio'), ratio);
+    const mpLabel = el('label', 'h3-video-field'), mp = el('input', 'cookbook-field-input');
+    mp.type = 'number'; mp.min = '0.01'; mp.step = 'any'; mp.setAttribute('aria-label', 'New megapixels'); mp.dataset.queueSize = 'megapixels';
+    mpLabel.append(el('span', '', 'Size (megapixels)'), mp); controls.append(ratioLabel, mpLabel);
+    const summary = el('p', 'h3-video-muted'); summary.setAttribute('role', 'status');
+    const issue = el('p', 'h3-video-error'); issue.hidden = true; issue.setAttribute('role', 'alert');
+    section.append(controls, summary, el('p', 'h3-video-muted', 'Choosing a ratio or size changes Width and Height together. Exact dimensions remain editable below.'), issue);
+    fieldGrid.prepend(section);
+    const alignment = Number(width.control.step) > 1 ? Number(width.control.step) : 32;
+    function synchronize() {
+      const w = Number(width.control.value), h = Number(height.control.value);
+      const current = videoAspect(w, h, alignment), area = w * h / 1024 / 1024;
+      ratio.replaceChildren(...VIDEO_ASPECTS.map(value => new Option(value, value)));
+      if (current && !VIDEO_ASPECTS.includes(current)) ratio.add(new Option(`Custom · ${current}`, current));
+      ratio.value = current;
+      if (Number.isFinite(area) && area > 0) mp.value = String(Number(area.toPrecision(8)));
+      summary.textContent = `${width.control.value} × ${height.control.value} pixels`;
+      issue.hidden = true;
+    }
+    function applySize() {
+      try {
+        const size = videoResolution(mp.value, ...ratio.value.split(':'), alignment);
+        for (const row of [width, height]) {
+          const value = size[row.key], min = Number(row.control.min), max = Number(row.control.max);
+          if ((min && value < min) || (max && value > max)) throw new Error(`Choose a size with ${row.key} between ${min || 1} and ${max || 'the workflow limit'} pixels.`);
+        }
+        width.control.value = String(size.width); height.control.value = String(size.height);
+        width.check.checked = height.check.checked = true; approve.checked = false;
+        summary.textContent = `${size.width} × ${size.height} pixels`;
+        issue.hidden = true; render();
+      } catch (failure) { issue.textContent = `Size unchanged. ${failure.message}`; issue.hidden = false; render(); }
+    }
+    ratio.onchange = applySize; mp.oninput = applySize;
+    check.onchange = () => { width.check.checked = height.check.checked = check.checked; if (!check.checked) synchronize(); approve.checked = false; render(); };
+    for (const row of [width, height]) for (const event of ['input', 'change']) row.control.addEventListener(event, synchronize);
+    synchronize();
+    sizeControls = { get invalid() { return !issue.hidden; }, loadSaved(jobs) {
+      if (width.check.checked || height.check.checked || !jobs[0]?.config) return;
+      for (const row of [width, height]) if (jobs[0].config[row.key] != null) row.control.value = String(jobs[0].config[row.key]);
+      synchronize();
+      if (jobs.some(job => job.config?.width !== jobs[0].config.width || job.config?.height !== jobs[0].config.height)) {
+        summary.textContent += ' · Sizes differ across jobs; showing the first job. Unchecked sizes stay unchanged.';
+      }
+    }, render(locked) {
+      check.checked = width.check.checked && height.check.checked;
+      check.disabled = locked; ratio.disabled = mp.disabled = locked;
+    } };
   }
   async function loadTargets() {
     const version = ++selectionVersion;
@@ -279,7 +342,7 @@ export function createVideoQueueControls({ container, family, request, getFields
     const result = await request(`/queue/jobs?status=${mode === 'edit' ? 'queued' : targetScope.value}`);
     if (!alive() || version !== selectionVersion) return;
     if (!Array.isArray(result.jobs) || result.jobs.some(job => !job.id || !Number.isInteger(job.revision))) throw new Error('The server returned an invalid job selection. Refresh and retry.');
-    targets = result.jobs.filter(filterJobs); updateQueue(result.queue);
+    targets = result.jobs.filter(filterJobs); sizeControls?.loadSaved(targets); updateQueue(result.queue);
     targetStatus.textContent = `${targets.length} ${selectedName} ${mode === 'edit' ? 'queued ' : ''}${targets.length === 1 ? 'job' : 'jobs'} selected.${mode === 'edit' ? ' Pause the queue first to keep waiting jobs from starting while you edit.' : ' Original jobs and results are preserved; each copy goes to the end of the queue.'}`;
     approveText.textContent = mode === 'rerun' ? `Create ${targets.length} new jobs using these saved inputs and checked settings.` : `Change the checked parameters on these ${targets.length} queued jobs.`;
     for (const job of targets) targetList.appendChild(el('li', '', `${job.source_name || job.id} · ${job.status}`));

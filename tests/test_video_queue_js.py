@@ -1,6 +1,7 @@
 """Bulk video controls preserve per-job media, explicit patches and retry identity."""
 from pathlib import Path
 import shutil
+import re
 import subprocess
 
 import pytest
@@ -12,7 +13,8 @@ def run_js(script):
     node = shutil.which('node')
     if not node:
         pytest.skip('Node.js is required for queue UI checks')
-    source = (ROOT / 'static/js/videoQueue.js').read_text()
+    source = (ROOT / 'static/js/videoSizing.js').read_text() + '\n' + (ROOT / 'static/js/videoQueue.js').read_text()
+    source = re.sub(r'^import .*;\n', '', source, flags=re.MULTILINE)
     result = subprocess.run([node, '--input-type=module', '-e',
                              "import assert from 'node:assert/strict';\n" + source + '\n' + script],
                             capture_output=True, text=True)

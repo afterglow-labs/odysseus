@@ -18,6 +18,7 @@ import { appendVideoInputs, videoFormIssue } from './videoInputs.js';
 import { createVideoBatchQueue } from './videoBatch.js';
 import { createVideoJobReruns, BASE_RERUN_LABEL, BASE_RERUN_HELP } from './videoJobRerun.js';
 import { createVideoQueueControls, videoQueueField } from './videoQueue.js';
+import { VIDEO_ASPECTS, videoResolution } from './videoSizing.js';
 import { createVideoJobEditor, videoJobEditFormData } from './videoJobEdit.js';
 import { showVideoWorkflowExportOptions } from './h3Video.js';
 import * as videoWorkflow from './videoWorkflow.js';
@@ -63,10 +64,7 @@ export function seedHunterFrames(seconds) {
   return raw + (5 - raw % 17 + 17) % 17;
 }
 export function seedHunterResolution(megapixels, widthRatio, heightRatio, alignment = 32) {
-  const values = [megapixels, widthRatio, heightRatio, alignment].map(Number);
-  if (values.some(value => !Number.isFinite(value) || value <= 0)) throw new Error('Choose a positive resolution and aspect ratio.');
-  const scale = Math.sqrt(values[0] * 1024 * 1024 / (values[1] * values[2]));
-  return { width: Math.max(alignment, Math.round(values[1] * scale / alignment) * alignment), height: Math.max(alignment, Math.round(values[2] * scale / alignment) * alignment) };
+  return videoResolution(megapixels, widthRatio, heightRatio, alignment);
 }
 export function seedHunterRefinementDefaults(source, defaults, remembered = {}) {
   return { ...defaults, denoise: source.seed_hunter?.denoise ?? defaults.denoise ?? .4, ...remembered };
@@ -187,7 +185,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
     scoutUpscale.append(scoutUpscaleSummary);
   }
   const sizeTools = make('div', 'h3-video-actions'), aspect = make('select', 'cookbook-field-input'), megapixels = make('input', 'cookbook-field-input'), applySize = button('Apply preview size');
-  aspect.setAttribute('aria-label', 'Preview aspect ratio'); for (const value of ['1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9', '21:9']) aspect.add(new Option(value, value)); aspect.value = '9:16';
+  aspect.setAttribute('aria-label', 'Preview aspect ratio'); for (const value of VIDEO_ASPECTS) aspect.add(new Option(value, value)); aspect.value = '9:16';
   megapixels.type = 'number'; megapixels.value = '0.4'; megapixels.min = '0.1'; megapixels.max = '4'; megapixels.step = 'any'; megapixels.setAttribute('aria-label', 'Preview megapixels'); sizeTools.append(megapixels, aspect, applySize); form.append(sizeTools);
   function syncSizeControls(remembered) {
     const width = Number(fields.width.value), height = Number(fields.height.value);

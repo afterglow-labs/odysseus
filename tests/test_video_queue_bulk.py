@@ -83,6 +83,21 @@ def test_concurrent_bulk_edits_have_one_revision_winner(backend):
     assert saved[0]['config']['steps'] == saved[1]['config']['steps'] and all(row['revision'] == 1 for row in saved)
 
 
+def test_queue_size_roundtrip_preserves_prompt_media_and_queue_records(backend):
+    jobs = [create(backend), create(backend, name='second.mp4')]
+    manager = backend.managers['h3']
+    before = [h3._read(manager.directory(job['id']) / 'manifest.json') for job in jobs]
+    result = request(backend, 'edit', jobs, {'width': 864, 'height': 480})
+    assert result.status_code == 200, result.text
+    reopened = backend.client().get('/api/video/h3/queue/jobs?status=queued').json()['jobs']
+    assert {row['id'] for row in reopened} == {job['id'] for job in jobs}
+    for row, previous in zip(jobs, before):
+        saved = h3._read(manager.directory(row['id']) / 'manifest.json')
+        assert saved == {**previous, 'revision': 1, 'config': {**previous['config'], 'width': 864, 'height': 480}}
+        opened = next(item for item in reopened if item['id'] == row['id'])
+        assert (opened['config']['width'], opened['config']['height']) == (864, 480)
+
+
 def test_lightweight_snapshots_filter_owner_status_and_hide_paths(backend):
     first, second = create(backend), create(backend)
     create(backend, owner='other')
