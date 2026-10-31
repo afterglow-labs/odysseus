@@ -54,7 +54,7 @@ async def test_bulk_refinement_completes_past_generic_deadline_without_resubmiss
     ("POST", "/api/video/h3/auto-refine/other"),
     ("POST", "/api/video/h3/auto-refine-other"),
     ("GET", "/api/video/h3/jobs"),
-    ("POST", "/api/video/h3/jobs"),
+    ("POST", "/api/video/h3/jobs/example/cancel"),
 ])
 async def test_other_video_routes_keep_generic_timeout(method, path):
     app, calls = slow_app()

@@ -171,11 +171,9 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 
 # ========= REQUEST TIMEOUT (FALLBACK FOR HUNG HANDLERS) =========
-# If a single request takes longer than REQUEST_HARD_TIMEOUT, abort it and
-# return 504 instead of holding the event loop hostage. Whitelisted paths
-# (streaming, long-running shell exec, research) are exempt because they
-# legitimately stay open. Without this, a single hung subprocess.run or
-# missing-timeout httpx call locks up the entire server for everyone.
+# Bound the wait for ordinary API response headers. Upload bodies and download
+# preparation can legitimately take much longer, so file transfers are exempt.
+# Streaming responses and long-running operations also keep their own limits.
 import asyncio as _asyncio
 from starlette.middleware.base import BaseHTTPMiddleware as _BaseHTTPMiddleware
 from starlette.responses import JSONResponse as _JSONResponse
@@ -198,13 +196,15 @@ _TIMEOUT_EXEMPT_PREFIXES = (
 
 class _RequestTimeoutMiddleware(_BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
+        from src.request_timeout import is_file_transfer
         path = request.url.path or ""
         # This bounded, authenticated bulk operation durably records each
         # candidate and continues after disconnects. A generic 504 would report
         # failure while those jobs are still being queued. Keep the exemption
-        # exact so history, unrelated video operations and GET remain timed.
+        # exact so it does not exempt history or neighboring action routes.
         bulk_refinement = request.method == "POST" and path == "/api/video/h3/auto-refine"
-        if bulk_refinement or any(path.startswith(p) for p in _TIMEOUT_EXEMPT_PREFIXES):
+        if (is_file_transfer(request.method, path, request.headers.get("content-type", ""))
+                or bulk_refinement or any(path.startswith(p) for p in _TIMEOUT_EXEMPT_PREFIXES)):
             return await call_next(request)
         try:
             return await _asyncio.wait_for(call_next(request), timeout=REQUEST_HARD_TIMEOUT)
