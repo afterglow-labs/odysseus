@@ -177,7 +177,9 @@ def cache_roots(project=PROJECT_ROOT, state_file=COOKBOOK_STATE_FILE):
         for value in entries + [server.get("modelDir"), server.get("downloadDir")]:
             if isinstance(value, str) and value.strip():
                 roots.append(Path(value).expanduser())
-    return list(dict.fromkeys(path.resolve() for path in roots if path.is_dir()))
+    # Do not stat/resolve mounted libraries on the request thread. Discovery
+    # handles absent roots and resolves model paths in its background workers.
+    return list(dict.fromkeys(path.absolute() for path in roots))
 
 
 def discover_components(roots):
@@ -684,33 +686,39 @@ def installed_h3_preset(path, components, gpus, defaults):
         if (not isinstance(values, dict) or set(values) - allowed or not {"mode", "model"} <= set(values)
                 or not {"lora", "loras"} & set(values)):
             raise ValueError("Preset requires mode, model, and lora, with recognized settings only")
+
+        def select(role, value):
+            # Migration aliases include the original path. Try that identity
+            # before touching a former network location, and never resolve all
+            # the unrelated components merely to compare one preset selection.
+            lexical = str(Path(value).expanduser().absolute())
+            identities = {value, hashlib.sha256(lexical.encode()).hexdigest()[:32]}
+            candidates = [item for item in components if item["role"] == role]
+            matches = [item for item in candidates if item["path"] == lexical
+                       or identities.intersection([item["id"], *item.get("aliases", [])])]
+            if not matches:
+                identity = hashlib.sha256(str(Path(value).expanduser().resolve()).encode()).hexdigest()[:32]
+                matches = [item for item in candidates if identity == item["id"] or identity in item.get("aliases", [])]
+            if len(matches) != 1:
+                raise ValueError(f"Installed {role.replace('_', ' ')} was not found in the cached component scan")
+            return matches[0]["id"]
+
         resolved = dict(values)
         for role in roles & set(values):
             value = values[role]
             if not isinstance(value, str) or not value:
                 raise ValueError(f"Invalid {role} selection")
-            value_id = hashlib.sha256(str(Path(value).expanduser().resolve()).encode()).hexdigest()[:32]
-            matches = [item for item in components if item["role"] == role and
-                       (item["id"] == value or value in item.get("aliases", [])
-                        or value_id in item.get("aliases", [])
-                        or Path(item["path"]).resolve() == Path(value).expanduser().resolve())]
-            if len(matches) != 1:
-                raise ValueError(f"Installed {role.replace('_', ' ')} was not found in the cached component scan")
-            resolved[role] = matches[0]["id"]
+            resolved[role] = select(role, value)
         if "loras" in values:
             from src.h3_loras import lora_entries
             resolved["loras"] = []
             available = {identity: item for item in components for identity in [item["id"], *item.get("aliases", [])]}
+            for row in values["loras"]:
+                if isinstance(row, dict) and isinstance(row.get("id"), str) and row["id"]:
+                    identity = select("lora", row["id"])
+                    available[row["id"]] = available[identity]
             for row in lora_entries(values, components=available):
-                value = row["id"]
-                value_id = hashlib.sha256(str(Path(value).expanduser().resolve()).encode()).hexdigest()[:32]
-                matches = [item for item in components if item["role"] == "lora" and
-                           (item["id"] == value or value in item.get("aliases", [])
-                            or value_id in item.get("aliases", [])
-                            or Path(item["path"]).resolve() == Path(value).expanduser().resolve())]
-                if len(matches) != 1:
-                    raise ValueError("Installed lora was not found in the cached component scan")
-                resolved["loras"].append({"id": matches[0]["id"], "strength": row["strength"]})
+                resolved["loras"].append({"id": select("lora", row["id"]), "strength": row["strength"]})
         candidate = {**defaults, **resolved, "prompt": "Installed H3 preset validation"}
         for role in roles - {"model", "lora"}:
             if role not in candidate:
@@ -746,9 +754,27 @@ class H3JobManager:
                 self._submission_inventory_cache = cached
             return cached[1]
 
+    def component_inventory(self, *, refresh=False):
+        from src.video_component_inventory import component_index, InventoryPending
+        index = component_index(self.project, "h3", discover_components)
+        components, status = index.get(cache_roots(self.project), refresh=refresh)
+        if not components and status["pending_roots"]:
+            raise InventoryPending()
+        return sorted(components, key=lambda row: (row["role"], row["name"], row["path"])), status
+
+    def invalidate_components(self, path, component=None):
+        from src.video_component_inventory import component_index
+        component_index(self.project, "h3", discover_components).invalidate(path, component)
+
+    def refresh_inventory(self):
+        self.component_inventory(refresh=True)
+        with self._submission_inventory_lock:
+            self._submission_inventory_cache = None
+        return self.inventory()
+
     def inventory(self):
         from src.h3_loras import MAX_LORAS
-        components = discover_components(cache_roots(self.project))
+        components, scan_status = self.component_inventory()
         gpus = gpu_inventory()
         error = runtime_error(self.runtime, self.worker)
         defaults = dict(DEFAULTS)
@@ -756,7 +782,7 @@ class H3JobManager:
             defaults["gpu"] = next((g["id"] for g in gpus if g.get("nvfp4")), gpus[0]["id"])
         preset, preset_error = installed_h3_preset(self.preset_file, components, gpus, defaults)
         from src.h3_seed_hunter import capabilities
-        return {"components": components, "gpus": gpus, "runtime_ready": not error, "batch_jobs": True,
+        return {"components": components, "component_scan": scan_status, "gpus": gpus, "runtime_ready": not error, "batch_jobs": True,
                 "seed_hunter": capabilities(self.project, self.runtime, components, gpus),
                 "batch_auto_video_length": True, "reference_video_ranges": True,
                 "server_video_files": True,

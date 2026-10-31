@@ -251,8 +251,16 @@ class BFSJobManager(H3JobManager):
         kwargs.setdefault('worker', Path(kwargs.get('project', PROJECT_ROOT)) / 'scripts/bfs_video_worker.py')
         super().__init__(root, **kwargs)
 
+    def component_inventory(self, *, refresh=False):
+        from src.video_component_inventory import component_index, InventoryPending
+        index = component_index(self.project, 'bfs', discover_components)
+        components, status = index.get(cache_roots(self.project), refresh=refresh)
+        if not components and status['pending_roots']:
+            raise InventoryPending()
+        return sorted(components, key=lambda c: (0 if c['nvfp4'] else 1 if 'int8' in c['name'].lower() else 2, c['name'])), status
+
     def inventory(self):
-        components = discover_components(cache_roots(self.project))
+        components, scan_status = self.component_inventory()
         gpus = gpu_inventory()
         error = runtime_error(self.runtime, self.worker)
         workflows = []
@@ -267,7 +275,7 @@ class BFSJobManager(H3JobManager):
             workflows.append({**workflow, 'slots': slots, 'ready': not missing and not specific_error,
                               'runtime_error': specific_error,
                               'unavailable_reason': specific_error or ('Missing cached components: ' + ', '.join(missing) if missing else '')})
-        return dict(workflows=workflows, components=components, gpus=gpus, runtime_ready=not error, batch_jobs=True,
+        return dict(workflows=workflows, components=components, component_scan=scan_status, gpus=gpus, runtime_ready=not error, batch_jobs=True,
                     server_video_files=True,
                     runtime_error=error, defaults={'gpu': next((g['id'] for g in gpus if g.get('nvfp4')), gpus[0]['id'] if gpus else '')})
 

@@ -80,12 +80,20 @@ class LoraLibrary:
             path.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     def components(self):
-        from src.h3_video import discover_components, cache_roots
-        return [item for item in discover_components(cache_roots(self.manager.project)) if item["role"] == "lora"]
+        components, _ = self.manager.component_inventory(refresh=True)
+        return [item for item in components if item["role"] == "lora"]
 
-    def invalidate(self):
+    def invalidate(self, path):
+        component = self.installed_component(path)
         with self.manager._submission_inventory_lock:
             self.manager._submission_inventory_cache = None
+        self.manager.invalidate_components(path, component)
+        return component
+
+    @staticmethod
+    def installed_component(path):
+        from src.h3_video import discover_components
+        return next(item for item in discover_components([Path(path).parent]) if item["path"] == str(path))
 
     def profile(self, identity, profile):
         profile = validate_lora_profile(profile)
@@ -94,8 +102,7 @@ class LoraLibrary:
             raise FileNotFoundError("Installed adapter not found")
         validate_adapter(component["path"])
         write_profile(component["path"], profile, overwrite=True)
-        self.invalidate()
-        return next(item for item in self.components() if item["id"] == component["id"])
+        return self.invalidate(component["path"])
 
     def stage(self, filename):
         self._prepare()
@@ -114,9 +121,8 @@ class LoraLibrary:
                                                           "revision": revision, "sha256": self.digest(path)}})
         target = self.root / uuid.uuid4().hex
         os.replace(path.parent, target)
-        self.invalidate()
         component_path = str(target / path.name)
-        return next(item for item in self.components() if item["path"] == component_path)
+        return self.invalidate(component_path)
 
     @staticmethod
     def digest(path):

@@ -56,7 +56,11 @@ def setup_bfs_video_routes(manager=None):
     @router.get('/inventory')
     async def inventory(request: Request):
         _owner(request)
-        return await asyncio.to_thread(manager.inventory)
+        from src.video_component_inventory import InventoryPending
+        try:
+            return await asyncio.to_thread(manager.refresh_inventory)
+        except InventoryPending as exc:
+            raise HTTPException(503, str(exc), headers={'Retry-After': '2'}) from exc
 
     @router.get('/jobs')
     async def jobs(request: Request):
