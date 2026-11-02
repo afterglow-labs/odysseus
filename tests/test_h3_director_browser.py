@@ -1,5 +1,6 @@
 """Use the actual desktop and mobile-width editors with an isolated API fixture."""
 import asyncio
+import base64
 from email.parser import BytesParser
 from email.policy import default
 import json
@@ -65,6 +66,19 @@ def test_director_queues_its_timeline_modes_and_independent_candidates(layout,wi
                 await page.get_by_label("Candidate 3",exact=True).check()
                 await page.get_by_label("Hybrid continuation",exact=True).check()
                 await page.get_by_label("Continuation checkpoint",exact=True).select_option(components[1]["id"])
+                if layout == 'classic' and width == 1440:
+                    pixel = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=')
+                    await page.locator('#h3-reference_images').set_input_files([dict(name=f'boat-{i}.png',mimeType='image/png',buffer=pixel) for i in range(3)])
+                    await page.get_by_text('Reference direction', exact=True).click()
+                    await page.get_by_label('Image 2 name', exact=True).fill('The retained boat')
+                    await page.get_by_label('Location reference image', exact=True).select_option('2')
+                    await page.get_by_text('Reference direction', exact=True).click()
+                    await page.get_by_label('Image 3 description', exact=True).fill('The retained location')
+                    await page.get_by_role('button', name='Remove boat-0.png', exact=True).click()
+                    await page.get_by_text('Reference direction', exact=True).click()
+                    assert await page.get_by_label('Image 1 name', exact=True).input_value() == 'The retained boat'
+                    assert await page.get_by_label('Location reference image', exact=True).input_value() == '1'
+                    assert await page.get_by_label('Image 2 description', exact=True).input_value() == 'The retained location'
                 output=ROOT/"outputs/qa";output.mkdir(parents=True,exist_ok=True)
                 await page.get_by_label("Total seconds",exact=True).scroll_into_view_if_needed()
                 await page.screenshot(path=str(output/f"director-{layout}-{width}.png"))
@@ -75,6 +89,9 @@ def test_director_queues_its_timeline_modes_and_independent_candidates(layout,wi
                 assert saved["director"]["duration_seconds"]==25 and len(saved["director"]["segments"])==2
                 assert saved["director"]["candidate_3"] and not saved["director"]["candidate_2"]
                 assert saved["director"]["hybrid_continuation"] and saved["model_fl2va"]==components[1]["id"]
+                if layout == 'classic' and width == 1440:
+                    assert saved['director']['characters'][0]['image_index'] == 0
+                    assert saved['director']['background']['image_index'] == 1
                 if layout=="pipeline":
                     await page.get_by_role("button",name="Focus one stage",exact=True).click()
                     await page.locator('[data-pipeline-stage="review"]').click()

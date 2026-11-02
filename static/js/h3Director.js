@@ -10,6 +10,19 @@ export async function showH3Director(options = {}, anchor = document.activeEleme
   return showH3Video({...options, recipe:'director'}, anchor);
 }
 
+export function removingDirectorReference(options, field, index) {
+  const key={reference_images:'characters',reference_videos:'refVideos',reference_audio:'refAudios'}[field];
+  if(!key)return options;
+  const result=copy(options), indexKey=field==='reference_images'?'image_index':'input_index';
+  result[key]=(result[key]||[]).filter(row=>row[indexKey]!==index).map(row=>({...row,[indexKey]:row[indexKey]>index?row[indexKey]-1:row[indexKey]}));
+  if(field==='reference_images'){
+    if(result.background?.image_index===index)result.background=null;
+    else if(result.background?.image_index>index)result.background.image_index--;
+    result.segments=(result.segments||[]).map(cut=>({...cut,speakerCharIdxs:(cut.speakerCharIdxs||[]).filter(i=>i!==index).map(i=>i>index?i-1:i)}));
+  }
+  return result;
+}
+
 export function createDirectorControls({form, before = null, onChange, getMode, getInputs, showModels = true, showReferences = true}) {
   const node=make('section');node.className='h3-director-controls';node.setAttribute('aria-label','Director timeline');
   form.insertBefore(node,before);
@@ -89,6 +102,7 @@ export function createDirectorControls({form, before = null, onChange, getMode, 
     set:(config,components=[])=>{options={...copy(defaults),...copy(config.director||{})};secondary=config.model_fl2va||'';
       componentOptions=components.filter(c=>c.role==='model'&&c.variant==='fl2va').map(c=>[c.id,c.name]);render();},
     refreshReferences:()=>{const key=JSON.stringify([getMode(),getInputs()]);if(key!==refKey){refKey=key;render();}},
+    removeReference:(field,index)=>{options=removingDirectorReference(options,field,index);render();onChange();},
   };
 }
 

@@ -374,7 +374,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
         const prefix = key === 'source_video' ? 'Source video · ' : referenceLabel ? `<${referenceLabel} ${index + 1}> · ` : '';
         const name = el('span', '', `${prefix}${file.name} · ${(file.size / 1048576).toFixed(1)} MB${saved ? ' · Saved on server' : file.serverFile ? ` · ${file.serverFile.root.toUpperCase()}:/${file.serverFile.path}` : ''}`);
         const remove = button('Remove'); remove.setAttribute('aria-label', `Remove ${file.name}`);
-        remove.onclick = () => { if (saved) state.retained.splice(index, 1); else state.files.splice(index - state.retained.length, 1); editRevision++; render(); updateReady(); };
+        remove.onclick = () => { if (saved) state.retained.splice(index, 1); else state.files.splice(index - state.retained.length, 1); directorControls?.removeReference(key,index); editRevision++; render(); updateReady(); };
         item.append(name, remove);
         if (key === 'reference_videos' && !director) {
           item.classList.add('h3-reference-video-row');
