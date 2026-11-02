@@ -30,8 +30,8 @@ def test_single_saved_job_empty_patch_and_labels_without_changing_draft():
     run_js(r'''
 const draft={prompt:'Unrelated current draft',steps:99,files:[new File(['image'],'new.png')]};
 const control=make();
-assert.equal(control.state(source).label,'Retry with original settings');assert.equal(control.state({...source,status:'stopped'}).label,'Retry with original settings');
-assert.equal(control.state({...source,status:'completed'}).label,'Reprocess with original settings');
+assert.equal(control.state(source).label,'Retry');assert.equal(control.state({...source,status:'stopped'}).label,'Retry');
+assert.equal(control.state({...source,status:'completed'}).label,'Rerun');
 for(const status of ['queued','running']){assert.equal(control.state({...source,status}).hidden,true);await control.run({...source,status});}
 assert.equal(calls.length,0);await control.run(source);
 assert.equal(calls.length,1);assert.equal(calls[0].path,'/queue/rerun');
@@ -100,7 +100,7 @@ assert.equal(control.state(source).label,'Retry request');assert.equal(stored.si
 control=make({request:handler});assert.equal(control.state(source).label,'Retry request');
 rerunSessions.clear();control=make({request:handler}); // Simulate reloading the JS while sessionStorage remains.
 await control.run({...source,revision:8});assert.deepEqual(calls[1].body,initial);
-assert.equal(control.state(source).label,'Retry with original settings');assert.equal(stored.size,0);assert.equal(refreshes,1);
+assert.equal(control.state(source).label,'Retry');assert.equal(stored.size,0);assert.equal(refreshes,1);
 ''')
 
 

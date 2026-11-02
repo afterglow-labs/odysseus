@@ -128,6 +128,23 @@ def test_scout_stage_filter_precedes_pagination_and_keeps_history_and_counts_sep
     assert len(client.get('/api/video/h3/jobs').json()['jobs']) == 22
 
 
+def test_standard_h3_scope_excludes_director_and_hunter_before_pagination(backend):
+    manager = backend.managers['h3']
+    ordinary = [saved_job(manager, index, legacy=index % 2 == 0) for index in range(1, 5)]
+    saved_job(manager, 5, recipe='director')
+    saved_job(manager, 6, recipe='director', legacy=True)
+    saved_job(manager, 7, recipe='seed_hunter')
+    saved_job(manager, 8, recipe='seed_hunter', legacy=True)
+    client = backend.client()
+    response = client.get('/api/video/h3/jobs?recipe=h3&page=2&page_size=2')
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body['pagination']['total'] == body['counts']['completed'] == 4
+    assert [row['id'] for row in body['jobs']] == [path.name for path in reversed(ordinary[:2])]
+    assert len(client.get('/api/video/h3/jobs?recipe=h3').json()['jobs']) == 4
+    assert len(client.get('/api/video/h3/jobs').json()['jobs']) == 8
+
+
 @pytest.mark.parametrize("family", ["h3", "bfs"])
 def test_detail_is_bare_full_job_and_owner_admin_scoped(backend, family):
     manager = backend.managers[family]
@@ -193,7 +210,7 @@ def test_offpage_dead_worker_reconciles_counts_without_hydration_or_foreign_muta
 
 @pytest.mark.parametrize("query", ["page=0", "page=-1", "page=1.5", "page=abc", "page_size=0", "page_size=51",
                                   "page_size=1.5", "page=1&before=nan", "page=1&before=inf",
-                                  "page=1&before=-1", "page=1&before=no", "before=1", "recipe=h3",
+                                  "page=1&before=-1", "page=1&before=no", "before=1", "recipe=unknown",
                                   "stage=scout", "recipe=seed_hunter&stage=preview", "recipe=seed_hunter&stage="])
 def test_invalid_pagination_never_hydrates_jobs(backend, monkeypatch, query):
     for manager in backend.managers.values():

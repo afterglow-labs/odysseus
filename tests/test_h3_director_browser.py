@@ -1,0 +1,101 @@
+"""Use the actual desktop and mobile-width editors with an isolated API fixture."""
+import asyncio
+from email.parser import BytesParser
+from email.policy import default
+import json
+import mimetypes
+from pathlib import Path
+import shutil
+from urllib.parse import urlparse
+
+import pytest
+from src.h3_director import capabilities
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize("layout,width", [("classic",1440),("classic",390),("pipeline",1440),("pipeline",390)])
+def test_director_queues_its_timeline_modes_and_independent_candidates(layout,width):
+    pw=pytest.importorskip("playwright.async_api")
+    chrome=shutil.which("google-chrome") or shutil.which("chromium")
+    if not chrome: pytest.skip("Chrome required")
+    components=[dict(id=name,name=name,role=role,variant=variant) for role,name,variant in [
+        ("model","minimax_h3_ref2va_pruned_int8.safetensors","ref2va"),
+        ("model","minimax_h3_fl2va_pruned_int8.safetensors","fl2va"),
+        ("encoder","encoder","shared"),("video_vae","vae","shared"),("audio_vae","audio","shared")]]
+    defaults=dict(mode="ref2va",gpu="GPU-fixture",vae_gpu="",seed=42,prompt="",reference_size="match",lora_scale=1,
+                  **{role:next(c["id"] for c in components if c["role"]==role) for role in ["model","encoder","video_vae","audio_vae"]})
+    inventory=dict(defaults=defaults,base_defaults=defaults,components=components,gpus=[dict(id="GPU-fixture",name="RTX 5090",nvfp4=True)],
+                   runtime_ready=True,batch_jobs=True,director=capabilities(components),lora_stack=True)
+    requests,reruns,errors=[],[],[]
+    async def exercise():
+        async with pw.async_playwright() as p:
+            browser=await p.chromium.launch(executable_path=chrome,headless=True,args=["--no-sandbox"])
+            page=await browser.new_page(viewport=dict(width=width,height=1000))
+            page.on("pageerror",lambda error:errors.append(str(error)))
+            async def route(handler):
+                request=handler.request;path=urlparse(request.url).path
+                if path=="/": await handler.fulfill(content_type="text/html",body='<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/static/style.css"></head><body></body></html>')
+                elif path.startswith("/static/"):
+                    file=ROOT/path.lstrip("/");await handler.fulfill(body=file.read_bytes(),content_type="text/javascript" if file.suffix==".js" else mimetypes.guess_type(file.name)[0])
+                elif path.endswith("/inventory"): await handler.fulfill(json=inventory)
+                elif path=="/api/video/h3/jobs" and request.method=="POST":
+                    msg=BytesParser(policy=default).parsebytes(b"Content-Type: "+request.headers["content-type"].encode()+b"\r\n\r\n"+request.post_data_buffer)
+                    config=json.loads(next(part.get_payload(decode=True) for part in msg.iter_parts() if part.get_param("name",header="content-disposition")=="config"))
+                    requests.append(config);await handler.fulfill(json=dict(id="a"*32,status="queued"))
+                elif path=="/api/video/h3/queue/rerun":
+                    body=request.post_data_json;reruns.append(body)
+                    await handler.fulfill(json=dict(request_id=body["request_id"],succeeded=1,failed=0,jobs=[dict(id="b"*32,source_id="a"*32,status="queued")]))
+                elif path.endswith("/jobs"):
+                    jobs=[dict(id="a"*32,recipe="director",status="completed",revision=0,created_at=123,config=requests[0],
+                               director=dict(stage="generation",candidates=[]))] if requests else []
+                    await handler.fulfill(json=dict(jobs=jobs,queue={},pagination=dict(page=1,total=len(jobs),total_pages=1)))
+                else:await handler.fulfill(json=dict(models=[],prompts=[],jobs=[],queue={},targets=[]))
+            await page.route("**/*",route)
+            try:
+                await page.goto("https://director.test/")
+                await page.evaluate("async layout=>(await import('/static/js/h3Director.js')).showH3Director({layout})",layout)
+                await page.get_by_text("Components ready on this Odysseus server.",exact=True).wait_for()
+                if layout=="pipeline": await page.get_by_role("button",name="Show all settings",exact=True).click()
+                assert await page.locator("#h3-mode option[value=t2va]").count()==0
+                await page.get_by_label("Total seconds",exact=True).fill("25")
+                await page.get_by_label("Cut 1 prompt",exact=True).fill("A paper boat crosses the pond.")
+                await page.get_by_role("button",name="Add cut",exact=True).click()
+                await page.get_by_label("Cut 2 prompt",exact=True).fill("Close-up of the ripples.")
+                await page.get_by_label("Candidate 3",exact=True).check()
+                await page.get_by_label("Hybrid continuation",exact=True).check()
+                await page.get_by_label("Continuation checkpoint",exact=True).select_option(components[1]["id"])
+                output=ROOT/"outputs/qa";output.mkdir(parents=True,exist_ok=True)
+                await page.get_by_label("Total seconds",exact=True).scroll_into_view_if_needed()
+                await page.screenshot(path=str(output/f"director-{layout}-{width}.png"))
+                await page.locator('button[type="submit"]').filter(has_text="Generate").first.click()
+                await page.wait_for_timeout(250)
+                assert len(requests)==1,(errors,await page.locator('.h3-video-error').all_text_contents(),await page.locator(':invalid').evaluate_all("nodes=>nodes.map(n=>[n.name,n.value,n.validationMessage])"),await page.locator('.h3-video-dialog').inner_text())
+                saved=requests[0];assert saved["recipe"]=="director" and "seed_hunter" not in saved
+                assert saved["director"]["duration_seconds"]==25 and len(saved["director"]["segments"])==2
+                assert saved["director"]["candidate_3"] and not saved["director"]["candidate_2"]
+                assert saved["director"]["hybrid_continuation"] and saved["model_fl2va"]==components[1]["id"]
+                if layout=="pipeline":
+                    await page.get_by_role("button",name="Focus one stage",exact=True).click()
+                    await page.locator('[data-pipeline-stage="review"]').click()
+                assert await page.get_by_role("button",name="Edit & rerun",exact=True).count(), (errors, await page.locator('.h3-video-dialog').inner_text())
+                await page.get_by_role("button",name="Edit & rerun",exact=True).click()
+                editor=page.locator('.video-queue-editor')
+                assert await editor.get_by_label("Total seconds",exact=True).input_value()=="25"
+                await editor.get_by_label("Total seconds",exact=True).fill("31")
+                await editor.get_by_label("Cut 2 prompt",exact=True).fill("The boat reaches the bank.")
+                await editor.get_by_label("Candidate 3",exact=True).uncheck()
+                await editor.get_by_label("Candidate 2",exact=True).check()
+                await editor.get_by_role("button",name="Queue edited copy",exact=True).click()
+                await page.wait_for_timeout(250)
+                assert len(reruns)==1,(errors,await page.locator('.h3-video-error').all_text_contents())
+                changed=reruns[0]["patch"]["director"]
+                assert changed["duration_seconds"]==31 and changed["segments"][1]["prompt"]=="The boat reaches the bank."
+                assert changed["candidate_2"] and not changed["candidate_3"]
+                if layout=="pipeline": await page.get_by_role("button",name="Show all settings",exact=True).click()
+                assert await page.get_by_role("spinbutton",name="Total seconds",exact=True).input_value()=="25"
+                await page.locator('#h3-model').select_option(components[1]["id"])
+                assert await page.locator('#h3-mode').input_value()=="fl2va"
+                assert not errors
+            finally: await browser.close()
+    asyncio.run(exercise())

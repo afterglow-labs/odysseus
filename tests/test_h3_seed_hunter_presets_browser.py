@@ -62,12 +62,11 @@ def test_presets_keep_prompt_media_and_clip_lengths_and_queue_real_settings(layo
                 await pw.expect(picker).to_be_visible()
                 await picker.select_option('pika')
                 assert await page.locator('#seed-hunter-sampler').input_value()=='lcm'
-                await picker.select_option('director')
-                assert await page.locator('#seed-hunter-option-preview_count').input_value()=='4'
+                assert await picker.locator('option[value=director]').count()==0
+                await picker.select_option('quality')
                 if layout=='pipeline':await page.get_by_role('button',name='Show all settings',exact=True).click()
                 image=page.locator('#seed-hunter-input-reference_images')
                 await image.set_input_files(dict(name='identity.png',mimeType='image/png',buffer=b'fixture-owned-image'))
-                await page.locator('#seed-hunter-option-director_shots').fill('2 | Wide shot.\n1 | Close-up.')
                 await picker.select_option('turbo4')
                 await pw.expect(page.locator('#seed-hunter-prompt')).to_have_value('Keep the boat and scene.')
                 assert await page.locator('#seed-hunter-frames').input_value()=='107'

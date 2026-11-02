@@ -300,9 +300,12 @@
 .h3-lora-library-dialog { width:min(900px,100%); }
 .h3-lora-library-dialog .h3-video-scroll { display:block; }
 .h3-lora-library-source,.h3-lora-profile-form { display:grid; gap:12px; margin:12px 0; }
-.h3-lora-library-fieldset { min-width:0; border:1px solid var(--border,#544c60); border-radius:8px; padding:12px; margin:0; }
-.h3-lora-library-fieldset legend { padding:0 6px; font-weight:600; }
-.h3-lora-library-fieldset>.h3-video-field,.h3-lora-library-fieldset>div>.h3-video-field { margin-bottom:12px; }
+.h3-lora-library-fieldset,.h3-director-controls fieldset { min-width:0; border:1px solid var(--border,#544c60); border-radius:8px; padding:12px; margin:0; }
+.h3-lora-library-fieldset legend,.h3-director-controls legend { padding:0 6px; font-weight:600; }
+.h3-lora-library-fieldset>.h3-video-field,.h3-lora-library-fieldset>div>.h3-video-field,.h3-director-controls fieldset>.h3-video-field { margin-bottom:12px; }
+.h3-director-controls { display:grid; gap:12px; min-width:0; }
+.h3-director-controls .h3-video-field:has(input[type=checkbox]) { flex-direction:row; align-items:center; }
+.h3-director-controls input[type=checkbox].cookbook-field-input { width:auto; height:auto; }
 .h3-lora-library-downloads { margin-top:20px; }
 .h3-lora-library-download { border-top:1px solid var(--border,#544c60); padding:12px 0; overflow-wrap:anywhere; }
 @media (max-width:600px) {

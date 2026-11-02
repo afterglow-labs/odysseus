@@ -184,7 +184,7 @@ def cache_roots(project=PROJECT_ROOT, state_file=COOKBOOK_STATE_FILE):
 
 def discover_components(roots):
     from src.model_library import component_aliases
-    from scripts.h3_seed_hunter_presets import PRISM8
+    from scripts.h3_seed_hunter_presets import PRISM8, PINKCHERRY
     components, seen, known_ids, metadata_cache = [], set(), set(), {}
     for base in roots:
         for directory, dirs, files in os.walk(base, followlinks=False):
@@ -229,14 +229,14 @@ def discover_components(roots):
                     role = "audio_vae" if "audio" in lower else "video_vae"
                 elif "qwen" in lower or "encoder" in lower or "clip" in lower:
                     role = "encoder"
-                elif "ref2va" in lower or "fl2va" in lower or name == PRISM8:
+                elif "ref2va" in lower or "fl2va" in lower or name in {PRISM8, PINKCHERRY}:
                     role = "model"
                 else:
                     continue
                 # LightX2V uses ref2v/fl2v in LoRA names, while H3 checkpoints
                 # use ref2va/fl2va. They describe the same model families.
                 variant = "ref2va" if re.search(r"ref2va?(?:[_.\s-]|$)", lower) else "fl2va" if re.search(r"fl2va?(?:[_.\s-]|$)", lower) else "shared"
-                if name == PRISM8:
+                if name in {PRISM8, PINKCHERRY}:
                     variant = "ref2va"
                 if role == "lora" and adapter and profile is None:
                     profile = built_in_lora_profile(name)
@@ -355,23 +355,29 @@ def validate_config(raw, components, gpus, uploads):
     if not isinstance(raw, dict):
         raise ValueError("config must be a JSON object")
     from src.h3_loras import lora_entries
-    allowed = set(DEFAULTS) | {"prompt", "model", "encoder", "video_vae", "audio_vae", "lora", "loras", "recipe", "seed_hunter", "latent_upscaler", "reference_video_ranges"}
+    allowed = set(DEFAULTS) | {"prompt", "model", "encoder", "video_vae", "audio_vae", "lora", "loras", "recipe", "seed_hunter", "director", "model_fl2va", "latent_upscaler", "reference_video_ranges"}
     if set(raw) - allowed:
         raise ValueError("Unknown generation setting: " + sorted(set(raw) - allowed)[0])
     config = {**DEFAULTS, **raw}
     from scripts.h3_seed_hunter_controls import validate_options, limits, SAMPLERS, SCHEDULERS, scout_upscale_enabled, validate_scout_output
     hunt = config.get("recipe") == "seed_hunter"
-    if "recipe" in raw and not hunt or not hunt and ("seed_hunter" in raw or "latent_upscaler" in raw):
+    director = config.get("recipe") == "director"
+    if ("recipe" in raw and not (hunt or director) or not hunt and ("seed_hunter" in raw or "latent_upscaler" in raw)
+            or not director and ("director" in raw or "model_fl2va" in raw)):
         raise ValueError("Unknown H3 recipe")
     options = validate_options(config.get("seed_hunter", {})) if hunt else None
     bounds = limits(options) if hunt else {"min_edge": 256, "max_edge": 1920, "max_pixels": 768 * 1344, "min_frames": 124}
+    if director:
+        from scripts import h3_director_controls as dc
+        config["director"] = dc.validate_options(config.get("director", {}))
+        bounds = {"min_edge": 256, "max_edge": 4096, "max_pixels": 4_000_000, "min_frames": 5}
     if hunt:
         config["seed_hunter"] = options
     by_id = {alias: item for item in components for alias in item.get("aliases", [])}
     by_id.update({item["id"]: item for item in components})
     adapters = lora_entries(config, components=by_id)
     vfx_edit = any(row["strength"] != 0 and by_id.get(row["id"], {}).get("name", "").lower() in VFX_LORAS for row in adapters)
-    if hunt and vfx_edit:
+    if (hunt or director) and vfx_edit:
         raise ValueError("Use the standard H3 VFX workflow for the VFX Edit adapter")
     if "loras" in raw:
         config["lora_scale"] = adapters[0]["strength"] if adapters else 1
@@ -380,7 +386,7 @@ def validate_config(raw, components, gpus, uploads):
     if hunt and config["mode"] != "ref2va":
         raise ValueError("Seed Hunter requires a Ref2VA base model")
     prompt = config.get("prompt")
-    if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 16000:
+    if not isinstance(prompt, str) or (not director and not prompt.strip()) or len(prompt) > 16000:
         raise ValueError("A prompt of 1–16,000 characters is required")
     for key, low, high in (("width", bounds["min_edge"], bounds["max_edge"]), ("height", bounds["min_edge"], bounds["max_edge"]), ("frames", 73 if vfx_edit else bounds["min_frames"], 362),
                            ("steps", 1, 100), ("seed", 0, 2**63 - 1)):
@@ -402,9 +408,9 @@ def validate_config(raw, components, gpus, uploads):
         value = config[key]
         if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value) or not low <= value <= high:
             raise ValueError(f"{key} must be a finite number from {low} to {high}")
-    if not isinstance(config["sampler"], str) or config["sampler"] not in (SAMPLERS if hunt else {"euler", "res_multistep", "er_sde"}):
+    if not isinstance(config["sampler"], str) or config["sampler"] not in (dc.SAMPLERS if director else SAMPLERS if hunt else {"euler", "res_multistep", "er_sde"}):
         raise ValueError("Unsupported H3 sampler")
-    if not isinstance(config["scheduler"], str) or config["scheduler"] not in (SCHEDULERS if hunt else {"simple", "normal"}):
+    if not isinstance(config["scheduler"], str) or config["scheduler"] not in (dc.SCHEDULERS if director else SCHEDULERS if hunt else {"simple", "normal"}):
         raise ValueError("Unsupported H3 scheduler")
     if not isinstance(config["reference_size"], str) or config["reference_size"] not in {"match", "max"}:
         raise ValueError("Unsupported reference size")
@@ -427,6 +433,14 @@ def validate_config(raw, components, gpus, uploads):
     wanted = "ref2va" if config["mode"] == "ref2va" else "fl2va"
     if selected["model"]["variant"] != wanted:
         raise ValueError(f"{config['mode']} requires a {wanted.upper()} checkpoint")
+    if director and config.get("model_fl2va"):
+        secondary = by_id.get(config["model_fl2va"]) if isinstance(config["model_fl2va"], str) else None
+        if (not secondary or secondary["role"] != "model" or secondary.get("variant") != "fl2va"
+                or not Path(secondary["path"]).is_file()):
+            raise ValueError("Choose an installed First/Last Frame checkpoint for hybrid continuation")
+        if secondary.get("nvfp4") and not gpu.get("nvfp4"):
+            raise ValueError("The hybrid checkpoint requires a Blackwell GPU")
+        config["model_fl2va"] = secondary["path"]
     config["loras"], paths = [], set()
     from scripts.h3_seed_hunter_presets import compatible_adapter, PIKA, validate_sampling
     active_names = {by_id.get(row["id"], {}).get("name") for row in adapters if row["strength"] != 0}
@@ -442,7 +456,7 @@ def validate_config(raw, components, gpus, uploads):
         if path in paths:
             raise ValueError("The same LoRA file cannot be selected more than once")
         paths.add(path)
-        if row["strength"] != 0 and not compatible_adapter(lora["name"], lora.get("variant", "shared"), wanted, active_names):
+        if row["strength"] != 0 and not compatible_adapter(lora["name"], lora.get("variant", "shared"), wanted, active_names, selected["model"]["name"]):
             raise ValueError(f"{lora['name']} is a {lora['variant'].upper()} LoRA; choose a compatible LoRA for {config['mode']} mode")
         config["loras"].append({"path": lora["path"], "strength": row["strength"]})
         config.setdefault("lora_profiles", {})[lora["path"]] = validate_lora_profile(
@@ -468,10 +482,12 @@ def validate_config(raw, components, gpus, uploads):
         if counts[key] > limit:
             raise ValueError(f"At most {limit} {key.replace('_', ' ')} allowed")
     reference_count = sum(counts[key] for key in ("reference_images", "reference_videos", "reference_audio"))
-    if reference_count > 12:
-        raise ValueError("At most 12 reference files are allowed")
+    if reference_count > (15 if director else 12):
+        raise ValueError(f"At most {15 if director else 12} reference files are allowed")
     if not hunt and counts["reference_mods"]:
         raise ValueError("RefMods require the Seed Hunter workflow")
+    if director:
+        dc.validate_inputs(config, counts)
     if hunt:
         if options["stage"] == "continuation":
             if counts["source_video"] != 1 or config["frames"] <= options["continuation_overlap"]:
@@ -511,10 +527,10 @@ def validate_config(raw, components, gpus, uploads):
     elif counts["source_video"] and not hunt:
         raise ValueError("A source video guide requires an active VFX Edit LoRA")
     if config["mode"] == "ref2va":
-        if not (hunt or vfx_edit or counts["reference_images"] or counts["reference_videos"]) or not hunt and (counts["first_frame"] or counts["last_frame"]):
+        if not (hunt or director or vfx_edit or counts["reference_images"] or counts["reference_videos"]) or not hunt and (counts["first_frame"] or counts["last_frame"]):
             raise ValueError("Reference mode needs an image or video reference and does not accept first/last frames")
     elif config["mode"] == "fl2va":
-        if not (counts["first_frame"] or counts["last_frame"]) or reference_count:
+        if not (director or counts["first_frame"] or counts["last_frame"]) or reference_count:
             raise ValueError("First/last frame mode needs a first or last image and does not accept reference files")
     elif any(value for key, value in counts.items() if not (hunt and key in {"source_video", "reference_mods"})):
         raise ValueError("Text mode does not accept attachments; choose first/last frame or reference mode")
@@ -793,8 +809,10 @@ class H3JobManager:
             defaults["gpu"] = next((g["id"] for g in gpus if g.get("nvfp4")), gpus[0]["id"])
         preset, preset_error = installed_h3_preset(self.preset_file, components, gpus, defaults)
         from src.h3_seed_hunter import capabilities
+        from src.h3_director import capabilities as director_capabilities
         return {"components": components, "component_scan": scan_status, "gpus": gpus, "runtime_ready": not error, "batch_jobs": True,
                 "seed_hunter": capabilities(self.project, self.runtime, components, gpus),
+                "director": director_capabilities(components),
                 "batch_auto_video_length": True, "reference_video_ranges": True,
                 "server_video_files": True,
                 "lora_stack": True, "lora_library": True, "max_loras": MAX_LORAS, "vfx_references": True,
@@ -878,6 +896,11 @@ class H3JobManager:
             if config.get("seed_hunter", {}).get("stage") == "scout":
                 from src.h3_seed_scout import summary as scout_summary
                 result["scout"] = scout_summary(directory, state)
+        if isinstance(config, dict) and config.get("recipe") == "director":
+            from src.h3_director import summary
+            result.update(recipe="director", director=summary(directory, config, state))
+            if len(result["director"]["candidates"]) > 1:
+                result["url"] = None
         return result
 
     def jobs(self, owner):

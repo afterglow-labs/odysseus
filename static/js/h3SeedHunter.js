@@ -418,7 +418,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
     if(!['model','encoder','video_vae','audio_vae','gpu'].every(key=>fields[key].value))return 'Choose the models, VAEs and GPU first.';
     if(!prompt.value.trim())return 'Enter a prompt to use for every job.';
     if(readOptions().auto_refine?.candidates?.length&&!readOptions().auto_refine?.project?.trim())return 'Name the automatic refinement project.';
-    const issue=h3LoraIssue(loras.getValue(),effectiveComponents(),'ref2va');if(issue)return issue;
+    const issue=h3LoraIssue(loras.getValue(),effectiveComponents(),'ref2va',8,effectiveComponents().find(c=>c.id===fields.model.value)?.name);if(issue)return issue;
     const formIssue=videoFormIssue(form);if(formIssue)return formIssue;
     return '';
   }
@@ -538,7 +538,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
   form.addEventListener('input', changed); form.addEventListener('change', changed);
   form.addEventListener('submit', async event => {
     event.preventDefault(); if (batchQueue?.active&&!jobEditor?.active || submit.disabled || !form.reportValidity()) return;
-    const values = config(), issue = h3LoraIssue(values.loras, effectiveComponents(), values.mode);
+    const values = config(), issue = h3LoraIssue(values.loras, effectiveComponents(), values.mode,8,effectiveComponents().find(c=>c.id===values.model)?.name);
     if (issue) { fail(issue); return; }
     if (!values.prompt.trim()) { fail('Enter a prompt, or build one with the dialogue controls.'); return; }
     if ((values.frames - 5) % 17) { fail('Frame count must be 17 × n + 5, such as 73, 90, 107 or 124.'); return; }

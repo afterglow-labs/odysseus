@@ -1,3 +1,4 @@
+import { showH3Director } from './h3Director.js';
 // ============================================
 // COOKBOOK MODULE (v2 — simplified)
 // What Fits? + Saved presets, inline action panels
@@ -2288,6 +2289,7 @@ function _wireTabEvents(body) {
 
   const depsServer = document.getElementById('hwfit-deps-server');
   document.getElementById('cookbook-h3-video')?.addEventListener('click', event => showH3Video({}, event.currentTarget));
+  document.getElementById('cookbook-h3-director')?.addEventListener('click', event => showH3Director({}, event.currentTarget));
   document.getElementById('cookbook-h3-seed-hunter')?.addEventListener('click', event => showH3SeedHunter({}, event.currentTarget));
   document.getElementById('cookbook-h3-seed-scout')?.addEventListener('click', event => showH3SeedScout({}, event.currentTarget));
   document.getElementById('cookbook-bfs-video')?.addEventListener('click', event => showBfsVideo({}, event.currentTarget));
@@ -3318,6 +3320,7 @@ function _renderRecipes() {
   html += '<div style="display:flex;align-items:baseline;flex-wrap:wrap;gap:8px;margin-bottom:2px;">';
   html += '<h2 style="margin:0;padding:0;line-height:1;">Serve <span id="serve-stats" class="memory-count" style="font-size:0.6em;opacity:0.6;font-weight:normal"></span></h2>';
   html += '<button type="button" class="memory-toolbar-btn" id="cookbook-h3-video" style="margin-left:auto;" title="Generate video on the local Odysseus server; remote SSH hosts are not supported">MiniMax H3 Video · Local</button>';
+  html += '<button type="button" class="memory-toolbar-btn" id="cookbook-h3-director">H3 Director · Local</button>';
   html += '<button type="button" class="memory-toolbar-btn" id="cookbook-h3-seed-hunter" title="Compare H3 previews, then refine a selected latent on this Odysseus server">H3 Seed Hunter · Local</button>';
   html += '<button type="button" class="memory-toolbar-btn" id="cookbook-h3-seed-scout" title="Compare partial seed previews, then explicitly continue the selected seed through the same schedule">H3 Seed Scout · Local</button>';
   html += '<button type="button" class="memory-toolbar-btn" id="cookbook-bfs-video" title="Run BFS video workflows on the local Odysseus server; remote SSH hosts are not supported">BFS Video · Local</button>';

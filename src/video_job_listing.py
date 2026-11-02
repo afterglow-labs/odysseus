@@ -26,8 +26,8 @@ def list_options(query, family):
             and search_options["created_after"] >= search_options["created_before"]):
         raise ValueError("created_after must precede created_before")
     recipe = query.get("recipe")
-    if recipe is not None and (family != "h3" or recipe != "seed_hunter"):
-        raise ValueError("Only the H3 seed_hunter recipe filter is supported")
+    if recipe is not None and (family != "h3" or recipe not in {"h3", "seed_hunter", "director"}):
+        raise ValueError("Choose the h3, seed_hunter or director recipe filter")
     stage = query.get("stage")
     if stage is not None and (recipe != "seed_hunter" or stage not in {"scout", "not_scout"}):
         raise ValueError("stage requires recipe=seed_hunter and must be scout or not_scout")
@@ -140,7 +140,7 @@ def history(manager, owner, *, page=None, page_size=10, before=None, recipe=None
                     manifest = h3._read(directory / "manifest.json")
                     config = manifest.get("config")
                     stored_recipe = config.get("recipe") if isinstance(config, dict) else None
-                if stored_recipe != recipe:
+                if (stored_recipe in {"seed_hunter", "director"} if recipe == "h3" else stored_recipe != recipe):
                     continue
                 if stage is not None:
                     if config is None:

@@ -12,7 +12,8 @@ The classic editor remains available. **Cookbook → Launch → Build Pipeline**
 iOS creation forms. It selects a complete model/sampler/adapter setup while
 keeping the prompt, attachments, clip lengths and GPU choices. See
 [preset recipes and source audit](h3-presets.md) for the eight available options,
-including Character Swap V1.5, Pika, LightX2V Turbo and Muse Director Reference mode.
+including Character Swap V1.5, Pika, LightX2V Turbo and PinkCherry v1.8.
+[H3 Director](h3-director.md) is its own workflow with embedded seed hunting.
 
 Finished job cards offer three separate actions in the desktop and iOS clients:
 

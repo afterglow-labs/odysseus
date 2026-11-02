@@ -14,7 +14,8 @@ form. Saved jobs retain their own settings.
 | LightX2V balanced | 8 Euler / simple | Quality two-step finish | Ref2VA Turbo 8-step v1.1, 768p |
 | Pika Flex | 6 LCM, manual sigmas | Quality two-step finish | Pika Flex Ref2VA v1; requires image or video references |
 | Singularity + LightVAE | Quality 20-step recipe | Quality two-step finish | Smaller LightVAE encoder/decoder, converted INT8 weights |
-| Muse Director · Reference mode | 16 Euler / beta; up to four candidates | 20 Euler / beta, denoise 0.2; pixel resize and re-encode | Weighted timeline cuts; decoded preview audio passes through the final output |
+| PinkCherry v1.8 · 12 steps | 12 Euler / simple | Quality two-step finish | PinkCherry hybrid v1.8 pruned INT8 + FL2V Turbo 8-step v1.0, strength 1; no extra sigma shift |
+| PinkCherry v1.8 · 4 steps | 4 Euler / simple | Quality two-step finish | Alternate switch position from the same supplied workflow |
 | Singularity × 10Eros | 8 Euler / simple | 8 Euler / simple, denoise 0.4 | PRISM beta 7 INT8 HQ; Turbo already merged |
 | Character Swap V1.5 | 8 ER-SDE / normal | 8 ER-SDE / normal, denoise 0.4 | Character adapter + publisher's FL2V Turbo 8-step v1.0 pairing |
 
@@ -46,15 +47,23 @@ preview size. Refinement is queued only by an explicit user action.
   the bundled runtime needs a targeted loader for the pruned encoder. The
   loader is limited to the exact LightVAE filename and leaves normal VAEs alone.
 - [Muse Director Seed Hunt](https://github.com/muse-collective-26/MiniMaxH3-Director-Seed-Hunt)
-  at `d07e8408f3809af7d1406a653da3fb44152b0af6`, with
-  [Muse Refine](https://github.com/muse-collective-26/Muse-MiniMax-H3-Refine)
-  at `e46f0aed164f037bd76dc3b28a77df04df4440b3`:
-  native Reference-mode adaptation for single clips up to about 15 seconds.
-  Each line is a CUT; `2 | Wide shot` followed by `1 | Close-up` divides the
-  chosen duration 2:1. Candidate seeds differ by 1,000,003. Audio and music
-  instructions have separate fields. This port does not implement upstream's
-  visual timeline, provider analysis, FL2VA/hybrid mode or multi-clip stitching.
-  It does not load upstream HTTP routes. Powered by MiniMax H3.
+  is a [separate workflow](h3-director.md), available in Cookbook, Pipeline and
+  native iOS. It has its own timeline, Reference/First-Last Frame modes, hybrid
+  continuation and independent candidate switches. It is no longer offered
+  as a Seed Hunter preset. Existing saved adaptations remain runnable.
+- [PinkCherry v1.8](https://huggingface.co/SexGod1979/PinkCherry-NSFW_MiniMax-H3/tree/main/1.8-hybrid):
+  the supplied `PinkCherry_ref2va_turbo_lightx2v_workflow.json` selects **12**
+  steps through a connected switch; its alternate position selects **4**.
+  The scheduler's disconnected widget value of 20 is not the active value.
+  Both branches use Euler/simple and FL2V Turbo 8-step v1.0 at strength 1.
+  No additional sigma-shift node is connected. This specific Ref2VA checkpoint
+  and FL2V adapter pairing is permitted; other combinations retain validation.
+  The JSON specifies 12 seconds and 0.8 MP, 9:16. These two Seed Hunter presets
+  adapt its model and sampling settings to the existing short previews and
+  explicit two-step finish; they preserve the user's preview/final durations
+  and dimensions. They do not claim to reproduce the JSON's complete graph.
+  The provided pruned checkpoint matches the publisher's SHA-256:
+  `cff4adf96f503d4a7f631e5757306192d3bbc6477980da244caba86e2656654e`.
 - [PRISM](https://huggingface.co/OliviaRossi/Minimax-h3_Singularity-x-10Eros-Max_PRISM):
   `10Eros_Max_h3_8stepTURBO_beta7_SingularityV2_int8HQ.safetensors` is a selectable
   comparison, not a proven replacement for Singularity. Its eight-step Turbo
@@ -94,11 +103,14 @@ The installer writes under the project's Linux `models` directory. Refresh H3
 inventory afterward. An unavailable preset shows its missing components rather
 than silently substituting another model.
 
-Verification includes configuration resolution for all eight presets, distinct
-preview/final schedules, longer final clips, four Director candidates, Pika
+Verification includes configuration resolution for all nine presets, distinct
+preview/final schedules, longer final clips, independent Director candidates, Pika
 sigmas, adapter pairing, prompt edits and idempotent retry. Browser tests cover
 desktop/mobile classic and Pipeline forms. Native tests use isolated iPhone and
 iPad simulator fixtures. An isolated synthetic Character Swap GPU run completed
 all eight steps and decoded 73 video frames plus audio. LightVAE completed a
-GPU encode/decode smoke test. These establish compatibility; no visual-quality
+GPU encode/decode smoke test. PinkCherry completed a 12-step synthetic GPU render
+with the supplied checkpoint and Turbo adapter. Director generation, pixel
+refinement and hybrid continuation also completed isolated GPU smoke renders.
+These establish compatibility; no visual-quality
 ranking across presets or physical-iPhone crash reproduction is claimed.

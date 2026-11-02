@@ -5,7 +5,7 @@ template. Named presets carry separate preview and refinement settings.
 """
 import math
 
-PRESET_IDS = ("custom", "quality", "turbo4", "turbo8", "pika", "lightvae", "director", "prism8", "character_swap")
+PRESET_IDS = ("custom", "quality", "turbo4", "turbo8", "pika", "lightvae", "director", "prism8", "character_swap", "pinkcherry12", "pinkcherry4")
 SAMPLING_SCHEDULES = ("standard", "pika")
 PIKA_SIGMAS = (1., .972973, .923077, .8, .571429, .333333, 0.)
 TURBO4 = "minimax_h3_ref2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"
@@ -15,6 +15,7 @@ LIGHTVAE = "minimax_h3_lightvae_lite_vae_int8_convrot.safetensors"
 CHARACTER_SWAP = "h3_character_swap_v1.5.safetensors"
 CHARACTER_TURBO = "minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors"
 PRISM8 = "10Eros_Max_h3_8stepTURBO_beta7_SingularityV2_int8HQ.safetensors"
+PINKCHERRY = "PinkCherry_hybrid_v1.8_int8_minimax_h3_pruned.safetensors"
 
 
 def final_size(config, megapixels=2):
@@ -26,11 +27,11 @@ def final_size(config, megapixels=2):
             for key, value in (("width", width), ("height", height))}
 
 
-def compatible_adapter(name, variant, wanted, active_names):
+def compatible_adapter(name, variant, wanted, active_names, base_name=""):
     # The Character Swap publisher explicitly tests this one FL Turbo adapter
     # with Ref2VA. Other FL adapters still require their matching checkpoint.
     return variant in {"shared", wanted} or (wanted == "ref2va" and name == CHARACTER_TURBO
-                                             and CHARACTER_SWAP in active_names)
+                                             and (CHARACTER_SWAP in active_names or base_name == PINKCHERRY))
 
 
 def candidate_limit(options):

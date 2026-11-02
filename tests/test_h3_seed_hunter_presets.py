@@ -30,7 +30,7 @@ def presets(tmp_path, inventory):
 
 @pytest.mark.parametrize('key,steps,sampler', [('quality',20,'er_sde'),('turbo4',4,'euler'),
     ('turbo8',8,'euler'),('pika',6,'lcm'),('lightvae',20,'er_sde'),
-    ('director',16,'euler'),('prism8',8,'euler'),('character_swap',8,'er_sde')])
+    ('prism8',8,'euler'),('character_swap',8,'er_sde')])
 def test_catalog_resolves_installed_recipes_and_distinct_final_schedules(presets,key,steps,sampler):
     inventory, rows = presets
     row = rows[key]

@@ -35,7 +35,7 @@ export function createVideoJobPageState({ pageSize = 10, recipe = '' } = {}) {
         counts = data.counts || {};
       } else {
         // Older servers ignore page parameters and return the complete list.
-        if (recipe) jobs = jobs.filter(job => job.recipe === recipe || recipe === 'seed_hunter' && job.seed_hunter);
+        if (recipe) jobs = jobs.filter(job => recipe === 'h3' ? !job.seed_hunter && !['seed_hunter','director'].includes(job.recipe) : job.recipe === recipe || recipe === 'seed_hunter' && job.seed_hunter);
         counts = jobs.reduce((out, job) => { out[job.status] = (out[job.status] || 0) + 1; return out; }, {});
         legacyJobs = jobs;
         total = jobs.length; totalPages = Math.max(1, Math.ceil(total / pageSize));

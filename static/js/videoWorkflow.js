@@ -166,6 +166,8 @@ export function resolveVideoWorkflow(workflow, { family, inventory, resolvedComp
     if (!['string', 'number', 'boolean'].includes(typeof value) || (typeof value === 'number' && !Number.isFinite(value))) throw new Error(`Invalid workflow setting: ${key}.`);
     config[key] = value;
   }
+  const director = family === 'h3' && workflow.config.recipe === 'director';
+  if(director){if(!object(workflow.config.director)||workflow.config.director.stage==='refine')throw new Error('Import the original Director generation workflow.');config.recipe='director';config.director=JSON.parse(JSON.stringify(workflow.config.director));}
   const hunter = family === 'h3' && workflow.config.recipe === 'seed_hunter';
   if (family === 'h3' && own(workflow.config, 'reference_video_ranges')) {
     config.reference_video_ranges = validateReferenceVideoRanges(workflow.config.reference_video_ranges);
@@ -194,7 +196,7 @@ export function resolveVideoWorkflow(workflow, { family, inventory, resolvedComp
   }))) throw new Error('Invalid workflow LoRA strengths.');
   const loraRoles = stacked ? strengths.map((_, index) => `lora_${index}`) : [];
   if (family === 'h3' && Object.keys(workflow.components).some(key => /^lora_/.test(key) && !loraRoles.includes(key))) throw new Error('The workflow LoRA references do not match its strengths.');
-  const baseRoles = hunter ? [...H3_COMPONENTS, 'latent_upscaler'] : H3_COMPONENTS;
+  const baseRoles = director ? [...H3_COMPONENTS,'model_fl2va'] : hunter ? [...H3_COMPONENTS, 'latent_upscaler'] : H3_COMPONENTS;
   const roles = family === 'h3' ? stacked ? [...baseRoles.filter(role => role !== 'lora'), ...loraRoles] : baseRoles : (definition.slots || []).map(item => item.key);
   const automatic = hunter ? config.seed_hunter?.auto_refine?.refinement : null;
   const autoRoles = [];
@@ -215,7 +217,7 @@ export function resolveVideoWorkflow(workflow, { family, inventory, resolvedComp
     selections[role] = '';
     const ref = workflow.components[role];
     const localRole = role.replace(/^auto_/, '');
-    const componentRole = /^lora(?:_[0-7])?$/.test(localRole) ? 'lora' : localRole;
+    const componentRole = localRole==='model_fl2va'?'model':/^lora(?:_[0-7])?$/.test(localRole) ? 'lora' : localRole;
     if (ref === undefined || ref === null) {
       if (loraRoles.includes(role)) throw new Error(`Missing ${role} model reference.`);
       continue;

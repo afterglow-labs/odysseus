@@ -48,6 +48,8 @@ def automatic_roles(config):
 
 def component_role(role):
     role = role.removeprefix("auto_")
+    if role == "model_fl2va":
+        return "model"
     return "lora" if re.fullmatch(r"lora_[0-7]", role) else role
 
 
@@ -102,6 +104,9 @@ def specification(family, config, *, include_automatic=False):
             roles |= {f"lora_{index}" for index in range(len(strengths))}
         else:
             roles.add("lora")
+        if config.get("recipe") == "director":
+            roles.add("model_fl2va")
+            return H3_SETTINGS | {"recipe", "director"}, roles, UPLOAD_EXTENSIONS
         if config.get("recipe") == "seed_hunter":
             roles.add("latent_upscaler")
             if include_automatic:
@@ -126,6 +131,11 @@ def portable_config(raw, family):
     if raw.keys() - settings:
         raise ValueError("Unknown portable workflow setting")
     for key, value in raw.items():
+        if family == "h3" and key == "director":
+            from scripts.h3_director_controls import validate_options
+            if validate_options(value)["stage"] == "refine":
+                raise ValueError("Export the original Director workflow; refinement requires its saved candidate")
+            continue
         if family == "h3" and key == "reference_video_ranges":
             from scripts.h3_reference_video import validate_ranges
             validate_ranges(value)
@@ -286,7 +296,7 @@ def validate_document(value, family):
         mode = value["config"].get("mode", "t2va")
         refs = sum(counts.get(k, 0) for k in ("reference_images", "reference_videos", "reference_audio"))
         hunt = value["config"].get("recipe") == "seed_hunter"
-        if (refs > 12 or mode == "t2va" and any(count for field, count in counts.items() if not (hunt and field in {"source_video", "reference_mods"}))
+        if (refs > (15 if value["config"].get("recipe") == "director" else 12) or mode == "t2va" and any(count for field, count in counts.items() if not (hunt and field in {"source_video", "reference_mods"}))
                 or mode == "ref2va" and not hunt and (counts.get("first_frame") or counts.get("last_frame"))
                 or mode == "fl2va" and (refs or counts.get("source_video"))):
             raise ValueError("Attachments do not match the H3 workflow mode")

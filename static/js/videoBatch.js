@@ -233,8 +233,8 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
     const kind=inputKind(field),noun=kind==='copy'?'copies':`${kind}s`;
     explanation.textContent = field==='copies' ? 'One copy per job, using this draft’s inputs and settings.'
       : `One ${kind} per job · shared prompt and settings${family==='h3'?' · optional inputs per job below':''}.`;
-    lengthLabel.hidden = family !== 'h3' || field !== 'reference_videos';
-    lengthHelp.hidden = family !== 'h3' || !['reference_videos','source_video'].includes(field);
+    lengthLabel.hidden = recipe==='director' || family !== 'h3' || field !== 'reference_videos';
+    lengthHelp.hidden = recipe==='director' || family !== 'h3' || !['reference_videos','source_video'].includes(field);
     lengthHelp.textContent = field === 'source_video'
       ? recipe==='seed_hunter'?'Uses the selected continuation length and overlap.':'Matches each source video’s duration.'
       : autoLength.checked ? lengthContext.automaticHelp||'Automatic length per video; optional section selection below.'
@@ -425,7 +425,7 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
       available = !!value; panel.hidden = !available;
     },
     get active() { return available && toggle.checked; }, get busy() { return queue.running; },
-    get autoVideoLength() { return family === 'h3' && (videoField === 'reference_videos' && autoLength.checked || videoField === 'source_video' && recipe!=='seed_hunter'); },
+    get autoVideoLength() { return recipe!=='director' && family === 'h3' && (videoField === 'reference_videos' && autoLength.checked || videoField === 'source_video' && recipe!=='seed_hunter'); },
     destroy() {
       picker?.close();
       rows.forEach(row => row._range?.destroy());

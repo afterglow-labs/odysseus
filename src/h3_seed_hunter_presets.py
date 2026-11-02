@@ -2,7 +2,7 @@
 from copy import deepcopy
 
 from scripts.h3_seed_hunter_presets import (LIGHTVAE, PIKA, TURBO4, TURBO8,
-                                          CHARACTER_SWAP, CHARACTER_TURBO, PRISM8, refinement_settings)
+                                          CHARACTER_SWAP, CHARACTER_TURBO, PRISM8, PINKCHERRY, refinement_settings)
 
 
 def catalog(components):
@@ -22,14 +22,15 @@ def catalog(components):
         ("turbo8", "LightX2V balanced · 8 / 2 steps", "Eight-step Ref2VA previews with the v1.1 Turbo adapter.", base, named(TURBO8, "lora"), vae),
         ("pika", "Pika Flex · 6 / 2 steps", "Pika's six-step reference-guided generation, then H3 refinement.", base, named(PIKA, "lora"), vae),
         ("lightvae", "Singularity + LightVAE · 20 / 2 steps", "The quality setup with a smaller video encoder and decoder.", quality, None, named(LIGHTVAE, "video_vae")),
-        ("director", "Muse Director · Reference mode", "Up to four seed choices, timeline cuts, and pixel refinement with original audio. Single clips up to 15 seconds.", base, None, vae),
         ("prism8", "Singularity × 10Eros · 8 steps", "Beta 7 INT8 comparison from the PRISM publisher. Turbo is already merged into the checkpoint.", named(PRISM8, "model"), None, vae),
         ("character_swap", "Character Swap V1.5 · 8 steps", "Use source performance as Video 1 and the replacement character as Picture 1. Includes the publisher's Turbo pairing; no automatic masks.", base, named(CHARACTER_SWAP, "lora"), vae),
+        ("pinkcherry12", "PinkCherry v1.8 · 12 / 2 steps", "The supplied workflow's active 12-step Euler/simple branch and FL2V Turbo v1.0 pairing, adapted to short seed previews.", named(PINKCHERRY, "model"), named(CHARACTER_TURBO, "lora"), vae),
+        ("pinkcherry4", "PinkCherry v1.8 · 4 / 2 steps", "The supplied workflow's alternate four-step branch, with the same model and Turbo adapter.", named(PINKCHERRY, "model"), named(CHARACTER_TURBO, "lora"), vae),
     ]
     rows = []
     for key, label, description, model, adapter, video_vae in definitions:
         required = {"Ref2VA model": model, "Video VAE": video_vae, "Latent upscaler": upscaler}
-        if key in ("turbo4", "turbo8", "pika", "character_swap"):
+        if key in ("turbo4", "turbo8", "pika", "character_swap", "pinkcherry12", "pinkcherry4"):
             required["Preset adapter"] = adapter
         if key == "character_swap":
             required["Character Swap Turbo adapter"] = named(CHARACTER_TURBO, "lora")
@@ -60,6 +61,9 @@ def catalog(components):
             turbo = required["Character Swap Turbo adapter"]
             if turbo:
                 config["loras"].append({"id": turbo["id"], "strength": 1.})
+        elif key in ("pinkcherry12", "pinkcherry4"):
+            config.update(steps=12 if key == "pinkcherry12" else 4, sampler="euler", scheduler="simple",
+                          shift_video=1, shift_audio=1, reference_size="match")
         missing = [label for label, component in required.items() if component is None]
         rows.append({"id": key, "name": label, "description": description, "ready": not missing,
                      "missing": missing, "config": config, "refinement": refinement_settings(key)})
@@ -72,8 +76,8 @@ def final_defaults(config, components):
         return {}
     result = deepcopy(refinement_settings(key))
     result["seed_hunter"]["preset"] = key
-    if key in ("turbo4", "turbo8", "pika"):
-        accelerators = {TURBO4, TURBO8, PIKA}
+    if key in ("turbo4", "turbo8", "pika", "pinkcherry12", "pinkcherry4"):
+        accelerators = {TURBO4, TURBO8, PIKA, CHARACTER_TURBO}
         from src.video_job_edit import _draft
         draft = _draft(config, {"components": components}, "h3")
         by_id = {c["id"]: c for c in components}

@@ -241,11 +241,15 @@ def commit_edit(manager, job_id, owner, family, raw, expected, retain, saved, na
         if family == "h3":
             from src.h3_seed_hunter import guard_edit, guard_saved_refinement
             guard_edit(manifest["config"], config)
+            from src.h3_director import guard_edit as guard_director
+            guard_director(manifest["config"], config)
             guard_saved_refinement(directory, manifest, config)
-            if manifest["config"].get("seed_hunter", {}).get("stage") == "final" and (
+            saved_refinement = (manifest["config"].get("seed_hunter", {}).get("stage") == "final"
+                                or manifest["config"].get("director", {}).get("stage") == "refine")
+            if saved_refinement and (
                     any(saved.values()) or any([item["path"] for item in retained[k]] !=
                                               [item["path"] for item in originals[k]] for k in originals)):
-                raise ValueError("Saved-latent refinement retains its original inputs")
+                raise ValueError("Saved refinement retains its original inputs")
         try:
             # Only validated local staging files can be moved into a job.
             for field, values in inputs.items():

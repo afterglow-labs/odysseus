@@ -194,6 +194,13 @@ def visible_gpu_ids(config):
 def validate_job(manifest):
     config = dict(manifest["config"])
     hunter = config.get("recipe") == "seed_hunter"
+    director = config.get("recipe") == "director"
+    if director:
+        try:
+            from scripts import h3_director_controls as dc
+        except ModuleNotFoundError:
+            import h3_director_controls as dc
+        config["director"] = dc.validate_options(config.get("director", {}))
     if hunter:
         try:
             from scripts.h3_seed_hunter_controls import validate_options, limits, SAMPLERS, SCHEDULERS
@@ -205,11 +212,11 @@ def validate_job(manifest):
     if config.get("mode", "t2va") not in {"t2va", "fl2va", "ref2va"}:
         raise ValueError("Unknown MiniMax H3 mode")
     config.setdefault("mode", "t2va")
-    if not isinstance(config.get("prompt"), str) or not config["prompt"].strip():
+    if not isinstance(config.get("prompt"), str) or not director and not config["prompt"].strip():
         raise ValueError("A prompt is required")
     if len(config["prompt"]) > 16000:
         raise ValueError("Prompt is too long")
-    for name in ("model", "encoder", "video_vae", "audio_vae"):
+    for name in ("model", "encoder", "video_vae", "audio_vae", *(("model_fl2va",) if director and config.get("model_fl2va") else ())):
         value = config.get(name)
         path = Path(value or "")
         if not path.is_absolute() or not path.is_file() or path.suffix.lower() != ".safetensors":
@@ -220,6 +227,8 @@ def validate_job(manifest):
     config["gpu"] = devices[0]
     config["vae_gpu"] = devices[1] if len(devices) > 1 else ""
     min_edge, max_edge = (bounds["min_edge"], bounds["max_edge"]) if hunter else (32, 2048)
+    if director:
+        min_edge, max_edge = 256, 4096
     for name, default, low, high in (("width", 960, min_edge, max_edge), ("height", 544, min_edge, max_edge),
                                    ("frames", 124, bounds["min_frames"] if hunter else 5, 362), ("steps", 20, 1, 100)):
         config[name] = _number(config, name, default, low, high, True)
@@ -227,6 +236,8 @@ def validate_job(manifest):
         if config[name] % 32:
             raise ValueError(f"{name} must be a multiple of 32")
     max_pixels = bounds["max_pixels"] if hunter else 768 * 1344
+    if director:
+        max_pixels = 4_000_000
     if config["width"] * config["height"] > max_pixels:
         raise ValueError(f"MiniMax H3 canvas must not exceed {max_pixels:,} pixels")
     config["frames"] += (5 - config["frames"]) % 17
@@ -236,8 +247,8 @@ def validate_job(manifest):
     config["seed"] = int(seed)
     for name, default, low, high in (("shift_video", 12, 0.01, 100), ("shift_audio", 3, 0.01, 100)):
         config[name] = _number(config, name, default, low, high)
-    for name, default, choices in (("sampler", "euler", set(SAMPLERS) if hunter else {"euler", "res_multistep", "er_sde"}),
-                                   ("scheduler", "simple", set(SCHEDULERS) if hunter else {"simple", "normal"}),
+    for name, default, choices in (("sampler", "euler", set(dc.SAMPLERS) if director else set(SAMPLERS) if hunter else {"euler", "res_multistep", "er_sde"}),
+                                   ("scheduler", "simple", set(dc.SCHEDULERS) if director else set(SCHEDULERS) if hunter else {"simple", "normal"}),
                                    ("reference_size", "match", {"match", "max"})):
         config.setdefault(name, default)
         if config[name] not in choices:
@@ -278,16 +289,16 @@ def validate_job(manifest):
             from h3_reference_video import validate_ranges
         config["reference_video_ranges"] = validate_ranges(config["reference_video_ranges"], len(media["reference_videos"]))
     total = sum(len(media[name]) for name in ("reference_images", "reference_videos", "reference_audio"))
-    if total > 12:
-        raise ValueError("At most 12 references are supported")
+    if total > (15 if director else 12):
+        raise ValueError(f"At most {15 if director else 12} references are supported")
     if config["mode"] == "ref2va":
-        if not hunter and not vfx_edit and not media["reference_images"] and not media["reference_videos"]:
+        if not (hunter or director) and not vfx_edit and not media["reference_images"] and not media["reference_videos"]:
             raise ValueError("Reference mode needs at least one reference image or video; audio alone is unsupported")
         if not hunter and (media["first_frame"] or media["last_frame"]):
             raise ValueError("First/last frames belong to first/last-frame mode")
     elif total:
         raise ValueError("Reference uploads require reference mode")
-    if config["mode"] == "fl2va" and not (media["first_frame"] or media["last_frame"]):
+    if config["mode"] == "fl2va" and not director and not (media["first_frame"] or media["last_frame"]):
         raise ValueError("First/last-frame mode requires a first frame or a last frame")
     if config["mode"] == "t2va" and (media["first_frame"] or media["last_frame"]):
         raise ValueError("Keyframes require first/last-frame mode")
@@ -297,6 +308,14 @@ def validate_job(manifest):
         except ModuleNotFoundError:
             from h3_seed_hunter import validate_inputs
         validate_inputs(manifest, config, media, uploads)
+    if director:
+        dc.validate_inputs(config, {key: len(value) if isinstance(value, list) else int(bool(value)) for key, value in media.items()})
+        if config["director"]["stage"] == "refine":
+            snapshot = manifest.get("director_input", {})
+            for key, suffix in (("tensors", ".safetensors"), ("metadata", ".json")):
+                path = Path(snapshot.get(key, ""))
+                if not path.is_absolute() or not path.is_file() or path.suffix != suffix or path.is_symlink() or path.parent != Path(manifest["output_path"]).parent:
+                    raise ValueError("Director refinement requires its owned candidate snapshot")
     for values in media.values():
         for value in values if isinstance(values, list) else ([values] if values else []):
             path = Path(value)
@@ -978,6 +997,12 @@ class H3Runtime:
 def run_job(manifest, *, runtime_factory=H3Runtime, media_loader=prepare_media, muxer=mux_mp4):
     config, media = validate_job(manifest)
     os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(visible_gpu_ids(config))
+    if config.get("recipe") == "director":
+        try:
+            from scripts.h3_director_worker import run
+        except ModuleNotFoundError:
+            from h3_director_worker import run
+        return run(manifest, config, media, runtime_factory=runtime_factory, muxer=muxer)
     if config.get("recipe") == "seed_hunter":
         try:
             from scripts.h3_seed_hunter import run

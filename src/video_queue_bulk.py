@@ -120,7 +120,11 @@ def _patched(config, patch, inventory, family, inputs, *, resolved_paths=None):
         if not isinstance(changes, dict) or changes.keys() - roles:
             raise ValueError("Choose compatible BFS component roles")
         raw["components"] = {**raw["components"], **changes}
-    raw.update({key: value for key, value in patch.items() if key not in {"components", "seed_hunter"}})
+    raw.update({key: value for key, value in patch.items() if key not in {"components", "seed_hunter", "director"}})
+    if "director" in patch:
+        if not isinstance(patch["director"], dict):
+            raise ValueError("Director settings must be an object")
+        raw["director"] = {**raw.get("director", {}), **patch["director"]}
     if "seed_hunter" in patch:
         if not isinstance(patch["seed_hunter"], dict):
             raise ValueError("Seed Hunter changes must be a JSON object")
@@ -135,6 +139,8 @@ def _patched(config, patch, inventory, family, inputs, *, resolved_paths=None):
     if family == "h3":
         from src.h3_seed_hunter import guard_edit
         guard_edit(config, updated)
+        from src.h3_director import guard_edit as guard_director
+        guard_director(config, updated)
     return updated
 
 
@@ -142,6 +148,8 @@ def _from_base(config, base_config, inventory, family, inputs):
     """New-job settings with this source's media, never its cached conditioning."""
     raw = deepcopy(base_config)
     if family == "h3":
+        if raw.get("recipe") == "director" and isinstance(raw.get("director"), dict) and raw["director"].get("stage") == "refine":
+            raise ValueError("Select a saved Director candidate to refine, or use Edit & rerun")
         if "seed_hunter" in raw and not isinstance(raw["seed_hunter"], dict):
             raise ValueError("Seed Hunter settings must be a JSON object")
         if raw.get("seed_hunter", {}).get("stage") == "final":
@@ -154,6 +162,10 @@ def _from_base(config, base_config, inventory, family, inputs):
             raw["reference_video_ranges"] = deepcopy(config["reference_video_ranges"])
         if isinstance(raw.get("seed_hunter"), dict):
             raw["seed_hunter"]["refmod_strengths"] = deepcopy(config.get("seed_hunter", {}).get("refmod_strengths", []))
+        if isinstance(raw.get("director"), dict):
+            from scripts.h3_director_controls import DEFAULTS
+            for key in ("characters", "background", "refVideos", "refAudios"):
+                raw["director"][key] = deepcopy(config.get("director", {}).get(key, DEFAULTS[key]))
     return validate(raw, inventory, inputs, family)
 
 
@@ -283,6 +295,10 @@ def _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, recei
                     from src.h3_seed_hunter import clone_snapshot
                     uploads["seed_hunter_input"] = clone_snapshot(item["directory"], directory, item["manifest"].get("seed_hunter_input"))
                     uploads["seed_hunter_source"] = item["manifest"].get("seed_hunter_source", {})
+                if base_config is None and family == "h3" and item["manifest"].get("director_input"):
+                    from src.h3_director import clone_snapshot as clone_director
+                    uploads["director_input"] = clone_director(item["directory"], directory, item["manifest"]["director_input"])
+                    uploads["director_source"] = item["manifest"].get("director_source", {})
                 if base_config is None and item['manifest'].get('result_edit'):
                     uploads['result_edit'] = deepcopy(item['manifest']['result_edit'])
                     uploads['job_group_parent'] = item['manifest'].get('job_group_parent')
