@@ -651,6 +651,11 @@ webhook_manager = WebhookManager(api_key_manager=api_key_manager)
 auth_router = setup_auth_routes(auth_manager)
 app.include_router(auth_router)
 
+# Afterglow runs as a separate service. The browser uses a small admin-only
+# gateway so its credential never enters client-side code or the MCP registry.
+from routes.cybersecurity_routes import router as cybersecurity_router
+app.include_router(cybersecurity_router)
+
 
 @app.post("/api/activity/heartbeat")
 async def activity_heartbeat():

@@ -53,6 +53,7 @@ import { initKeyboardShortcuts } from './js/keyboard-shortcuts.js';
 import { getSettings } from './js/appConfig.js';
 import { initSidebarLayout, syncRailSide } from './js/sidebar-layout.js?v=20260715startupclean';
 import { initSectionCollapse, initSectionDrag } from './js/section-management.js';
+import { initCybersecurityMode } from './js/cybersecurity.js';
 
 const API_BASE = window.location.origin;
 window.themeModule = themeModule;
@@ -4574,6 +4575,7 @@ function startOdysseusApp() {
       window.hljs.highlightElement(block);
     });
   }
+  initCybersecurityMode();
 }
 
 if (document.readyState === 'loading') {
