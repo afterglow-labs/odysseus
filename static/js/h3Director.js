@@ -128,17 +128,32 @@ export function renderDirectorCandidates(container,job,request,reload){
     card.append(createVideoJobMedia(url).node);
     const download=make('a','Download candidate');download.href=url;download.download=`director-candidate-${candidate.index}.mp4`;download.className='memory-toolbar-btn';card.append(download);
     if(candidate.can_refine){
-      const panel=make('details');panel.append(make('summary','Refine candidate'));card.append(panel);
-      const values={steps:20,denoise:.2}, controls=[];
-      for(const [key,label,value] of [['steps','Refinement steps',20],['denoise','Denoise',.2]]){
-        const wrap=make('label',label),input=make('input');input.type='number';input.className='cookbook-field-input';input.value=value;input.step=key==='denoise'?.01:1;input.min=key==='denoise'?.05:1;input.max=key==='denoise'?1:100;
-        input.oninput=()=>values[key]=Number(input.value);wrap.append(input);panel.append(wrap);controls.push(input);
+      const panel=make('details');panel.className='h3-seed-hunter-details';panel.append(make('summary','Refine candidate'));card.append(panel);
+      const grid=make('div');grid.className='h3-video-grid';panel.append(grid);
+      const storageKey=`odysseus.director.refine.${job.id}.${candidate.index}`;
+      let body=null;
+      try { const saved=JSON.parse(sessionStorage.getItem(storageKey));if(saved?.candidate===candidate.index&&typeof saved.request_id==='string'&&saved.config)body=saved; } catch {}
+      const values={steps:20,denoise:.2,...body?.config}, controls=[];
+      for(const [key,label] of [['steps','Refinement steps'],['denoise','Denoise']]){
+        const wrap=make('label',label),input=make('input');wrap.className='h3-video-field';input.type='number';input.className='cookbook-field-input';input.value=values[key];input.step=key==='denoise'?.01:1;input.min=key==='denoise'?.05:1;input.max=key==='denoise'?1:100;input.required=true;input.disabled=!!body;
+        input.oninput=()=>values[key]=Number(input.value);wrap.append(input);grid.append(wrap);controls.push(input);
       }
       panel.append(make('p','Uses approximately 1.96 MP at the original aspect ratio, RES multistep/simple, and the original audio.'));
-      const button=make('button','Queue refinement');button.type='button';button.className='memory-toolbar-btn';const status=make('p');panel.append(button,status);let body=null;
-      button.onclick=async()=>{body||={request_id:crypto.randomUUID(),candidate:candidate.index,config:{...values}};controls.forEach(c=>c.disabled=true);button.disabled=true;
-        try{await request(`/jobs/${encodeURIComponent(job.id)}/director/refine`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});status.textContent='Refinement queued.';await reload();}
-        catch(error){status.textContent=error.message;button.textContent='Retry same submission';button.disabled=false;}};
+      const button=make('button',body?'Retry same submission':'Queue refinement');button.type='button';button.className='memory-toolbar-btn';const status=make('p');status.setAttribute('role','status');panel.append(button,status);
+      const persist=()=>{try { if(body)sessionStorage.setItem(storageKey,JSON.stringify(body));else sessionStorage.removeItem(storageKey); } catch {}};
+      button.onclick=async()=>{
+        if(!body&&controls.some(control=>!control.reportValidity()))return;
+        body||={request_id:crypto.randomUUID(),candidate:candidate.index,config:{...values}};persist();controls.forEach(c=>c.disabled=true);button.disabled=true;
+        try{
+          const result=await request(`/jobs/${encodeURIComponent(job.id)}/director/refine`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+          if(!/^[a-f0-9]{32}$/i.test(result?.id||''))throw new Error('The server did not confirm the refinement. Retry the same submission.');
+          body=null;persist();status.textContent='Refinement queued.';button.textContent='Refinement queued';
+          try { await reload(); } catch { status.textContent='Refinement queued. Refresh history to see the job.'; }
+        } catch(error){
+          if(error.status===400){body=null;persist();controls.forEach(c=>c.disabled=false);}
+          status.textContent=error.message;button.textContent=body?'Retry same submission':'Queue refinement';button.disabled=false;
+        }
+      };
     }else card.append(make('p','Multi-chunk candidate: play or save the full clip. Muse Refine accepts a single chunk.'));
     container.append(card);
   }

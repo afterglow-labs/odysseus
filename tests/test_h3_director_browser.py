@@ -99,3 +99,67 @@ def test_director_queues_its_timeline_modes_and_independent_candidates(layout,wi
                 assert not errors
             finally: await browser.close()
     asyncio.run(exercise())
+
+
+def test_director_refinement_validation_and_lost_receipt_survive_reopening():
+    pw = pytest.importorskip('playwright.async_api')
+    chrome = shutil.which('google-chrome') or shutil.which('chromium')
+    if not chrome:
+        pytest.skip('Chrome required')
+
+    async def exercise():
+        async with pw.async_playwright() as p:
+            browser = await p.chromium.launch(executable_path=chrome, headless=True, args=['--no-sandbox'])
+            page = await browser.new_page(viewport=dict(width=390, height=900))
+            async def route(handler):
+                path = urlparse(handler.request.url).path
+                if path.startswith('/static/'):
+                    file = ROOT / path.lstrip('/')
+                    await handler.fulfill(body=file.read_bytes(), content_type='text/javascript' if file.suffix == '.js' else mimetypes.guess_type(file.name)[0])
+                else:
+                    await handler.fulfill(content_type='text/html', body='<meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/h3-video.css"><div id="candidates"></div>')
+            await page.route('**/*', route)
+            try:
+                await page.goto('https://director.test/')
+                await page.evaluate('''async () => {
+                    const {renderDirectorCandidates} = await import('/static/js/h3Director.js');
+                    window.requests = [];
+                    window.render = () => {
+                        const container = document.querySelector('#candidates');
+                        container.replaceChildren(); delete container.dataset.candidates;
+                        renderDirectorCandidates(container, {id:'a'.repeat(32), director:{candidates:[{index:3,seed:42,can_refine:true}]}}, async (_, options) => {
+                            requests.push(JSON.parse(options.body));
+                            if(requests.length===1)throw Object.assign(new Error('Invalid refinement setting'),{status:400});
+                            if(requests.length===2)throw Object.assign(new Error('Response lost after acceptance'),{status:503});
+                            return {id:'b'.repeat(32)};
+                        }, async () => { throw new Error('History temporarily unavailable'); });
+                    }; render();
+                }''')
+                await page.get_by_text('Refine candidate', exact=True).click()
+                steps = page.get_by_label('Refinement steps', exact=True)
+                await steps.fill('0')
+                await page.get_by_role('button', name='Queue refinement', exact=True).click()
+                assert await page.evaluate('requests.length') == 0
+                await steps.fill('20')
+                await page.get_by_role('button', name='Queue refinement', exact=True).click()
+                await page.get_by_text('Invalid refinement setting', exact=True).wait_for()
+                assert await steps.is_enabled()
+                await steps.fill('8')
+                await page.get_by_role('button', name='Queue refinement', exact=True).click()
+                await page.get_by_text('Response lost after acceptance', exact=True).wait_for()
+                assert await steps.is_disabled()
+                await page.evaluate('render()')
+                await page.get_by_text('Refine candidate', exact=True).click()
+                assert await steps.input_value() == '8'
+                assert await steps.is_disabled()
+                await page.get_by_role('button', name='Retry same submission', exact=True).click()
+                await page.get_by_text('Refinement queued. Refresh history to see the job.', exact=True).wait_for()
+                assert await page.get_by_role('button', name='Refinement queued', exact=True).is_disabled()
+                requests = await page.evaluate('requests')
+                assert len(requests) == 3 and requests[1] == requests[2]
+                assert requests[0]['request_id'] != requests[1]['request_id']
+                output = ROOT / 'outputs/qa'; output.mkdir(parents=True, exist_ok=True)
+                await page.screenshot(path=str(output/'director-refinement-390.png'))
+            finally:
+                await browser.close()
+    asyncio.run(exercise())
