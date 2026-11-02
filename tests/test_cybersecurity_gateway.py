@@ -115,7 +115,7 @@ def test_gateway_requires_admin_and_write_header(monkeypatch):
         assert browser.post(path, headers={"X-Test-User": "viewer", "X-Requested-With": "XMLHttpRequest"}, json={"action": "pause"}).status_code == 403
         assert browser.post(path, headers={"X-Test-User": "admin"}, json={"action": "pause"}).status_code == 403
         assert browser.post(path, headers={"X-Test-User": "admin", "X-Requested-With": "XMLHttpRequest", "Origin": "https://other.example"}, json={"action": "pause"}).status_code == 403
-        response = browser.post(path, headers={"X-Test-User": "admin", "X-Requested-With": "XMLHttpRequest"}, json={"action": "pause"})
+        response = browser.post(path, headers={"X-Test-User": "admin", "X-Requested-With": "XMLHttpRequest", "Origin": "http://testserver"}, json={"action": "pause"})
         assert response.status_code == 200
         assert calls == [("/api/tasks/12/control", {"method": "POST", "body": {"action": "pause"}, "params": None, "auth": True})]
         assert browser.post("/api/cybersecurity/tasks/-1/control", headers={"X-Test-User": "admin", "X-Requested-With": "XMLHttpRequest"}, json={"action": "pause"}).status_code == 422
