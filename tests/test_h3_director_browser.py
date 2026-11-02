@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 import pytest
 from src.h3_director import capabilities
+from scripts.h3_director_controls import WORKFLOW_COMPONENTS
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -20,10 +21,9 @@ def test_director_queues_its_timeline_modes_and_independent_candidates(layout,wi
     pw=pytest.importorskip("playwright.async_api")
     chrome=shutil.which("google-chrome") or shutil.which("chromium")
     if not chrome: pytest.skip("Chrome required")
-    components=[dict(id=name,name=name,role=role,variant=variant) for role,name,variant in [
-        ("model","minimax_h3_ref2va_pruned_int8.safetensors","ref2va"),
-        ("model","minimax_h3_fl2va_pruned_int8.safetensors","fl2va"),
-        ("encoder","encoder","shared"),("video_vae","vae","shared"),("audio_vae","audio","shared")]]
+    components=[dict(id=name,name=name,role="model" if field=="model_fl2va" else field,
+                     variant="ref2va" if field=="model" else "fl2va" if field=="model_fl2va" else "shared")
+                for field,name in WORKFLOW_COMPONENTS.items()]
     defaults=dict(mode="ref2va",gpu="GPU-fixture",vae_gpu="",seed=42,prompt="",reference_size="match",lora_scale=1,
                   **{role:next(c["id"] for c in components if c["role"]==role) for role in ["model","encoder","video_vae","audio_vae"]})
     inventory=dict(defaults=defaults,base_defaults=defaults,components=components,gpus=[dict(id="GPU-fixture",name="RTX 5090",nvfp4=True)],
@@ -58,6 +58,13 @@ def test_director_queues_its_timeline_modes_and_independent_candidates(layout,wi
                 await page.evaluate("async layout=>(await import('/static/js/h3Director.js')).showH3Director({layout})",layout)
                 await page.get_by_text("Components ready on this Odysseus server.",exact=True).wait_for()
                 if layout=="pipeline": await page.get_by_role("button",name="Show all settings",exact=True).click()
+                await page.get_by_label("Cut 1 prompt",exact=True).fill("Keep this direction.")
+                await page.locator('#h3-steps').fill('7')
+                await page.get_by_role('button',name='Apply Director website workflow',exact=True).click()
+                assert await page.get_by_label("Cut 1 prompt",exact=True).input_value()=="Keep this direction."
+                assert await page.locator('#h3-steps').input_value()=='16'
+                output=ROOT/"outputs/qa";output.mkdir(parents=True,exist_ok=True)
+                await page.screenshot(path=str(output/f"director-website-{layout}-{width}.png"))
                 assert await page.locator("#h3-mode option[value=t2va]").count()==0
                 await page.get_by_label("Total seconds",exact=True).fill("25")
                 await page.get_by_label("Cut 1 prompt",exact=True).fill("A paper boat crosses the pond.")
@@ -86,6 +93,9 @@ def test_director_queues_its_timeline_modes_and_independent_candidates(layout,wi
                 await page.wait_for_timeout(250)
                 assert len(requests)==1,(errors,await page.locator('.h3-video-error').all_text_contents(),await page.locator(':invalid').evaluate_all("nodes=>nodes.map(n=>[n.name,n.value,n.validationMessage])"),await page.locator('.h3-video-dialog').inner_text())
                 saved=requests[0];assert saved["recipe"]=="director" and "seed_hunter" not in saved
+                assert saved["loras"]==[{"id":WORKFLOW_COMPONENTS["lora"],"strength":1}]
+                assert saved["encoder"]==WORKFLOW_COMPONENTS["encoder"]
+                assert (saved["steps"],saved["sampler"],saved["scheduler"])==(16,"euler","beta")
                 assert saved["director"]["duration_seconds"]==25 and len(saved["director"]["segments"])==2
                 assert saved["director"]["candidate_3"] and not saved["director"]["candidate_2"]
                 assert saved["director"]["hybrid_continuation"] and saved["model_fl2va"]==components[1]["id"]
@@ -144,7 +154,7 @@ def test_director_refinement_validation_and_lost_receipt_survive_reopening():
                     window.render = () => {
                         const container = document.querySelector('#candidates');
                         container.replaceChildren(); delete container.dataset.candidates;
-                        renderDirectorCandidates(container, {id:'a'.repeat(32), director:{candidates:[{index:3,seed:42,can_refine:true}]}}, async (_, options) => {
+                        renderDirectorCandidates(container, {id:'a'.repeat(32), director:{refinement_defaults:{width:768,height:1376,steps:20,denoise:.2,sampler:'euler',scheduler:'beta'},candidates:[{index:3,seed:42,can_refine:true}]}}, async (_, options) => {
                             requests.push(JSON.parse(options.body));
                             if(requests.length===1)throw Object.assign(new Error('Invalid refinement setting'),{status:400});
                             if(requests.length===2)throw Object.assign(new Error('Response lost after acceptance'),{status:503});

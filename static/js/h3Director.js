@@ -2,7 +2,7 @@ import { createVideoJobMedia } from './videoJobMedia.js';
 
 const make = (tag, text = '') => { const n = document.createElement(tag); n.textContent = text; return n; };
 const copy = value => JSON.parse(JSON.stringify(value));
-const defaults = {stage:'generation',duration_seconds:10,chunk_duration_seconds:10,resize_method:'crop',hybrid_continuation:false,
+const defaults = {stage:'generation',duration_seconds:6,chunk_duration_seconds:15,resize_method:'crop',hybrid_continuation:false,
   candidate_2:false,candidate_3:false,candidate_4:false,segments:[{id:'cut-1',prompt:'',weight:1,speakerCharIdxs:[]}],
   characters:[],background:null,refVideos:[],refAudios:[],dialogue_language:'English',overall_soundscape:'',non_diegetic_music:'',denoise:.2};
 export async function showH3Director(options = {}, anchor = document.activeElement) {
@@ -147,12 +147,13 @@ export function renderDirectorCandidates(container,job,request,reload){
       const storageKey=`odysseus.director.refine.${job.id}.${candidate.index}`;
       let body=null;
       try { const saved=JSON.parse(sessionStorage.getItem(storageKey));if(saved?.candidate===candidate.index&&typeof saved.request_id==='string'&&saved.config)body=saved; } catch {}
-      const values={steps:20,denoise:.2,...body?.config}, controls=[];
+      const {megapixels,...settings}=job.director.refinement_defaults||{};
+      const values={...settings,...body?.config}, controls=[];
       for(const [key,label] of [['steps','Refinement steps'],['denoise','Denoise']]){
         const wrap=make('label',label),input=make('input');wrap.className='h3-video-field';input.type='number';input.className='cookbook-field-input';input.value=values[key];input.step=key==='denoise'?.01:1;input.min=key==='denoise'?.05:1;input.max=key==='denoise'?1:100;input.required=true;input.disabled=!!body;
         input.oninput=()=>values[key]=Number(input.value);wrap.append(input);grid.append(wrap);controls.push(input);
       }
-      panel.append(make('p','Uses approximately 1.96 MP at the original aspect ratio, RES multistep/simple, and the original audio.'));
+      panel.append(make('p',`Uses ${values.width}×${values.height}, ${values.sampler}/${values.scheduler}, and the original audio. The selected candidate’s model and LoRAs are retained.`));
       const button=make('button',body?'Retry same submission':'Queue refinement');button.type='button';button.className='memory-toolbar-btn';const status=make('p');status.setAttribute('role','status');panel.append(button,status);
       const persist=()=>{try { if(body)sessionStorage.setItem(storageKey,JSON.stringify(body));else sessionStorage.removeItem(storageKey); } catch {}};
       button.onclick=async()=>{

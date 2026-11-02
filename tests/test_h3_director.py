@@ -16,8 +16,16 @@ from src import h3_director as director, h3_video as h3
 from src.video_job_listing import list_options
 from src.video_history_delete import _matches
 from src.video_queue_bulk import _patched
-from tests.test_h3_video import inventory, config, api, weights
+from tests.test_h3_video import inventory as base_inventory, config, api, weights
 from tests.test_video_submission import backend, send
+
+
+@pytest.fixture
+def inventory(base_inventory, tmp_path):
+    for role, name in controls.WORKFLOW_COMPONENTS.items():
+        weights(tmp_path / name, lora=role == "lora")
+    base_inventory["components"] = h3.discover_components([tmp_path])
+    return base_inventory
 
 
 def draft(inv, **options):
@@ -33,7 +41,25 @@ def test_director_is_independent_and_allows_zero_reference_generation(inventory,
     assert resolved["recipe"] == "director" and "seed_hunter" not in resolved
     assert resolved["director"]["duration_seconds"] == 60
     assert controls.candidate_indices(resolved["director"]) == [1, 3]
-    assert resolved["steps"] == 20 and resolved["shift_audio"] == 3
+    assert resolved["steps"] == 16 and resolved["sampler"] == "euler" and resolved["scheduler"] == "beta"
+    assert Path(resolved["loras"][0]["path"]).name == controls.WORKFLOW_COMPONENTS["lora"]
+    assert resolved["loras"][0]["strength"] == 1
+
+
+def test_missing_website_weights_are_reported_without_silent_substitutions(base_inventory):
+    capability = director.capabilities(base_inventory["components"])
+    assert not capability["ready"]
+    assert controls.WORKFLOW_COMPONENTS["lora"] in capability["missing"]
+    assert capability["defaults"]["loras"] == [{"id": controls.WORKFLOW_COMPONENTS["lora"], "strength": 1}]
+    assert capability["defaults"]["encoder"] == ""
+
+
+def test_website_prefers_publisher_files_over_same_named_conversions(inventory):
+    components = inventory["components"]
+    old = next(c for c in components if c["name"] == controls.WORKFLOW_COMPONENTS["video_vae"])
+    published = {**old, "id": "publisher-vae", "path": "/models/Comfy-Org/MiniMax-H3/vae/" + old["name"]}
+    capability = director.capabilities([*components, published])
+    assert capability["defaults"]["video_vae"] == published["id"]
 
 
 @pytest.mark.parametrize("options", [dict(candidate_2=1), dict(stage=[]), dict(resize_method={}),
@@ -139,6 +165,13 @@ def test_pinkcherry_pair_is_specific_to_the_published_model(tmp_path,inventory):
 
 
 def test_refinement_is_owned_idempotent_and_keeps_its_snapshot_after_parent_deletion(backend):
+    # The server fixture supplies a separate inventory; install the source components.
+    manager = backend.managers["h3"]
+    for field, name in controls.WORKFLOW_COMPONENTS.items():
+        path = weights(manager.root.parent / "director-weights" / name, lora=field == "lora")
+        component = h3.discover_components([path.parent])
+    known = {row["id"] for row in backend.inventories["h3"]["components"]}
+    backend.inventories["h3"]["components"] += [row for row in component if row["id"] not in known]
     backend.configs["h3"] = draft(backend.inventories["h3"], candidate_3=True)
     backend.configs["h3"]["gpu"] = backend.inventories["h3"]["gpus"][0]["id"]
     response = send(backend, "h3")
@@ -163,6 +196,9 @@ def test_refinement_is_owned_idempotent_and_keeps_its_snapshot_after_parent_dele
     assert manifest["config"]["director"]["stage"] == "refine"
     assert manifest["config"]["seed"] == 2_000_048 and manifest["config"]["steps"] == 9
     assert manifest["config"]["director"]["denoise"] == .3
+    assert manifest["config"]["loras"] == h3._read(parent / "manifest.json")["config"]["loras"]
+    assert manifest["config"]["sampler"] == "euler" and manifest["config"]["scheduler"] == "beta"
+    assert (manifest["config"]["width"], manifest["config"]["height"]) == (768, 1376)
     assert manifest["director_source"]["candidate"] == 3
     original_snapshot = Path(manifest["director_input"]["tensors"])
     assert original_snapshot.parent == manager.directory(child_id)

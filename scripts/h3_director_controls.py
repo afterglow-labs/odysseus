@@ -7,8 +7,31 @@ RECIPE = "director"
 SAMPLERS = ("res_multistep", "euler", "euler_ancestral", "dpmpp_2m")
 SCHEDULERS = ("simple", "normal", "beta", "sgm_uniform")
 SEED_STRIDE = 1_000_003
+# Active saved example, with Corey's explicit Heretic Qwen encoder override.
+WORKFLOW_SOURCE = {
+    "url": "https://github.com/muse-collective-26/MiniMaxH3-Director-Seed-Hunt/blob/d07e8408f3809af7d1406a653da3fb44152b0af6/workflows/muse_minimax_h3_director_scout_v1.json",
+    "revision": "d07e8408f3809af7d1406a653da3fb44152b0af6",
+    "sha256": "14804582ba07888e8eda1616a06e5ff229caf7bb29df70bf013a2e35c1fa7d73",
+}
+WORKFLOW_COMPONENTS = {
+    "model": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+    "model_fl2va": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+    "encoder": "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors",
+    "video_vae": "minimax_h3_video_vae_fp16.safetensors",
+    "audio_vae": "minimax_h3_audio_vae_fp32.safetensors",
+    "lora": "minimax_h3_turbo_4step_ema_ckpt500_pruned_comfyui.safetensors",
+}
+GENERATION_DEFAULTS = {
+    "recipe": RECIPE, "mode": "ref2va", "width": 608, "height": 352,
+    "frames": 158, "steps": 16, "seed": 50, "sampler": "euler", "scheduler": "beta",
+    "shift_video": 12, "shift_audio": 3, "reference_size": "match",
+}
+REFINEMENT_DEFAULTS = {
+    "width": 768, "height": 1376, "megapixels": 1, "steps": 20,
+    "sampler": "euler", "scheduler": "beta", "denoise": .2,
+}
 DEFAULTS = {
-    "stage": "generation", "duration_seconds": 10.0, "chunk_duration_seconds": 10.0,
+    "stage": "generation", "duration_seconds": 6.0, "chunk_duration_seconds": 15.0,
     "resize_method": "crop", "hybrid_continuation": False,
     "candidate_2": False, "candidate_3": False, "candidate_4": False,
     "segments": [{"id": "cut-1", "prompt": "", "weight": 1.0, "speakerCharIdxs": []}],

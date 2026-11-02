@@ -3,24 +3,43 @@ from copy import deepcopy
 from pathlib import Path
 import uuid
 
-from scripts.h3_director_controls import DEFAULTS, SAMPLERS, SCHEDULERS
+from scripts.h3_director_controls import (DEFAULTS, SAMPLERS, SCHEDULERS,
+    GENERATION_DEFAULTS, REFINEMENT_DEFAULTS, WORKFLOW_COMPONENTS, WORKFLOW_SOURCE)
 from src.h3_video import _read, _write
 
 
 def capabilities(components):
-    defaults = {"recipe": "director", "mode": "ref2va", "width": 1280, "height": 768,
-                "frames": 243, "steps": 20, "sampler": "res_multistep", "scheduler": "simple",
-                "shift_video": 12, "shift_audio": 3, "loras": [], "director": deepcopy(DEFAULTS)}
-    for role, variant in (("model", "ref2va"), ("model_fl2va", "fl2va")):
-        items = [c for c in components if c.get("role") == "model" and c.get("variant") == variant]
-        selected = next((c for c in items if "pruned_int8" in c.get("name", "") and "singularity" not in c.get("name", "").lower()), next(iter(items), None))
-        if selected:
-            defaults[role] = selected["id"]
+    defaults = {**GENERATION_DEFAULTS, "loras": [], "director": deepcopy(DEFAULTS)}
+    missing = []
+    for field, name in WORKFLOW_COMPONENTS.items():
+        role = "model" if field == "model_fl2va" else field
+        matches = [c for c in components if c.get("role") == role
+                   and c.get("name", "").casefold() == name.casefold()]
+        repository = ("Momoking/MiniMax-H3-Turbo-Lora-ComfyUI" if field == "lora" else
+                      "sakamakismile/Qwen3-VL-32B-Heretic-MiniMax-H3-NVFP4" if field == "encoder" else "Comfy-Org/MiniMax-H3")
+        def from_publisher(component):
+            path = component.get("path", "").replace("\\", "/")
+            return (component.get("repo_id") == repository or "/" + repository + "/" in path
+                    or "/models--" + repository.replace("/", "--") + "/" in path)
+        selected = next((c for c in matches if from_publisher(c)), next(iter(matches), None))
+        if selected is None:
+            missing.append(name)
+        if field == "lora":
+            # Keep a missing adapter visible and invalid; never silently run without it.
+            defaults["loras"] = [{"id": selected["id"] if selected else name, "strength": 1.0}]
+        else:
+            defaults[field] = selected["id"] if selected else ""
+    preset = {**deepcopy(defaults), "director": {key: defaults["director"][key] for key in
+              ("stage", "duration_seconds", "chunk_duration_seconds", "resize_method", "hybrid_continuation",
+               "candidate_2", "candidate_3", "candidate_4")}}
     return {"version": 1, "upstream_version": "1.2.0", "defaults": defaults,
+            "ready": not missing, "missing": missing, "source": deepcopy(WORKFLOW_SOURCE),
+            "preset": {"name": "Director website workflow", "config": preset,
+                       "description": "Turbo checkpoint-500 EMA at strength 1.0; 16 Euler/beta steps, 6 seconds, 608×352. Uses your Heretic Qwen encoder."},
             "modes": ["ref2va", "fl2va"], "samplers": list(SAMPLERS), "schedulers": list(SCHEDULERS),
             "timeline": True, "hybrid_continuation": True, "candidate_slots": [1, 2, 3, 4],
             "max_duration_seconds": 120, "single_chunk_refinement": True,
-            "refinement_defaults": {"megapixels": 1.96, "steps": 20, "sampler": "res_multistep", "scheduler": "simple", "denoise": .2}}
+            "refinement_defaults": deepcopy(REFINEMENT_DEFAULTS)}
 
 
 def artifact(directory, index, suffix):
@@ -34,7 +53,8 @@ def artifact(directory, index, suffix):
 
 def summary(directory, config, state):
     options = config.get("director", {})
-    result = {"stage": options.get("stage", "generation"), "duration_seconds": options.get("duration_seconds"), "candidates": []}
+    result = {"stage": options.get("stage", "generation"), "duration_seconds": options.get("duration_seconds"),
+              "refinement_defaults": deepcopy(REFINEMENT_DEFAULTS), "candidates": []}
     for row in _read(Path(directory) / "director-candidates.json").get("candidates", []):
         try:
             artifact(directory, row["index"], "mp4")
@@ -70,7 +90,6 @@ def prepare_refinement(manager, job_id, owner, body, destination, submission_id)
     from src.h3_video import UPLOAD_EXTENSIONS, validate_config
     from src.video_job_edit import _draft, _inputs
     from src.video_queue_bulk import _clone_file
-    from scripts.h3_seed_hunter_presets import final_size
 
     if not isinstance(body, dict) or body.keys() - {"request_id", "candidate", "config"}:
         raise ValueError("Invalid Director refinement request")
@@ -89,11 +108,11 @@ def prepare_refinement(manager, job_id, owner, body, destination, submission_id)
         raise ValueError("Unsupported Director refinement setting")
     inventory = manager.inventory()
     raw = _draft(config, inventory, "h3")
-    raw.update(final_size(config, 1.96))
-    raw.update(steps=20, sampler="res_multistep", scheduler="simple", seed=row["seed"])
+    raw.update({key: value for key, value in REFINEMENT_DEFAULTS.items() if key not in {"denoise", "megapixels"}})
+    raw["seed"] = row["seed"]
     raw.update({key: value for key, value in patch.items() if key != "denoise"})
     raw["director"] = {**raw["director"], "stage": "refine", "candidate_2": False, "candidate_3": False,
-                       "candidate_4": False, "denoise": patch.get("denoise", .2)}
+                       "candidate_4": False, "denoise": patch.get("denoise", REFINEMENT_DEFAULTS["denoise"])}
     inputs = _inputs(source, manifest, UPLOAD_EXTENSIONS)
     resolved = validate_config(raw, inventory["components"], inventory["gpus"], inputs)
     saved, names = {}, {}

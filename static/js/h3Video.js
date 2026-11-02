@@ -321,8 +321,9 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
   const loraCompatibilityError = el('p', 'h3-video-error'); loraCompatibilityError.hidden = true; loraCompatibilityError.setAttribute('role', 'alert'); form.appendChild(loraCompatibilityError);
   const presetBar = el('div', 'h3-video-toolbar'); presetBar.id = 'h3-installed-preset'; presetBar.hidden = true;
   const presetStatus = el('p', 'h3-video-muted'); presetStatus.setAttribute('role', 'status');
-  const useInstalledPreset = button('Use installed preset');
+  const useInstalledPreset = button(director ? 'Apply Director website workflow' : 'Use installed preset');
   presetBar.append(presetStatus, useInstalledPreset); form.appendChild(presetBar);
+  if (director) form.insertBefore(presetBar, form.firstChild);
   const promptGroup = el('div', 'h3-video-field'); form.appendChild(promptGroup);
   const promptHeader = el('div', 'h3-video-prompt-header');
   const promptLabel = el('label', '', 'Prompt'); promptLabel.htmlFor = 'h3-prompt';
@@ -475,7 +476,16 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
     try { localStorage.setItem(storageKey, JSON.stringify({ ...config(), prompt:prompt.value, _installedPresetRevision: appliedPresetRevision })); } catch {}
   }
   function applyInstalledPreset({ automatic = false } = {}) {
-    if(director)return false;
+    if(director){
+      if(automatic || !inventory?.director?.ready || jobEditor?.active || jobEditor?.loading || queueControls?.busy || queueControls?.editing || batchQueue?.busy || transferBusy || enhancing || submitting)return false;
+      const values=inventory.director.preset.config, previous=config();
+      for(const [key,value] of Object.entries(values))if(fields[key])fields[key].value=value;
+      loraEditor.setValue(h3LoraStack(values));
+      directorControls.set({...previous,...values,director:{...previous.director,...values.director}},inventory.components);
+      editRevision++;save();
+      presetStatus.textContent='Director website workflow applied. Your prompt, cuts and attached references are retained.';
+      return true;
+    }
     const preset = inventory?.installed_preset, values = preset?.config;
     if (!values || !preset.revision || jobEditor?.active || jobEditor?.loading || queueControls?.busy || queueControls?.editing || batchQueue?.busy || transferBusy || enhancing || submitting) return false;
     if (automatic && (loraTouched || Object.prototype.hasOwnProperty.call(saved, 'loras') || appliedPresetRevision === preset.revision || fields.mode.value !== values.mode)) return false;
@@ -594,8 +604,8 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
     refresh.disabled = inventoryLoading || batchBusy || editing || editLoading;
     loraCompatibilityError.textContent = [incompatibleLora(), incompatibleLength()].filter(Boolean).join(' '); loraCompatibilityError.hidden = !loraCompatibilityError.textContent;
     generate.disabled = queueBusy || batching || batchBusy || editLoading || !!jobEditor?.blocked || transferBusy || enhancing || submitting || loadFailed || !inventory?.runtime_ready || !!missingGpu?.length || !!loraCompatibilityError.textContent || !!vfxInputError.textContent || !required.every(key => fields[key].value);
-    useInstalledPreset.disabled = !inventory?.installed_preset || inventoryLoading || queueBusy || !!queueControls?.editing || editing || editLoading || batchBusy || transferBusy || enhancing || submitting;
-    presetBar.hidden = !isVfxEdit() || !(inventory?.installed_preset || inventory?.installed_preset_error);
+    useInstalledPreset.disabled = (director ? !inventory?.director?.ready : !inventory?.installed_preset) || inventoryLoading || queueBusy || !!queueControls?.editing || editing || editLoading || batchBusy || transferBusy || enhancing || submitting;
+    presetBar.hidden = director ? editing : !isVfxEdit() || !(inventory?.installed_preset || inventory?.installed_preset_error);
     exportWorkflow.disabled = importWorkflow.disabled = queueBusy || editing || editLoading || batchBusy || transferBusy || enhancing || submitting || !inventory;
     importWorkflow.textContent = transferBusy ? 'Importing workflow…' : 'Import workflow';
     generate.textContent = submitting ? editing ? 'Saving changes…' : 'Uploading and adding job…' : editing ? 'Save changes' : ((jobPager?.counts.running || 0) + (jobPager?.counts.queued || 0)) ? 'Add to queue' : 'Generate video';
@@ -859,9 +869,9 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
       const useBaseDefaults = preferredModel || (saved.mode && data.installed_preset && saved.mode !== data.installed_preset.config.mode);
       const previous = inventory ? config() : { ...((useBaseDefaults ? data.base_defaults : data.defaults) || data.defaults || {}), ...(director ? data.director?.defaults : {}), ...saved };
       inventory = data; loadFailed = false;
-      presetBar.hidden = director || !data.installed_preset && !data.installed_preset_error;
-      useInstalledPreset.hidden = !data.installed_preset;
-      presetStatus.textContent = data.installed_preset
+      presetBar.hidden = director ? false : !data.installed_preset && !data.installed_preset_error;
+      useInstalledPreset.hidden = director ? false : !data.installed_preset;
+      presetStatus.textContent = director ? (data.director.ready ? data.director.preset.description : `Website workflow needs: ${data.director.missing.join(', ')}`) : data.installed_preset
         ? `${data.installed_preset.name} is installed for ${data.installed_preset.config.mode.toUpperCase()} mode. Apply it to this draft at any time.`
         : data.installed_preset_error || '';
       for (const key of ['model', 'encoder', 'video_vae', 'audio_vae']) {
@@ -1216,7 +1226,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
       sections:[
         {id:'inputs',title:'Inputs',parent:form,nodes:[fields.mode.parentElement,batchContainer,inputArea,referenceHelp,vfxInputError]},
         {id:'prepare',title:'Prompt',parent:form,nodes:[promptGroup,enhancerBar]},
-        {id:'setup',title:'Model setup',parent:form,nodes:[components,loraEditor.node,componentPath.closest('details'),loraCompatibilityError,presetBar,gpuSelectionError,gpuPanel]},
+        {id:'setup',title:'Model setup',parent:form,nodes:[components,loraEditor.node,componentPath.closest('details'),loraCompatibilityError,...(director?[]:[presetBar]),gpuSelectionError,gpuPanel]},
         {id:'generate',title:'Generate',parent:form,nodes:[directorControls?.node,dimensions,advanced]},
         {id:'review',title:'Review',parent:scroll,nodes:[jobsHeader,jobStatus,jobPager.node,jobList,jobPager.bottomNode]},
         {id:'export',title:'Save / Import',parent:scroll,nodes:[transferBar]},
