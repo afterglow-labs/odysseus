@@ -237,11 +237,13 @@ def test_edited_final_prompt_uses_original_context_and_latent_without_reencoding
 @pytest.mark.parametrize('changed_prompt', [False, True])
 @pytest.mark.parametrize('changed_lora', [False, True])
 @pytest.mark.parametrize('change', ['length', 'model', 'model_and_length'])
+@pytest.mark.parametrize('preview_steps', [6, 20])
 def test_final_regenerates_only_selected_seed_at_original_settings_before_refinement(
-        manifest, monkeypatch, tmp_path, changed_lora, changed_prompt, change):
+        manifest, monkeypatch, tmp_path, changed_lora, changed_prompt, change, preview_steps):
     from copy import deepcopy
     original, _ = worker.validate_job(manifest)
     original['loras'] = []
+    original['steps'] = preview_steps
     candidate = tmp_path / 'original.safetensors'
     hunter.save_snapshot(candidate, latent={'samples': torch.tensor(999.)},
                          positive=[[torch.tensor(999.), {}]], config=original, seed=1042)
@@ -297,7 +299,7 @@ def test_final_regenerates_only_selected_seed_at_original_settings_before_refine
         assert config['model'] == selected_model
         if len(sampled) == 1:
             assert config['seed'] == 1042  # Actual selected branch, not base 42 or edited 123.
-            assert config['steps'] == 6 and config['scheduler'] == 'beta' and config['sampler'] == 'er_sde'
+            assert config['steps'] == preview_steps and config['scheduler'] == 'beta' and config['sampler'] == 'er_sde'
             assert config['width'] == 480 and config['frames'] == frames and config['loras'] == []
             assert config['seed_hunter']['preview_count'] == 1 and config['seed_hunter']['stage'] == 'preview'
             assert positive[0][0].item() == 5
@@ -307,6 +309,8 @@ def test_final_regenerates_only_selected_seed_at_original_settings_before_refine
         assert config['seed'] == 123 and config['steps'] == 2 and config['scheduler'] == 'linear_quadratic'
         assert config['frames'] == frames and config['width'] == 960
         assert positive[0][0].item() == (8 if changed_prompt else 6) and latent['samples'].item() == 21
+        progress('sampling', 2)
+        statuses.append(json.loads(Path(manifest['status_path']).read_text()))
         return {'samples': torch.tensor(29.)}, {'samples': torch.tensor(30.)}
     def upscale(_manifest, config, latent, _progress):
         calls.append('upscale')
@@ -326,7 +330,8 @@ def test_final_regenerates_only_selected_seed_at_original_settings_before_refine
         assert calls.index('unload_all') < calls.index('load', calls.index('load') + 1)
         assert loaded[1]['loras'][0]['strength'] == .75
     assert statuses[0]['phase'] == 'regenerating_full_length_candidate'
-    assert statuses[0]['total_steps'] == 6 and statuses[0]['source_seed'] == 1042
+    assert statuses[0]['total_steps'] == preview_steps and statuses[0]['source_seed'] == 1042
+    assert statuses[1]['total_steps'] == 2 and statuses[1]['step'] == 2
     result = json.loads(Path(manifest['status_path']).read_text())
     assert result['frames'] == frames and result['model_changed'] == (change != 'length')
     assert (candidate.read_bytes(), candidate.with_suffix('.json').read_bytes()) == snapshot

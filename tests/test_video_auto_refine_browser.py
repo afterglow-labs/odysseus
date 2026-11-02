@@ -28,6 +28,11 @@ def test_refinements_require_explicit_saved_candidate_action(tmp_path, scout, la
     jobs=[dict(id=c*32,status='completed',recipe='seed_hunter',prompt='Saved prompt',source_name=f'clip{c}.mkv',
                seed_hunter={'stage':'scout' if scout else 'preview','candidates':[]},
                **({'scout':{'mode':'scout','seeds':[714,715,716],'previews':[]}} if scout else {})) for c in ['a','b']]
+    refinement_defaults = {}
+    if not scout:
+        config['seed_hunter'].update(preset='director',preview_count=4,denoise=.2,refinement_method='pixel')
+        refinement_defaults = dict(steps=20,sampler='euler',scheduler='beta',denoise=.2,
+            seed_hunter=dict(preset='director',sampling_schedule='standard',refinement_method='pixel',shift_enabled=True))
     requests=[]; submissions=[]; errors=[]
     async def run():
         async with pw.async_playwright() as p:
@@ -42,7 +47,7 @@ def test_refinements_require_explicit_saved_candidate_action(tmp_path, scout, la
                 elif path.endswith('/inventory'):await h.fulfill(json=inventory)
                 elif path.endswith('/prompt-enhancer'):await h.fulfill(json={'models':[]})
                 elif path.endswith('/prompt-history'):await h.fulfill(json={'prompts':[]})
-                elif path.endswith('/seed-hunter'):await h.fulfill(json={'config':config,'seed_hunter':jobs[0]['seed_hunter']})
+                elif path.endswith('/seed-hunter'):await h.fulfill(json={'config':config,'seed_hunter':jobs[0]['seed_hunter'],'refinement_defaults':refinement_defaults})
                 elif path.endswith('/auto-refine'):
                     requests.append(req.post_data_json)
                     if len(requests)==1:await h.fulfill(status=503,json={'detail':'Response lost after acceptance'})
@@ -65,6 +70,10 @@ def test_refinements_require_explicit_saved_candidate_action(tmp_path, scout, la
                 if layout=='pipeline':await page.locator('[data-pipeline-stage=review]').click()
                 await page.get_by_role('button',name='Select all preview jobs',exact=True).click()
                 await page.get_by_role('button',name='Refine selected jobs (2)…',exact=True).click()
+                await page.locator('.h3-seed-hunter-final').wait_for()
+                if not scout:
+                    assert await page.locator('#seed-hunter-final-steps').input_value() == '20'
+                    assert await page.locator('#seed-hunter-final-scheduler').input_value() == 'beta'
                 await page.locator('#h3-auto-project').fill('Our batch')
                 await page.get_by_label('All candidates',exact=True).check()
                 await page.get_by_label('Existing results',exact=True).select_option('rerender')
@@ -86,6 +95,10 @@ def test_refinements_require_explicit_saved_candidate_action(tmp_path, scout, la
                 assert set(requests[0]['jobs'])=={j['id'] for j in jobs}
                 assert requests[0]['settings']['candidates']=='all' and requests[0]['settings']['existing']=='rerender'
                 assert requests[0]['settings']['refinement']['steps']==7
+                if not scout:
+                    options=requests[0]['settings']['refinement']['seed_hunter']
+                    assert options['refinement_method']=='pixel' and options['shift_enabled'] is True
+                    assert options['preset']=='director' and options['output_fps']==48
                 assert not errors,errors
             finally:await browser.close()
     asyncio.run(run())

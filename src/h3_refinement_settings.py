@@ -16,6 +16,14 @@ def resolve(raw, patch, inventory, inputs, *, scout=False):
     result = deepcopy(raw)
     result.update(width=raw['width'] * 2, height=raw['height'] * 2,
                   steps=2, sampler='er_sde', scheduler='linear_quadratic')
+    if not scout:
+        from scripts.h3_seed_hunter_presets import final_size
+        from src.h3_seed_hunter_presets import final_defaults
+        preset = final_defaults(raw, inventory['components'])
+        result.update(final_size(raw, preset.get('megapixels', 2)))
+        result.update({k: v for k, v in preset.items() if k not in {'seed_hunter', 'megapixels', 'denoise'}})
+        result['seed_hunter'].update(denoise=preset.get('denoise', .4))
+        result['seed_hunter'].update(preset.get('seed_hunter', {}))
     result.update({k: v for k, v in patch.items() if k not in {'seed_hunter', 'denoise'}})
     result['seed_hunter'].update(options)
     result['seed_hunter'].update(stage='final', preview_count=1)

@@ -35,7 +35,7 @@ def test_final_size_cannot_shrink_or_exceed_working_bounds():
 
 @pytest.mark.parametrize('mode,enabled,expected,automatic', [('interactive', True, True, False), ('final', True, True, False),
                                                ('scout', True, False, False), ('interactive', False, False, False),
-                                               ('interactive', True, False, True)])
+                                               ('interactive', True, True, True)])
 def test_selected_clean_latent_is_upscaled_then_refined_and_decoded_at_final_size(
         manifest, monkeypatch, mode, enabled, expected, automatic):
     manifest['config'].update(width=256, height=256, steps=20,
@@ -62,7 +62,10 @@ def test_selected_clean_latent_is_upscaled_then_refined_and_decoded_at_final_siz
         calls.append('finish chosen seed')
         assert config['steps'] == 20 and config['seed_hunter']['scout_step'] == 4
         if automatic:
-            assert config['seed_hunter']['scout_mode'] == 'scout'
+            # A stale automatic-refinement setting must not change the chosen
+            # mode or silently authorize new jobs when rerunning a saved job.
+            assert config['seed_hunter']['scout_mode'] == mode
+            assert 'auto_refine' not in config['seed_hunter']
         return {'samples': torch.tensor(999.)}, clean, 43
     monkeypatch.setattr(scout, 'sample', finish)
     def upscale(_manifest, config, latent, _progress):

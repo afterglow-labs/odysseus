@@ -5,13 +5,18 @@ from pathlib import Path
 
 from scripts.h3_seed_hunter_controls import DEFAULTS, SAMPLERS, SCHEDULERS, scout_upscale_enabled, scout_output_size
 from src.h3_video import TERMINAL, _read, _write, _locked
+from src.h3_seed_hunter_presets import catalog, final_defaults
+from scripts.h3_seed_hunter_presets import candidate_limit, final_size, validate_sampling
+
+FINAL_DEFAULTS = {"megapixels": 2, "steps": 2, "sampler": "er_sde",
+                  "scheduler": "linear_quadratic", "denoise": .4}
 
 
 def capabilities(project, runtime, components, gpus=()):
     from src.h3_seed_scout import defaults as scout_defaults
     project, runtime = Path(project), Path(runtime)
     extras = project / "runtimes/minimax-h3/seed-hunter"
-    defaults = {"mode": "ref2va", "width": 480, "height": 864, "frames": 73, "steps": 6,
+    defaults = {"mode": "ref2va", "width": 480, "height": 864, "frames": 73, "steps": 20,
                 "seed": 475620997637978, "sampler": "er_sde", "scheduler": "beta",
                 "shift_video": 12, "shift_audio": 6, "seed_hunter": dict(DEFAULTS)}
     authored = next((c for c in components if c.get("role") == "model" and "singularity" in c.get("name", "").lower()
@@ -29,8 +34,8 @@ def capabilities(project, runtime, components, gpus=()):
         "samplers": list(SAMPLERS), "schedulers": list(SCHEDULERS),
         "defaults": defaults,
         "scout_defaults": scout_defaults(components, gpus),
-        "final_defaults": {"megapixels": 2, "steps": 2, "sampler": "er_sde",
-                           "scheduler": "linear_quadratic", "denoise": .4},
+        "final_defaults": dict(FINAL_DEFAULTS),
+        "presets": catalog(components),
         "features": {"latent_upscaler": (extras / "latent-upscaler").is_dir()
                      and any(c.get("role") == "latent_upscaler" for c in components),
                      "scout_upscale": (extras / "latent-upscaler/nodes/minimax_h3_latent_upscaler_3d.py").is_file()
@@ -52,6 +57,11 @@ def preflight(config, inventory, inputs):
         return
     features = inventory.get("seed_hunter", {}).get("features", {})
     options = config["seed_hunter"]
+    validate_sampling(config)
+    if options.get("preset") == "character_swap" and (not inputs.get("reference_images") or not inputs.get("reference_videos")):
+        raise ValueError("Character Swap needs the source performance as Video 1 and the replacement identity as Picture 1")
+    if options.get("sampling_schedule") == "pika" and not (inputs.get("reference_images") or inputs.get("reference_videos")):
+        raise ValueError("Pika Ref2VA needs a reference image or video")
     from scripts.h3_auto_refine_controls import enabled
     wanted = {"latent_upscaler": options["stage"] == "final" or scout_upscale_enabled(config) or options["stage"] == "preview" and enabled(options),
               "scout_upscale": scout_upscale_enabled(config),
@@ -77,8 +87,8 @@ def preflight(config, inventory, inputs):
 
 
 def artifact(directory, candidate, kind):
-    if type(candidate) is not int or not 1 <= candidate <= 3:
-        raise ValueError("Choose preview 1, 2, or 3")
+    if type(candidate) is not int or not 1 <= candidate <= 4:
+        raise ValueError("Choose a saved preview from 1 through 4")
     suffix = {"video": "mp4", "audio": "flac", "latent": "safetensors", "metadata": "json"}[kind]
     path = Path(directory) / f"candidate-{candidate}.{suffix}"
     if path.is_symlink() or not path.is_file() or not path.stat().st_size:
@@ -91,14 +101,14 @@ def summary(directory, config, state):
         return None
     options = config.get("seed_hunter", {})
     result = {"stage": options.get("stage", "preview"),
-              **{key: config.get(key) for key in ("width", "height", "frames")}, "candidates": []}
+              **{key: config.get(key) for key in ("width", "height", "frames", "steps")}, "candidates": []}
     result["final_frames"] = options.get("final_frames")
     if scout_upscale_enabled(config):
         result.update(final_width=scout_output_size(config)[0], final_height=scout_output_size(config)[1],
                       upscale_requested=True)
     saved = _read(Path(directory) / "candidates.json")
     rows = saved.get("candidates", [])
-    for row in rows[:3] if isinstance(rows, list) else []:
+    for row in rows[:candidate_limit(options)] if isinstance(rows, list) else []:
         if not isinstance(row, dict) or row.get("status") != "completed":
             continue
         index = row.get("id")
@@ -180,7 +190,8 @@ def detail(manager, job_id, owner):
         except (ValueError, FileNotFoundError):
             length = {"frames": None, "requires_manual": True,
                       "error": "Could not read the source duration. Choose the final output length manually."}
-        result.update(final_length=length, refinement_defaults={"frames": length["frames"] or config["frames"]})
+        result.update(final_length=length, refinement_defaults={
+            **final_defaults(config, inventory["components"]), "frames": length["frames"] or config["frames"]})
     return result
 
 
@@ -204,6 +215,7 @@ def clone_snapshot(source_directory, destination, snapshot):
 FINAL_EDIT_SETTINGS = {"prompt", "width", "height", "frames", "steps", "seed", "sampler", "scheduler", "gpu", "vae_gpu",
                        "loras", "lora", "lora_scale", "latent_upscaler", "seed_hunter", "shift_video", "shift_audio"}
 FINAL_OPTIONS = {"denoise", "output_fps", "final_frames", "upscaler_chunking", "upscaler_force_unload", "shift_enabled",
+                 "preset", "sampling_schedule", "refinement_method",
                  "attention_backend", "sparse_method", "sparse_keep_percent", "sparse_start", "sparse_end",
                  "sparse_min_tokens", "sparse_extra_tokens", "sparse_sink_conditioning",
                  "ff_chunk_size", "ff_chunk_threshold", "low_vram_chunks"}
@@ -289,6 +301,13 @@ def prepare_final(manager, source_id, owner, body, directory, submission_id):
             raise ValueError("Choose an available saved preview")
         inventory = frozen_inventory(config, current)
         raw = _draft(config, inventory, "h3")
+        # A refinement has its own schedule. An omitted setting must never
+        # inherit the preview's full sampling pass.
+        raw.update({key: FINAL_DEFAULTS[key] for key in ("steps", "sampler", "scheduler")})
+        preset_final = final_defaults(config, inventory["components"])
+        raw.update(final_size(config, preset_final.get("megapixels", FINAL_DEFAULTS["megapixels"])))
+        raw.update({key: value for key, value in preset_final.items()
+                    if key not in {"megapixels", "denoise", "seed_hunter"}})
         chosen = next(row for row in data["candidates"] if row["index"] == candidate)
         selected_seed = _read(artifact(source, candidate, "metadata")).get("seed", chosen["seed"])
         raw["seed"] = selected_seed
@@ -300,7 +319,9 @@ def prepare_final(manager, source_id, owner, body, directory, submission_id):
         changes = patch.get("seed_hunter", {})
         if not isinstance(changes, dict) or changes.keys() - FINAL_OPTIONS:
             raise ValueError("Unsupported refinement option")
-        options = {**raw["seed_hunter"], **changes, "stage": "final", "preview_count": 1}
+        options = {**raw["seed_hunter"], "denoise": preset_final.get("denoise", FINAL_DEFAULTS["denoise"]),
+                   **preset_final.get("seed_hunter", {}),
+                   **changes, "stage": "final", "preview_count": 1}
         options.pop("auto_refine", None)
         if "denoise" in patch:
             options["denoise"] = patch["denoise"]

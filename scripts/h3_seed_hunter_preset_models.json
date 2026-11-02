@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "weights": [
+    {
+      "repository": "lightx2v/Minimax-h3-Turbo",
+      "revision": "30f485ed874aa44c8183348ad361c5eabad318da",
+      "filename": "minimax_h3_ref2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors",
+      "sha256": "b4da466e43588004097dfbcde245ccc439c34a26bc997cb76a0b53a1d549ea0d",
+      "bytes": 1956193000
+    },
+    {
+      "repository": "lightx2v/Minimax-h3-Turbo",
+      "revision": "30f485ed874aa44c8183348ad361c5eabad318da",
+      "filename": "minimax_h3_ref2v_turbo_8step_v1.1_768p_comfyui_bf16.safetensors",
+      "sha256": "e56863a7524e0300729cbb7b64cc8b548d90698c1abbf7d83898b0122fbe1e81",
+      "bytes": 1956193000
+    },
+    {
+      "repository": "Comfy-Org/MiniMax-H3",
+      "revision": "912b6e38b2092ec4d2e86d24183e0d59ea059d48",
+      "filename": "loras/pika_h3_flex_ref2va_v1_bf16.safetensors",
+      "sha256": "de3745ceb7d8d5c20898dd8fa3a05f1c0b00089ccd55297b2a8bab95c766b0e0",
+      "bytes": 1956172304
+    },
+    {
+      "repository": "Kijai/MiniMax-H3-experimental",
+      "revision": "f5c3b1d5a63e008a691fca1b6096fd57a5307536",
+      "filename": "minimax_h3_lightvae_lite_vae_int8_convrot.safetensors",
+      "sha256": "d9bde765b71ac35ee6531a32546c7ad2d50b89e5a812e1b0962b20add1ee6867",
+      "bytes": 1036943392
+    },
+    {
+      "repository": "akatz-ai/MiniMax-H3-Character-Swap-LoRA",
+      "revision": "96ea3407b230b6f7df71c58c70e31df96bd7e533",
+      "filename": "h3_character_swap_v1.5.safetensors",
+      "sha256": "8f2c3c3eba161df8d0c6099598b4730f641f5ce01e04cd16d2427cff8a35218f",
+      "bytes": 155110792
+    },
+    {
+      "repository": "lightx2v/Minimax-h3-Turbo",
+      "revision": "30f485ed874aa44c8183348ad361c5eabad318da",
+      "filename": "minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors",
+      "sha256": "08cfe946033af7d27719b964b6e0a0e50c32138daabbd6ce4137e23df6bf9980",
+      "bytes": 1956193000
+    },
+    {
+      "repository": "OliviaRossi/Minimax-h3_Singularity-x-10Eros-Max_PRISM",
+      "revision": "c3240ac4508f431899b663cb00062bfa49d4bdc6",
+      "filename": "10Eros_Max_h3_8stepTURBO_beta7_SingularityV2_int8HQ.safetensors",
+      "sha256": "ef5496dd5e8334dc12b395420ff2cf4ff5a959c6a2bd2965282115fefa3a5915",
+      "bytes": 22893150024
+    }
+  ]
+}

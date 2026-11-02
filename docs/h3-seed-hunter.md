@@ -8,6 +8,12 @@ server. It is an implemented recipe, not an arbitrary Comfy graph executor.
 
 The classic editor remains available. **Cookbook → Launch → Build Pipeline** opens the separate [pipeline workspace](workflow-pipeline.md) using the same native controls and execution path. Node editing remains experimental.
 
+**Generation preset** is the first control in the desktop, Pipeline and native
+iOS creation forms. It selects a complete model/sampler/adapter setup while
+keeping the prompt, attachments, clip lengths and GPU choices. See
+[preset recipes and source audit](h3-presets.md) for the eight available options,
+including Character Swap V1.5, Pika, LightX2V Turbo and Muse Director Reference mode.
+
 Finished job cards offer three separate actions in the desktop and iOS clients:
 
 - **Reprocess with base settings** starts a fresh job using the shared creation
@@ -26,13 +32,11 @@ saved source files, rather than applying a different model or prompt to the old
 cached latent. An unconfirmed submission offers **Retry request**, which sends
 the same frozen request even if the base form has since changed.
 
-## Bulk and automatic refinements
+## Bulk refinements
 
-In Seed Hunter and Seed Scout, **Automatic refinements…** opens the existing
-refinement panel for new jobs and batches. Name a project, choose candidates
-1, 2, 3, a combination, or **All candidates**, then save the shared final size,
-steps, denoise, sampler, scheduler, latent upscaler, LoRAs and output FPS. New
-jobs snapshot those settings; changing the draft later does not alter them.
+Refinement is an explicit action. Opening, refreshing or rerunning a preview
+does not authorize future refinement jobs. Previously saved automatic settings
+are ignored at submission.
 
 For saved previews, select job cards or **Select all preview jobs**, then
 **Refine selected jobs…**. The iOS equivalent is **Refine candidates in bulk…**.
@@ -53,9 +57,8 @@ results. Failed or stopped refinements do not count as completed refinements.
 Each child uses its own saved candidate seed, latent, prompt, files and selected
 sections. **Keep each job's final duration** retains the individual target
 length. Scout always retains its saved duration and finishes the remaining
-original sampling schedule before the shared upscale and refinement. New
-automatic Scout jobs save all candidate partials without waiting for a manual
-choice. All children join the existing serial render queue.
+original sampling schedule before the shared upscale and refinement. All
+children join the existing serial render queue.
 
 The server stores results under
 `outputs/video-projects/Project--account/YYYY-MM-DD/Candidate N/`.
@@ -73,9 +76,9 @@ results and source-video links, while the user's original input stays intact.
 Organizing an existing completed refinement again adds any missing context files.
 
 Interrupted bulk requests retain one submission ID, settings and candidate
-receipt so retrying queues only unconfirmed items. Automatic submissions and
+receipt so retrying queues only unconfirmed items. Submitted bulk work and
 output organization recover after server restarts. Workflow exports include
-automatic settings and their separate adapter/upscaler references or weights.
+the selected preset options and adapter/upscaler references or weights.
 Bulk refinement submission is exempt from the web server's generic 45-second
 request deadline so large batches can finish recording their candidates. It
 retains the existing authenticated request limits and duplicate protection.
@@ -186,13 +189,24 @@ render. The server prepares a cached, browser-compatible H.264/AAC copy when
 needed; the stored original and generation inputs remain unchanged. Source
 playback is available only to the job's owner and stops when its player closes.
 
-Defaults follow the saved graph: 0.4 MP at 9:16 (480 × 864), 73 frames at 24 fps,
-6 steps, ER SDE with beta scheduling. Refinement defaults to about 2 MP at the
+Quality previews use 0.4 MP at 9:16 (480 × 864), 73 frames at 24 fps,
+20 steps, ER SDE with beta scheduling. Refinement defaults to about 2 MP at the
 preview's actual aspect ratio (1088 × 1952), 2 steps, ER SDE,
 linear-quadratic scheduling and 0.4 denoise. Video/audio sigma shifts are
 bypassed until explicitly enabled.
 
-Fresh drafts use 20 preview steps and no automatic turbo LoRA. Previously saved drafts and imported workflows retain their explicit settings; the 6-step values above describe the original author's turbo-based preset.
+Previously saved drafts and imported workflows retain their explicit settings.
+Choose **Singularity quality · 20 / 2 steps** to apply the quality recipe.
+When the final clip is longer than the saved preview, the worker first generates
+that longer clip at preview resolution with the selected seed and original
+sampling recipe. It then upscales and runs the separate two-step refinement.
+Progress labels distinguish **Generating full-length video** from
+**Refining final resolution**. The short preview remains unchanged.
+
+Both queued edits and **Edit & rerun** allow changing a final job's prompt.
+The worker re-encodes the edited prompt with the saved references. The selected
+candidate, source latent, reference ordering, and workflow stage remain intact.
+Submitting or retrying the editor uses one request ID to prevent duplicates.
 
 ## Seed Scout
 

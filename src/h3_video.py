@@ -184,6 +184,7 @@ def cache_roots(project=PROJECT_ROOT, state_file=COOKBOOK_STATE_FILE):
 
 def discover_components(roots):
     from src.model_library import component_aliases
+    from scripts.h3_seed_hunter_presets import PRISM8
     components, seen, known_ids, metadata_cache = [], set(), set(), {}
     for base in roots:
         for directory, dirs, files in os.walk(base, followlinks=False):
@@ -197,10 +198,10 @@ def discover_components(roots):
                     continue
                 profile = read_profile(path)
                 named_h3 = bool(re.search(r"minimax.*h3|(?:^|[/_])h3(?:[/_.]|$)", text))
-                if not (profile or control or named_h3):
+                if not (profile or control or named_h3 or name == PRISM8):
                     continue
                 adapter, _ = _safetensors_kind(path)
-                if not (profile and adapter or control or named_h3):
+                if not (profile and adapter or control or named_h3 or name == PRISM8):
                     continue
                 try:
                     resolved = path.resolve(strict=True)
@@ -228,13 +229,17 @@ def discover_components(roots):
                     role = "audio_vae" if "audio" in lower else "video_vae"
                 elif "qwen" in lower or "encoder" in lower or "clip" in lower:
                     role = "encoder"
-                elif "ref2va" in lower or "fl2va" in lower:
+                elif "ref2va" in lower or "fl2va" in lower or name == PRISM8:
                     role = "model"
                 else:
                     continue
                 # LightX2V uses ref2v/fl2v in LoRA names, while H3 checkpoints
                 # use ref2va/fl2va. They describe the same model families.
                 variant = "ref2va" if re.search(r"ref2va?(?:[_.\s-]|$)", lower) else "fl2va" if re.search(r"fl2va?(?:[_.\s-]|$)", lower) else "shared"
+                if name == PRISM8:
+                    variant = "ref2va"
+                if role == "lora" and adapter and profile is None:
+                    profile = built_in_lora_profile(name)
                 vfx_edit = role == "lora" and lower in VFX_LORAS
                 if vfx_edit:
                     variant = "ref2va"
@@ -397,7 +402,7 @@ def validate_config(raw, components, gpus, uploads):
         value = config[key]
         if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value) or not low <= value <= high:
             raise ValueError(f"{key} must be a finite number from {low} to {high}")
-    if not isinstance(config["sampler"], str) or config["sampler"] not in (SAMPLERS if hunt else {"euler", "res_multistep"}):
+    if not isinstance(config["sampler"], str) or config["sampler"] not in (SAMPLERS if hunt else {"euler", "res_multistep", "er_sde"}):
         raise ValueError("Unsupported H3 sampler")
     if not isinstance(config["scheduler"], str) or config["scheduler"] not in (SCHEDULERS if hunt else {"simple", "normal"}):
         raise ValueError("Unsupported H3 scheduler")
@@ -423,6 +428,12 @@ def validate_config(raw, components, gpus, uploads):
     if selected["model"]["variant"] != wanted:
         raise ValueError(f"{config['mode']} requires a {wanted.upper()} checkpoint")
     config["loras"], paths = [], set()
+    from scripts.h3_seed_hunter_presets import compatible_adapter, PIKA, validate_sampling
+    active_names = {by_id.get(row["id"], {}).get("name") for row in adapters if row["strength"] != 0}
+    if PIKA in active_names:
+        if not hunt or options.get("sampling_schedule") != "pika":
+            raise ValueError("Pika Flex requires its manual schedule. Choose the Pika Flex preset in H3 Seed Hunter.")
+        validate_sampling(config)
     for row in adapters:
         lora = by_id.get(row["id"])
         if not lora or lora["role"] != "lora" or not Path(lora["path"]).is_file():
@@ -431,7 +442,7 @@ def validate_config(raw, components, gpus, uploads):
         if path in paths:
             raise ValueError("The same LoRA file cannot be selected more than once")
         paths.add(path)
-        if row["strength"] != 0 and lora.get("variant", "shared") not in {"shared", wanted}:
+        if row["strength"] != 0 and not compatible_adapter(lora["name"], lora.get("variant", "shared"), wanted, active_names):
             raise ValueError(f"{lora['name']} is a {lora['variant'].upper()} LoRA; choose a compatible LoRA for {config['mode']} mode")
         config["loras"].append({"path": lora["path"], "strength": row["strength"]})
         config.setdefault("lora_profiles", {})[lora["path"]] = validate_lora_profile(

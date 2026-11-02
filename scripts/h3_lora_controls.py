@@ -23,6 +23,29 @@ PROFILE_LIMIT = 65536
 def built_in_lora_profile(name):
     """Editable defaults for known adapters; a saved profile always wins."""
     name = Path(str(name)).name.casefold()
+    turbo_steps = {
+        "minimax_h3_ref2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors": 4,
+        "minimax_h3_ref2v_turbo_8step_v1.1_768p_comfyui_bf16.safetensors": 8,
+    }
+    if name in turbo_steps:
+        steps = turbo_steps[name]
+        return validate_lora_profile({
+            "display_name": f"LightX2V Ref2VA Turbo · {steps} steps", "variant": "ref2va",
+            "notes": "Ref2VA acceleration adapter, strength 1. Use matching reference sizing. Seed Hunter has a complete preset; in Seed Scout, set Preview after step below the full step count. The final latent refinement has its own schedule. Source: https://github.com/ModelTC/Minimax-H3-Turbo",
+            "recommended_settings": {"steps": steps, "sampler": "euler", "scheduler": "simple", "shift_video": 6, "shift_audio": 3, "reference_size": "match"},
+        })
+    if name == "h3_character_swap_v1.5.safetensors":
+        return validate_lora_profile({
+            "display_name": "Character Swap V1.5", "variant": "ref2va",
+            "notes": "Use a Ref2VA base, this adapter at strength 1, and minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors at strength 1. Source performance: Video 1. Replacement identity: Picture 1. The LoRA alone does not supply SAM masks or preserve the source soundtrack. Publisher: https://huggingface.co/akatz-ai/MiniMax-H3-Character-Swap-LoRA",
+            "prompt_example": "Replace the selected person in <Video 1> with the character in <Picture 1>. Keep the reference character's face, hair and clothing. Follow the source performance's pose, gaze, expression and movement. Preserve the scene and the other people.",
+            "recommended_settings": {"steps": 8, "sampler": "er_sde", "scheduler": "normal", "shift_video": 12, "shift_audio": 3},
+        })
+    if name == "pika_h3_flex_ref2va_v1_bf16.safetensors":
+        return validate_lora_profile({
+            "display_name": "Pika Flex Ref2VA", "variant": "ref2va",
+            "notes": "Choose the Pika Flex preset in H3 Seed Hunter for the required six-step LCM manual sigma schedule. Ordinary H3 and Scout continuation do not apply this schedule. Source: https://huggingface.co/Pika-Labs/Pika-H3-Flex",
+        })
     if name not in {"minimax_h3_vfx_edit_v1.0_r128.safetensors",
                     "minimax_h3_vfx_edit_v1.0_r128_ffp.safetensors"}:
         return None
@@ -97,7 +120,7 @@ def validate_lora_profile(raw):
     settings = raw.get("recommended_settings", {})
     ranges = {"steps": (1, 100), "width": (256, 1920), "height": (256, 1920),
               "frames": (73, 362), "seed": (0, 2**63 - 1)}
-    enums = {"sampler": {"euler", "res_multistep"}, "scheduler": {"simple", "normal"}, "reference_size": {"match", "max"}}
+    enums = {"sampler": {"euler", "res_multistep", "er_sde"}, "scheduler": {"simple", "normal"}, "reference_size": {"match", "max"}}
     if not isinstance(settings, dict) or settings.keys() - (ranges.keys() | enums.keys() | {"shift_video", "shift_audio"}):
         raise ValueError("Unsupported recommended workflow setting")
     for key, value in settings.items():

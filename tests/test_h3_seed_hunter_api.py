@@ -53,6 +53,51 @@ def final_body(hunter, **patch):
         'latent_upscaler': hunter.configs['h3']['latent_upscaler'], **patch}}
 
 
+@pytest.mark.parametrize('overrides', [{}, {'steps': 4, 'scheduler': 'beta', 'denoise': .25}])
+def test_final_schedule_defaults_do_not_inherit_twenty_step_preview(hunter, overrides):
+    hunter.configs['h3']['steps'] = 20
+    hunter.configs['h3']['seed_hunter'].update(final_frames=311, denoise=.8)
+    job, source = preview(hunter)
+    body = final_body(hunter, **overrides)
+    for key in ('steps', 'sampler', 'scheduler', 'denoise', 'width', 'height'):
+        if key not in overrides:
+            body['config'].pop(key)
+    response = hunter.client().post(f"/api/video/h3/jobs/{job['id']}/seed-hunter/finalize", json=body)
+    assert response.status_code == 201, response.text
+    saved = h3._read(hunter.managers['h3'].directory(response.json()['id']) / 'manifest.json')
+    final = saved['config']
+    assert final['steps'] == overrides.get('steps', 2)
+    assert final['scheduler'] == overrides.get('scheduler', 'linear_quadratic')
+    assert final['sampler'] == 'er_sde'
+    assert (final['width'], final['height']) == (1088, 1952)
+    assert final['seed_hunter']['denoise'] == overrides.get('denoise', .4)
+    assert final['frames'] == 311 and final['seed_hunter']['stage'] == 'final'
+    original = h3._read(source / 'manifest.json')['config']
+    assert original['steps'] == 20 and original['frames'] == 73
+    assert original['scheduler'] == 'beta' and original['seed_hunter']['denoise'] == .8
+
+
+def test_director_fourth_candidate_keeps_its_pixel_refinement_contract(hunter):
+    hunter.configs['h3']['seed_hunter'].update(preset='director',preview_count=4,refinement_method='pixel',final_frames=311)
+    job, source = preview(hunter)
+    weights(source / 'candidate-4.safetensors')
+    (source / 'candidate-4.mp4').write_bytes(b'fourth')
+    saved = h3._read(source / 'manifest.json')['config']
+    h3._write(source / 'candidate-4.json', {'seed':3000051,'config':saved})
+    rows=h3._read(source / 'candidates.json')['candidates']
+    h3._write(source / 'candidates.json',{'version':1,'candidates':rows+[dict(id=4,seed=3000051,status='completed',latent_ready=True)]})
+    client=hunter.client()
+    detail=client.get(f"/api/video/h3/jobs/{job['id']}/seed-hunter").json()
+    assert len(detail['seed_hunter']['candidates']) == 4
+    assert detail['refinement_defaults']['seed_hunter']['refinement_method'] == 'pixel'
+    result=client.post(f"/api/video/h3/jobs/{job['id']}/seed-hunter/finalize",json=dict(candidate=4,request_id=str(uuid.uuid4()),config=dict(width=1088,height=1952)))
+    assert result.status_code == 201,result.text
+    final=h3._read(hunter.managers['h3'].directory(result.json()['id'])/'manifest.json')['config']
+    assert final['seed'] == 3000051 and final['frames'] == 311
+    assert final['steps'] == 20 and final['seed_hunter']['refinement_method'] == 'pixel'
+    assert final['seed_hunter']['denoise'] == .2 and final['shift_audio'] == 3
+
+
 def test_preview_detail_and_video_are_owned_and_never_enqueue(hunter):
     job, directory = preview(hunter)
     client = hunter.client()

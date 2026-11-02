@@ -80,9 +80,10 @@ def test_queued_refinement_and_batch_prompt_can_be_edited_and_reopened(tmp_path,
                     await handler.fulfill(json={'jobs': jobs, 'queue': queue})
                 elif path.endswith('/queue/edit'):
                     body = request.post_data_json
-                    assert body['patch'] == {'prompt': 'A green ball in both jobs.'}
-                    assert body['jobs'] == [{'id': 'final-job', 'revision': 1}, {'id': 'preview-job', 'revision': 0}]
+                    patches.append(body)
+                    selected = {row['id'] for row in body['jobs']}
                     for job in jobs:
+                        if job['id'] not in selected: continue
                         job['config'].update(body['patch'])
                         job['prompt'] = job['config']['prompt']
                         job['revision'] += 1
@@ -102,22 +103,24 @@ def test_queued_refinement_and_batch_prompt_can_be_edited_and_reopened(tmp_path,
                 async def open_edit():
                     if layout == 'pipeline':
                         await panel.locator('[data-pipeline-stage=review]').click()
-                    await panel.get_by_role('button', name='Edit queued job', exact=True).first.click()
+                    await panel.get_by_role('button', name='Quick edit', exact=True).first.click()
                 await open_edit()
-                prompt = page.locator('#seed-hunter-prompt')
+                editor = panel.locator('.video-queue-editor')
+                prompt = editor.get_by_role('textbox', name='New Prompt', exact=True)
                 await pw.expect(prompt).to_be_enabled()
                 await pw.expect(prompt).to_be_visible()
                 assert await prompt.input_value() == 'A ball bounces.'
                 await prompt.fill('A purple ball bounces.')
-                await panel.get_by_role('button', name='Save queued job', exact=True).click()
-                await page.get_by_text('Changes saved to the queued job.', exact=False).wait_for()
-                assert json.loads(patches[0]['retain_inputs'])['reference_videos'] == [0]
-                assert json.loads(patches[0]['config'])['prompt'] == 'A purple ball bounces.'
+                await editor.locator('[data-queue-action=apply]').click()
+                await pw.expect(editor).to_be_hidden()
+                assert patches[0]['patch'] == {'prompt': 'A purple ball bounces.'}
+                assert patches[0]['jobs'] == [{'id': 'final-job', 'revision': 0}]
                 await open_edit()
                 await pw.expect(prompt).to_have_value('A purple ball bounces.')
                 await prompt.scroll_into_view_if_needed()
                 await page.screenshot(path=str(tmp_path / f'{layout}-refinement-prompt.png'))
-                await panel.get_by_role('button', name='Cancel edit', exact=True).click()
+                await panel.get_by_role('button', name='Close parameter editor', exact=True).click()
+                await panel.get_by_text('Queue-wide actions', exact=True).click()
                 await panel.get_by_role('button', name='Edit queued parameters', exact=True).click()
                 editor = panel.locator('.video-queue-editor')
                 await editor.get_by_role('checkbox', name='Change Prompt', exact=True).check()

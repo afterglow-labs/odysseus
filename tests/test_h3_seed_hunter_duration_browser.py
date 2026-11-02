@@ -159,7 +159,7 @@ def test_preview_seconds_apply_immediately_and_final_length_is_independent(tmp_p
                 if layout == 'pipeline':
                     await panel.get_by_role('button', name='Focus one stage', exact=True).click()
                     await panel.locator('[data-pipeline-stage=review]').click()
-                await panel.get_by_role('button', name='Use this preview', exact=True).nth(1).click()
+                await panel.get_by_role('button', name='Refine with adjusted settings', exact=True).nth(1).click()
                 final = panel.locator('.h3-seed-hunter-final')
                 await final.wait_for()
                 final_frames = final.locator('#seed-hunter-final-frames')
@@ -183,7 +183,7 @@ def test_preview_seconds_apply_immediately_and_final_length_is_independent(tmp_p
                     detail['final_length'] = {'frames': None, 'requires_manual': True, 'error': 'Source duration unavailable.'}
                     if layout == 'pipeline':
                         await panel.locator('[data-pipeline-stage=review]').click()
-                    await panel.get_by_role('button', name='Use this preview', exact=True).first.click()
+                    await panel.get_by_role('button', name='Refine with adjusted settings', exact=True).first.click()
                     await final.wait_for()
                     assert await final_frames.input_value() == ''
                     assert await final.get_by_role('button', name='Render selected preview', exact=True).is_disabled()

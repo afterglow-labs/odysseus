@@ -18,8 +18,12 @@ import logging
 
 try:
     from scripts.h3_seed_hunter_controls import scout_upscale_enabled, scout_output_size, validate_scout_output
+    from scripts.h3_seed_hunter_presets import candidate_stride, validate_sampling, PIKA_SIGMAS
+    from scripts.h3_director import prompt as conditioning_prompt, pixel_refinement
 except ModuleNotFoundError:
     from h3_seed_hunter_controls import scout_upscale_enabled, scout_output_size, validate_scout_output
+    from h3_seed_hunter_presets import candidate_stride, validate_sampling, PIKA_SIGMAS
+    from h3_director import prompt as conditioning_prompt, pixel_refinement
 
 
 def _worker():
@@ -32,6 +36,7 @@ def _worker():
 
 def validate_inputs(manifest, config, media, uploads):
     options = config["seed_hunter"]
+    validate_sampling(config)
     validate_scout_output(config)
     if scout_upscale_enabled(config):
         upscaler = Path(config.get("latent_upscaler") or "")
@@ -41,7 +46,7 @@ def validate_inputs(manifest, config, media, uploads):
         raise ValueError("Seed Hunter requires a Ref2VA base model")
     if _worker().is_vfx_edit(config):
         raise ValueError("Use the standard H3 VFX workflow for source-aligned VFX adapters")
-    if config["seed"] + 1000 * (options["preview_count"] - 1) > 2**53 - 1:
+    if config["seed"] + candidate_stride(options) * (options["preview_count"] - 1) > 2**53 - 1:
         raise ValueError("Seed Hunter seeds, including candidate offsets, must fit a 53-bit integer")
     mods = uploads.get("reference_mods", [])
     if not isinstance(mods, list) or len(mods) > 8 or any(
@@ -64,7 +69,7 @@ def validate_inputs(manifest, config, media, uploads):
     if options["stage"] == "final":
         value = config.get("latent_upscaler")
         path = Path(value or "")
-        if not path.is_absolute() or not path.is_file() or path.suffix.lower() != ".safetensors":
+        if options.get("refinement_method", "latent") != "pixel" and (not path.is_absolute() or not path.is_file() or path.suffix.lower() != ".safetensors"):
             raise ValueError("Final refinement needs an installed latent upscaler")
         snapshot = manifest.get("seed_hunter_input")
         if not isinstance(snapshot, dict) or not all(isinstance(snapshot.get(key), str) and
@@ -186,7 +191,7 @@ def reencode_refinement_prompt(runtime, config, prepared, clip, positive):
     omitting VAEs avoids encoding all of the reference latents a second time.
     """
     updated, unused_latent = runtime.h3.MiniMaxH3ReferenceToVideo.execute(
-        clip=clip, prompt=config["prompt"], width=config["width"], height=config["height"],
+        clip=clip, prompt=conditioning_prompt(config, prepared), width=config["width"], height=config["height"],
         length=config["frames"], ref_image_size=config["reference_size"],
         **{key: prepared.get(key, {}) for key in ("ref_images", "ref_videos", "ref_video_audios", "ref_audios")})
     del unused_latent
@@ -271,7 +276,13 @@ def sample_candidate(runtime, config, model, positive, latent, progress):
     denoise = options["denoise"] if options["stage"] == "final" else 1.
     if denoise == 0:
         return latent, latent
-    sigmas = BasicScheduler.execute(model, config["scheduler"], config["steps"], denoise)[0]
+    schedule = options.get("sampling_schedule", "standard")
+    if schedule == "standard":
+        sigmas = BasicScheduler.execute(model, config["scheduler"], config["steps"], denoise)[0]
+    else:
+        import torch
+        validate_sampling(config)
+        sigmas = torch.tensor(PIKA_SIGMAS, dtype=torch.float32)
     guider = BasicGuider.execute(model, positive)[0]
     x0 = []
 
@@ -328,7 +339,7 @@ def condition(runtime, config, prepared, clip, vae, audio_vae):
         positive, latent = runtime.condition(config, prepared, clip, vae, audio_vae)
         return positive, latent, positive
     positive, latent = runtime.h3.MiniMaxH3ReferenceToVideo.execute(clip=clip, vae=vae, audio_vae=audio_vae,
-        prompt=config["prompt"], width=config["width"], height=config["height"], length=config["frames"],
+        prompt=conditioning_prompt(config, prepared), width=config["width"], height=config["height"], length=config["frames"],
         ref_image_size=config["reference_size"],
         **{key: prepared.get(key, {}) for key in ("ref_images", "ref_videos", "ref_video_audios", "ref_audios")})
     if prepared.get("refmod_blocks"):
@@ -413,6 +424,7 @@ def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
         manifest, conditioning_config if prompt_changed else initial_config, media, media_loader, folder)
     import torch
     candidates = []
+    original_audio = None
     with torch.inference_mode():
         model, clip, vae, audio_vae = runtime.load(initial_config, progress)
         model = patch_model(runtime, initial_config, model, manifest["runtime_path"])
@@ -426,6 +438,8 @@ def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
                     progress("regenerating_full_length_candidate", step, **extra)
                 regeneration_progress("sampling", 0)
                 generated, latent = sample_candidate(runtime, initial_config, model, positive, latent, regeneration_progress)
+                if options.get("refinement_method") == "pixel":
+                    latent = generated
                 del generated
                 positive = base_positive
                 if not model_settings_match(initial_config, config):
@@ -450,7 +464,10 @@ def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
                 positive = reencode_refinement_prompt(runtime, {**conditioning_config, "prompt": config["prompt"]},
                                                       prepared, clip, positive)
             runtime.release_conditioning()
-            latent = upscale_latent(manifest, config, latent, progress)
+            if options.get("refinement_method") == "pixel":
+                latent, original_audio = pixel_refinement(runtime, config, latent, vae, audio_vae, progress)
+            else:
+                latent = upscale_latent(manifest, config, latent, progress)
             base_positive = positive
         elif scout_resume:
             conditioning, latent = load_snapshot(manifest["seed_hunter_input"], config)
@@ -459,7 +476,7 @@ def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
             progress("encoding_prompt")
             positive, latent, base_positive = condition(runtime, config, prepared, clip, vae, audio_vae)
         for index in range(1, options["preview_count"] + 1):
-            candidate_config = {**config, "seed": config["seed"] + (index - 1) * 1000}
+            candidate_config = {**config, "seed": config["seed"] + (index - 1) * candidate_stride(options)}
             progress.details.update(candidate=index, seed=candidate_config["seed"])
             progress("sampling", 0)
             row = {"id": index, "seed": candidate_config["seed"], "status": "running", "latent_ready": False}
@@ -510,12 +527,14 @@ def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
                     artifact_config = refinement
                     row.update(width=width, height=height, latent_upscaled=True)
                 latent_name = f"candidate-{index}.safetensors"
-                save_snapshot(folder / latent_name, latent=denoised, positive=base_positive,
+                saved_latent = output if options.get("preset") == "director" else denoised
+                save_snapshot(folder / latent_name, latent=saved_latent, positive=base_positive,
                               config=artifact_config, seed=candidate_config["seed"])
+                del saved_latent
                 row.update(latent=latent_name, metadata=f"candidate-{index}.json", latent_ready=True)
                 # Preview uses sampler output, but single pass and refinement
                 # decode x0, as the selected-latent branch in the source graph.
-                decode_samples = output if options["stage"] in {"preview", "dialogue"} else denoised
+                decode_samples = output if options["stage"] in {"preview", "dialogue"} or options.get("preset") == "director" else denoised
                 if options["stage"] == "dialogue":
                     progress("decoding_audio")
                     audio = runtime.audio.VAEDecodeAudio.execute(audio_vae, decode_samples)[0]
@@ -523,7 +542,10 @@ def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
                     # FLAC is the primary downloadable candidate artifact.
                     frames = torch.zeros((config["frames"], 64, 64, 3), dtype=torch.float32)
                 else:
-                    frames, audio = runtime.decode(decode_samples, vae, audio_vae, progress)
+                    if original_audio is not None:
+                        frames, audio = runtime.decode(decode_samples, vae, audio_vae, progress, source_audio=original_audio)
+                    else:
+                        frames, audio = runtime.decode(decode_samples, vae, audio_vae, progress)
                 if (scout_upscale_enabled(config) or shared_refinement) and tuple(frames.shape[1:3]) != (height, width):
                     raise RuntimeError("Seed Scout decoded dimensions do not match the requested latent upscale")
                 frames = frames[:config["frames"]]

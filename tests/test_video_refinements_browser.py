@@ -47,9 +47,10 @@ def test_refinements_stay_below_their_preview_without_replacing_playback(tmp_pat
                 elif path.startswith('/static/'):
                     file = ROOT / path.lstrip('/')
                     await handler.fulfill(body=file.read_bytes(), content_type='text/javascript' if file.suffix == '.js' else mimetypes.guess_type(file.name)[0])
-                elif req.method == 'DELETE':
+                elif req.method == 'POST' and path.endswith('/actions'):
                     writes.append(path)
-                    assert path == '/api/video/h3/jobs/final-three/record'
+                    assert path == '/api/video/h3/jobs/final-three/actions'
+                    assert req.post_data_json['action'] == 'delete'
                     refinements[:] = [r for r in refinements if r['id'] != 'final-three']
                     await handler.fulfill(json={'deleted': True})
                 elif path.endswith('/inventory'):
@@ -90,13 +91,13 @@ def test_refinements_stay_below_their_preview_without_replacing_playback(tmp_pat
                 await page.get_by_role('button', name='Refresh jobs', exact=True).click()
                 await third.get_by_text('Synthetic render failure', exact=True).wait_for()
                 assert await video.evaluate('(node)=>node===window.originalPlayer && !node.paused')
-                assert await parent.get_by_role('button', name='Use this preview', exact=True).count() == 3
+                assert await parent.get_by_role('button', name='Refine with adjusted settings', exact=True).count() == 3
                 await third.get_by_role('button', name='Delete refinement', exact=True).click()
                 await third.get_by_role('button', name='Delete permanently', exact=True).click()
                 await page.wait_for_function("()=>document.querySelectorAll('.h3-video-refinement').length===1")
                 assert await parent.locator('.h3-seed-hunter-candidate').count() == 3
                 assert await video.evaluate('(node)=>node===window.originalPlayer && !node.paused')
-                assert writes == ['/api/video/h3/jobs/final-three/record']
+                assert writes == ['/api/video/h3/jobs/final-three/actions']
                 assert not errors, errors
             finally:
                 await browser.close()

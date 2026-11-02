@@ -1,11 +1,18 @@
 """Data-only settings for the native port of Seed Hunter v2.5.1."""
 import math
 
+try:
+    from scripts.h3_seed_hunter_presets import PRESET_IDS, SAMPLING_SCHEDULES, candidate_limit
+except ModuleNotFoundError:
+    from h3_seed_hunter_presets import PRESET_IDS, SAMPLING_SCHEDULES, candidate_limit
+
 RECIPE = "seed_hunter"
-SAMPLERS = ("euler", "res_multistep", "er_sde")
+SAMPLERS = ("euler", "res_multistep", "er_sde", "lcm")
 SCHEDULERS = ("simple", "normal", "beta", "linear_quadratic")
 DEFAULTS = {
     "stage": "preview", "preview_count": 3, "denoise": .4, "final_frames": None,
+    "preset": "custom", "sampling_schedule": "standard", "refinement_method": "latent",
+    "director_shots": "", "director_soundscape": "", "director_music": "",
     "shift_enabled": False, "first_frame_guide": False, "last_frame_guide": False,
     "force_audio": False, "continuation_overlap": 22, "output_fps": 24,
     "attention_backend": "comfy kitchen attention", "sparse_method": "none",
@@ -51,6 +58,8 @@ def validate_options(raw):
     # options strictly. Only opted-in submissions receive the new settings.
     result = {**DEFAULTS, **(SCOUT_UPSCALE_DEFAULTS if raw.keys() & SCOUT_UPSCALE_DEFAULTS.keys() else {}), **raw}
     enums = {"stage": ("preview", "final", "single", "continuation", "dialogue", "scout"),
+             "preset": PRESET_IDS, "sampling_schedule": SAMPLING_SCHEDULES,
+             "refinement_method": ("latent", "pixel"),
              "scout_mode": ("interactive", "scout", "final"),
              "scout_preview_mode": ("vae", "latent2rgb"),
              "attention_backend": ("comfy kitchen attention", "pytorch"),
@@ -59,6 +68,15 @@ def validate_options(raw):
     for key, choices in enums.items():
         if not isinstance(result[key], str) or result[key] not in choices:
             raise ValueError(f"Unsupported Seed Hunter {key}")
+    for key in ("director_shots", "director_soundscape", "director_music"):
+        if not isinstance(result[key], str) or len(result[key]) > 16000 or "\0" in result[key]:
+            raise ValueError(f"{key} must be text of at most 16000 characters")
+    if result["preset"] == "director":
+        try:
+            from scripts.h3_director import shots
+        except ModuleNotFoundError:
+            from h3_director import shots
+        shots(result["director_shots"])
     boolean_keys = ["shift_enabled", "first_frame_guide", "last_frame_guide", "force_audio",
                     "upscaler_chunking", "upscaler_force_unload"]
     if "scout_upscale" in result:
@@ -66,7 +84,7 @@ def validate_options(raw):
     for key in boolean_keys:
         if type(result[key]) is not bool:
             raise ValueError(f"{key} must be true or false")
-    ranges = {"preview_count": (1, 3, True), "denoise": (0., 1., False), "final_frames": (73, 362, True),
+    ranges = {"preview_count": (1, candidate_limit(result), True), "denoise": (0., 1., False), "final_frames": (73, 362, True),
               "scout_count": (1, 32, True), "scout_step": (1, 100, True), "scout_timeout": (0, 86400, True),
               "sparse_keep_percent": (1., 100., False), "sparse_start": (0., 1., False),
               "sparse_end": (0., 1., False), "sparse_min_tokens": (0, 1000000, True),

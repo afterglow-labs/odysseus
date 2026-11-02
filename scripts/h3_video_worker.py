@@ -236,7 +236,7 @@ def validate_job(manifest):
     config["seed"] = int(seed)
     for name, default, low, high in (("shift_video", 12, 0.01, 100), ("shift_audio", 3, 0.01, 100)):
         config[name] = _number(config, name, default, low, high)
-    for name, default, choices in (("sampler", "euler", set(SAMPLERS) if hunter else {"euler", "res_multistep"}),
+    for name, default, choices in (("sampler", "euler", set(SAMPLERS) if hunter else {"euler", "res_multistep", "er_sde"}),
                                    ("scheduler", "simple", set(SCHEDULERS) if hunter else {"simple", "normal"}),
                                    ("reference_size", "match", {"match", "max"})):
         config.setdefault(name, default)
@@ -810,7 +810,14 @@ class H3Runtime:
         self._conditioning_patcher = clip.patcher
         progress("loading_video_vae")
         video_sd, video_metadata = self.utils.load_torch_file(config["video_vae"], safe_load=True, return_metadata=True)
-        vae = self.sd.VAE(sd=video_sd, metadata=video_metadata, device=vae_device)
+        if Path(config["video_vae"]).name == "minimax_h3_lightvae_lite_vae_int8_convrot.safetensors":
+            try:
+                from scripts.h3_vae_compat import load_light_vae
+            except ModuleNotFoundError:
+                from h3_vae_compat import load_light_vae
+            vae = load_light_vae(self.sd.VAE, video_sd, video_metadata, vae_device)
+        else:
+            vae = self.sd.VAE(sd=video_sd, metadata=video_metadata, device=vae_device)
         vae.throw_exception_if_invalid()
         progress("loading_audio_vae")
         audio_sd, audio_metadata = self.utils.load_torch_file(config["audio_vae"], safe_load=True, return_metadata=True)

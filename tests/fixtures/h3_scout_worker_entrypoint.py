@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 project, output = map(Path, sys.argv[1:3])
 mode = sys.argv[3] if len(sys.argv) > 3 else 'interactive'
+interactive = mode in {'interactive', 'automatic'}  # Stale auto_refine never changes the explicit mode.
 sys.path.insert(0, str(project / 'scripts'))
 assert importlib.util.find_spec('scripts') is None, 'Probe must match script launch without the project package path'
 import h3_video_worker as worker
@@ -86,7 +87,7 @@ class Runtime:
     def release_conditioning(self):
         pass
     def decode(self, samples, *_):
-        assert samples['samples'].item() == (1043 if mode == 'interactive' else 242)
+        assert samples['samples'].item() == (1043 if interactive else 242)
         return torch.zeros((73, 2, 2, 3)), {}
 
 hunter.patch_model = lambda _runtime, _config, model, _path: model
@@ -114,25 +115,25 @@ status = worker.main(['--job', str(manifest_path)])
 if status:
     raise SystemExit(status)
 previews = [['scout', seed, [20., 19., 18., 17.]] for seed in (42, 43, 44)]
-if mode == 'interactive':
+if interactive:
     assert calls == previews + [['continue', 43, list(range(17, -1, -1)), [43.]]]
     assert [total for _, total in callbacks] == [3] * 9 + [17] * 17
-elif mode in {'scout', 'automatic'}:
+elif mode == 'scout':
     assert calls == previews
     assert [total for _, total in callbacks] == [3] * 9
 else:
     assert calls == [['full', 42, list(range(20, -1, -1))]]
     assert [total for _, total in callbacks] == [20] * 20
 continuation = [row for row in progress_updates if row['phase'] == 'continuing_selected_seed']
-assert bool(continuation) == (mode == 'interactive')
+assert bool(continuation) == interactive
 if continuation:
     assert continuation[0]['step'] == 0 and continuation[-1]['step'] == 17
     assert [row['step'] for row in continuation if row['step']] == list(range(1, 18))
     assert [row['schedule_step'] for row in continuation if row['step']] == list(range(4, 21))
 assert all(row['total_steps'] == 17 and row['seed'] == 43 for row in continuation)
 assert all(row['schedule_total_steps'] == 20 for row in continuation)
-chosen = 43 if mode == 'interactive' else 42
-completed_steps = 3 if mode in {'scout', 'automatic'} else 20
+chosen = 43 if interactive else 42
+completed_steps = 3 if mode == 'scout' else 20
 saved = json.loads((output / 'candidate-1.json').read_text())
 assert saved['seed'] == chosen
 assert json.loads((output / 'scout.json').read_text())['selected_seed'] == chosen

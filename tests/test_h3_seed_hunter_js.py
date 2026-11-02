@@ -54,6 +54,20 @@ assert.equal(seedHunterConfig({mode:'ref2va'},{stage:'scout',scout_count:32,prev
 """)
 
 
+def test_preset_application_preserves_draft_inputs_and_limits_director_candidates():
+    run_js("""
+const original={prompt:'Keep this',frames:107,seed:99,gpu:'gpu',loras:[],reference_video_ranges:[{start_seconds:4,duration_seconds:6}],seed_hunter:{stage:'preview',final_frames:311,preview_count:3}};
+const snapshot=JSON.stringify(original);
+const director=seedHunterApplyPreset(original,{config:{steps:16,sampler:'euler',loras:[],seed_hunter:{preset:'director',preview_count:4,refinement_method:'pixel'}}});
+assert.equal(director.seed_hunter.preview_count,4);assert.equal(director.frames,107);assert.equal(director.seed_hunter.final_frames,311);
+assert.equal(director.prompt,original.prompt);assert.deepEqual(director.reference_video_ranges,original.reference_video_ranges);
+assert.equal(JSON.stringify(original),snapshot);
+const pika=seedHunterApplyPreset(director,{config:{steps:6,sampler:'lcm',seed_hunter:{preset:'pika',sampling_schedule:'pika',refinement_method:'latent'}}});
+assert.equal(pika.seed_hunter.preview_count,3);assert.equal(pika.sampler,'lcm');
+const custom=seedHunterApplyPreset(pika,null);assert.equal(custom.seed_hunter.sampling_schedule,'standard');
+""")
+
+
 def test_stage_count_and_lora_snapshots_do_not_mutate_ordinary_draft():
     run_js("""
 const source={mode:'ref2va',width:480,height:864,frames:73,steps:6,seed:42,prompt:'Keep this visible'};
@@ -77,6 +91,10 @@ assert.equal(seedHunterRefinementDefaults({seed_hunter:{denoise:0}},fallback).de
 assert.equal(seedHunterRefinementDefaults({},fallback).denoise,.4);
 assert.equal(seedHunterRefinementDefaults({},{}).denoise,.4);
 assert.equal(source.seed_hunter.denoise,.65);assert.equal(fallback.denoise,.4);
+const director = {steps:20,seed_hunter:{preset:'director',refinement_method:'pixel',shift_enabled:true}};
+const edited = seedHunterRefinementDefaults({},director,{seed_hunter:{output_fps:48}});
+assert.equal(edited.seed_hunter.refinement_method,'pixel');assert.equal(edited.seed_hunter.shift_enabled,true);
+assert.equal(edited.seed_hunter.output_fps,48);assert.equal(director.seed_hunter.output_fps,undefined);
 """)
 
 

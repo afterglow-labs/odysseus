@@ -50,6 +50,7 @@ export function h3LoraStack(config = {}) {
 export function h3LoraIssue(stack, components = [], mode = 'ref2va', max = 8) {
   if (stack.length > max) return `Choose at most ${max} LoRAs.`;
   const ids = new Set(), variant = mode === 'ref2va' ? 'ref2va' : 'fl2va';
+  const characterSwap = stack.some(row=>Number(row.strength)!==0 && components.some(c=>(c.id===row.id || c.aliases?.includes(row.id)) && c.name==='h3_character_swap_v1.5.safetensors'));
   for (const { id, strength } of stack) {
     const item = components.find(component => component.role === 'lora' && (component.id === id || component.aliases?.includes(id)));
     if (!item) return 'A selected LoRA is unavailable. Mount its drive and refresh components, or remove it.';
@@ -60,7 +61,8 @@ export function h3LoraIssue(stack, components = [], mode = 'ref2va', max = 8) {
       return control.kind === 'age' ? 'Age must be between −5 (youngest) and +5 (oldest). Set 0 for neutral.'
         : control.kind === 'custom' ? `${control.label} must be between ${control.min} and ${control.max}.` : 'Each LoRA strength must be between −4 and 4.';
     }
-    if (Number(strength) !== 0 && item.variant && item.variant !== 'shared' && item.variant !== variant) return `${item.name} requires ${item.variant.toUpperCase()} mode. Choose a compatible LoRA, set its strength to 0, or remove it.`;
+    const characterPair = variant==='ref2va' && characterSwap && item.name==='minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors';
+    if (Number(strength) !== 0 && item.variant && item.variant !== 'shared' && item.variant !== variant && !characterPair) return `${item.name} requires ${item.variant.toUpperCase()} mode. Choose a compatible LoRA, set its strength to 0, or remove it.`;
   }
   return '';
 }

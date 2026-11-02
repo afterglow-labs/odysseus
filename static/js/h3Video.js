@@ -425,7 +425,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic' } = {}, 
   const advanced = el('details', 'h3-video-advanced');
   advanced.appendChild(el('summary', '', 'Advanced'));
   const advancedGrid = el('div', 'h3-video-grid h3-video-numbers'); advanced.appendChild(advancedGrid); form.appendChild(advanced);
-  select(advancedGrid, 'sampler', 'Sampler', [['euler', 'Euler'], ['res_multistep', 'RES multistep']]);
+  select(advancedGrid, 'sampler', 'Sampler', [['euler', 'Euler'], ['res_multistep', 'RES multistep'], ['er_sde','ER-SDE']]);
   select(advancedGrid, 'scheduler', 'Scheduler', [['simple', 'Simple'], ['normal', 'Normal']]);
   number(advancedGrid, 'shift_video', 'Video shift', 12, 0.01, 100, 0.01);
   number(advancedGrid, 'shift_audio', 'Audio shift', 3, 0.01, 100, 0.01);

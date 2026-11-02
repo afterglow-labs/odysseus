@@ -93,7 +93,7 @@ export function showH3LoraLibrary({ components = [], selectedId = '', onChange =
   const grid = make('div', 'h3-video-grid h3-video-numbers'); recommended.append(grid);
   const specs = {
     steps: ['Steps', { type: 'number', min: 1, max: 100, step: 1 }],
-    sampler: ['Sampler', { options: [['', 'Unspecified'], ['euler', 'Euler'], ['res_multistep', 'Multistep']] }],
+    sampler: ['Sampler', { options: [['', 'Unspecified'], ['euler', 'Euler'], ['res_multistep', 'Multistep'], ['er_sde','ER-SDE']] }],
     scheduler: ['Scheduler', { options: [['', 'Unspecified'], ['simple', 'Simple'], ['normal', 'Normal']] }],
     shift_video: ['Video shift', { type: 'number', min: 0.01, max: 100, step: 'any' }],
     shift_audio: ['Audio shift', { type: 'number', min: 0.01, max: 100, step: 'any' }],

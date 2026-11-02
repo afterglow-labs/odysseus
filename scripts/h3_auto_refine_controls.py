@@ -7,6 +7,7 @@ REFINEMENT_FIELDS = {"prompt", "width", "height", "frames", "steps", "sampler", 
                      "gpu", "vae_gpu", "loras", "lora", "lora_scale", "latent_upscaler",
                      "denoise", "seed_hunter", "shift_video", "shift_audio"}
 REFINEMENT_OPTIONS = {"denoise", "output_fps", "final_frames", "upscaler_chunking", "upscaler_force_unload", "shift_enabled",
+                     "preset", "sampling_schedule", "refinement_method",
                      "attention_backend", "sparse_method", "sparse_keep_percent", "sparse_start", "sparse_end",
                      "sparse_min_tokens", "sparse_extra_tokens", "sparse_sink_conditioning", "ff_chunk_size",
                      "ff_chunk_threshold", "low_vram_chunks"}
