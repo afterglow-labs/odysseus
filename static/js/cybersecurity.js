@@ -349,11 +349,11 @@ export function initCybersecurityMode() {
     const wrap = element('div');
     wrap.append(taskPicker(refresh));
     const data = await api(`/tasks/${selectedTask}/activity?limit=100`);
-    const listPanel = panel('Recent activity');
+    const listPanel = panel('Current main-session activity');
     const list = element('div', 'cyber-list');
     const items = Array.isArray(data.items) ? data.items : [];
     if (!items.length) list.append(empty('No activity recorded for this task.'));
-    for (const item of items) {
+    for (const item of [...items].reverse()) {
       const title = item.summary || item.tool || item.kind || `Event #${item.seq}`;
       list.append(row(title, `${fmtDate(item.ts)} · ${item.worker || item.kind || ''}`, item.is_error ? 'error' : item.kind));
     }

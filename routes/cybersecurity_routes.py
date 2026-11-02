@@ -81,8 +81,12 @@ async def scope(task_id: int = Path(gt=0)):
 
 
 @router.get("/tasks/{task_id}/activity")
-async def activity(task_id: int = Path(gt=0), since: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=300)):
-    return await _forward("/api/exploration/activity", params={"task": task_id, "since": since, "limit": limit})
+async def activity(task_id: int = Path(gt=0), before: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=300)):
+    # The incremental /activity route starts with the *oldest* event. History
+    # returns the latest page of the current main session instead.
+    return await _forward("/api/exploration/activity/history", params={
+        "task": task_id, "session": "main", "before": before, "limit": limit,
+    })
 
 
 @router.get("/findings")

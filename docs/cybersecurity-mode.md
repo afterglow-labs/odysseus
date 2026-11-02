@@ -40,7 +40,7 @@ HTTPS instead.
   plain text so untrusted finding content cannot execute in Odysseus.
 - Scope: read declared task scope and rough coverage. **This scope is a
   coverage and asset filter, not a network boundary.**
-- Activity: inspect recent task events.
+- Activity: inspect recent events from the task's current main session.
 - Intercept: inspect pending tool requests and directly allow or deny them.
 - Traffic: inspect the recent captured exchange list and capture status.
 

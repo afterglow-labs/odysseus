@@ -120,3 +120,5 @@ def test_gateway_requires_admin_and_write_header(monkeypatch):
         assert calls == [("/api/tasks/12/control", {"method": "POST", "body": {"action": "pause"}, "params": None, "auth": True})]
         assert browser.post("/api/cybersecurity/tasks/-1/control", headers={"X-Test-User": "admin", "X-Requested-With": "XMLHttpRequest"}, json={"action": "pause"}).status_code == 422
         assert browser.post(path, headers={"X-Test-User": "admin", "X-Requested-With": "XMLHttpRequest"}, json={"action": "delete"}).status_code == 422
+        assert browser.get("/api/cybersecurity/tasks/12/activity", headers={"X-Test-User": "admin"}).status_code == 200
+        assert calls[-1] == ("/api/exploration/activity/history", {"method": "GET", "body": None, "params": {"task": 12, "session": "main", "before": 0, "limit": 100}, "auth": True})
