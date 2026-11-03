@@ -88,13 +88,20 @@ container itself. Keep the Ollama listener private.
 - Reports: view and download Afterglow's generated Markdown task report.
 - Models: inspect the active model, configured profiles, model failover state,
   and ChatGPT account status; discover installed models from fixed local Ollama
-  endpoints, create a local profile, and activate an existing profile. Discovery
-  does not download a model.
+  endpoints, create and test a local profile, and activate an existing profile.
+  Discovery does not download a model. On the Afterglow machine, connect or
+  disconnect ChatGPT accounts, list their plan models, create plan profiles,
+  and recheck saved profiles.
 
-ChatGPT OAuth connection, cloud model profile creation, report editing, global
+The ChatGPT connection uses Afterglow's loopback OAuth callback, so open the
+Odysseus page in a browser on the same machine as both servers. A remote browser
+can inspect account status but cannot start or revoke a connection through this
+workbench. Afterglow's local-only LLM policy blocks ChatGPT inference and model
+catalog access while it is enabled; the downloaded Ollama model remains the
+configured local option. Other cloud model profiles, report editing, global
 interception policy, advanced asset and task administration, and other Afterglow
-settings still use Afterglow's own interface. The Odysseus switch does not yet
-replace the full Afterglow UI. The iOS client is outside this integration.
+settings use Afterglow's own interface. The iOS client is outside this
+integration.
 
 The [desktop](screenshots/cybersecurity-mode-desktop.png) and
 [mobile](screenshots/cybersecurity-mode-mobile.png) previews show a disposable

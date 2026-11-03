@@ -5,6 +5,7 @@
 const MODE_KEY = 'odysseus-product-mode';
 const TASK_KEY = 'odysseus-cyber-task';
 const TABS = new Set(['overview', 'tasks', 'chat', 'findings', 'scope', 'assets', 'activity', 'intercept', 'traffic', 'reports', 'models']);
+const LOCAL_OLLAMA_ENDPOINTS = new Set(['http://127.0.0.1:11434', 'http://host.docker.internal:11434', 'http://ollama:11434']);
 const byId = (id) => document.getElementById(id);
 
 function element(tag, className = '', text = '') {
@@ -117,6 +118,10 @@ export function initCybersecurityMode() {
   let findingFilters = { severity: '', status: '', q: '' };
   let chatDraft = '';
   let chatPollUntil = 0;
+  let chatgptAccount = '';
+  let chatgptModel = '';
+  let chatgptName = '';
+  const chatgptCatalog = new Map();
   let assetType = 'root_domain';
   let assetOffset = 0;
   try { selectedTask = localStorage.getItem(TASK_KEY) || ''; } catch (_) {}
@@ -751,6 +756,7 @@ export function initCybersecurityMode() {
   }
 
   async function renderModels() {
+    const localBrowser = ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname);
     const [engine, profileData, chatgptResult, poolResult] = await Promise.all([
       api('/models'), api('/models/profiles'),
       api('/models/chatgpt').then((value) => ({ value }), (error) => ({ error })),
@@ -774,6 +780,20 @@ export function initCybersecurityMode() {
         profile.is_default ? 'active' : 'available');
       if (!profile.is_default) entry.append(button('Make active', () => act(
         () => api('/models/active', { method: 'POST', body: { id: profile.id } }), 'Model profile activated')));
+      if (profile.format === 'ollama' && LOCAL_OLLAMA_ENDPOINTS.has(profile.base_url)) entry.append(button('Test local model', async () => {
+        try {
+          const result = await api(`/models/local/profiles/${profile.id}/test`, { method: 'POST' });
+          showNotice(result.ok ? `${profile.model} ready · ${result.gpu_offload_percent ?? 'unknown'}% GPU offload` :
+            (result.error || 'Local model test failed'), !result.ok);
+        } catch (error) { showNotice(error.message, true); }
+      }));
+      if (localBrowser && profile.auth_mode === 'chatgpt_plan') entry.append(button('Recheck ChatGPT', async () => {
+        try {
+          const result = await api(`/models/chatgpt/profiles/${profile.id}/recheck`, { method: 'POST' });
+          await refresh();
+          showNotice(result.ok ? (result.reply || `${profile.model} ready`) : (result.error || 'ChatGPT recheck failed'), !result.ok);
+        } catch (error) { showNotice(error.message, true); }
+      }));
       profileList.append(entry);
     }
     profilesPanel.append(profileList);
@@ -833,13 +853,101 @@ export function initCybersecurityMode() {
     if (chatgptResult.error) chatgptPanel.append(empty(`Status unavailable: ${chatgptResult.error.message}`));
     else {
       const accounts = Array.isArray(chatgptResult.value?.accounts) ? chatgptResult.value.accounts : [];
+      chatgptPanel.append(element('p', 'cyber-detail',
+        'ChatGPT plan connection uses Afterglow’s local OAuth callback. Open this page on the Afterglow machine to connect an account.'));
+      if (localBrowser) chatgptPanel.append(button('Connect ChatGPT', async () => {
+        const popup = window.open('about:blank', '_blank');
+        if (popup) popup.opener = null;
+        try {
+          const result = await api('/models/chatgpt/connect', { method: 'POST', body: { account_id: '' } });
+          const auth = new URL(result.url);
+          if (auth.origin !== 'https://auth.openai.com' || auth.pathname !== '/api/accounts/authorize')
+            throw new Error('Invalid ChatGPT authorization URL');
+          if (popup) popup.location.replace(result.url);
+          else window.location.assign(result.url);
+          await refresh();
+          showNotice('Complete ChatGPT sign-in in the new window');
+        } catch (error) { popup?.close(); showNotice(error.message, true); }
+      }));
       if (!accounts.length) chatgptPanel.append(empty('No ChatGPT account connected on Afterglow.'));
       for (const account of accounts) {
-        chatgptPanel.append(row(account.email || account.id || 'ChatGPT account',
+        const entry = row(account.email || account.id || 'ChatGPT account',
           account.plan_block_reason || (account.plan_enabled ? 'Plan enabled' : 'Plan unavailable'),
-          account.connected ? 'connected' : 'disconnected'));
+          account.connected ? 'connected' : 'disconnected');
+        if (localBrowser) entry.append(button('Disconnect', () => act(
+          () => api('/models/chatgpt/disconnect', { method: 'POST', body: { account_id: account.id } }),
+          'ChatGPT account disconnected')));
+        chatgptPanel.append(entry);
       }
       if (chatgptResult.value?.error) chatgptPanel.append(element('p', 'cyber-detail', chatgptResult.value.error));
+      if (chatgptResult.value?.pending) {
+        chatgptPanel.append(element('p', 'cyber-detail', 'Waiting for ChatGPT sign-in…'));
+        const expectedGeneration = generation;
+        setTimeout(() => {
+          if (mode === 'cybersecurity' && tab === 'models' && generation === expectedGeneration) refresh();
+        }, 3000);
+      }
+      const connected = accounts.filter((account) => account.connected && account.plan_enabled);
+      if (connected.length) {
+        const form = element('form', 'cyber-stack');
+        const account = selectOptions('ChatGPT account', connected.map((item) => [item.id, item.email || item.id]));
+        if (connected.some((item) => item.id === chatgptAccount)) account.value = chatgptAccount;
+        else chatgptAccount = account.value;
+        const model = selectOptions('ChatGPT model', [['', 'Choose a model']]);
+        model.disabled = true;
+        const name = input('ChatGPT profile name', true); name.maxLength = 160;
+        name.value = chatgptName;
+        name.addEventListener('input', () => { chatgptName = name.value; });
+        const save = element('button', 'primary', 'Create ChatGPT profile'); save.type = 'submit';
+        save.disabled = true;
+        async function loadCatalog(force = false) {
+          chatgptAccount = account.value;
+          const accountID = account.value;
+          model.disabled = true;
+          save.disabled = true;
+          model.replaceChildren(element('option', '', 'Loading models…'));
+          try {
+            if (force) chatgptCatalog.delete(accountID);
+            let items = chatgptCatalog.get(accountID);
+            if (!items) {
+              const data = await api(`/models/chatgpt/catalog?account_id=${encodeURIComponent(accountID)}`);
+              items = Array.isArray(data.models) ? data.models : [];
+              chatgptCatalog.set(accountID, items);
+            }
+            if (account.value !== accountID) return;
+            model.replaceChildren();
+            for (const item of items) {
+              const option = element('option', '', item.name || item.id);
+              option.value = item.id; model.append(option);
+            }
+            if (items.some((item) => item.id === chatgptModel)) model.value = chatgptModel;
+            else chatgptModel = model.value;
+            if (!items.length) model.append(element('option', '', 'No models available'));
+            model.disabled = !items.length;
+            save.disabled = !items.length;
+          } catch (error) {
+            model.replaceChildren(element('option', '', 'Models unavailable'));
+            if (account.value === accountID) showNotice(error.message, true);
+          }
+        }
+        account.addEventListener('change', () => { chatgptModel = ''; loadCatalog(); });
+        model.addEventListener('change', () => { chatgptModel = model.value; });
+        form.append(account, model, name, button('Load ChatGPT models', () => loadCatalog(true)), save);
+        form.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          save.disabled = true;
+          try {
+            await api('/models/chatgpt/profiles', { method: 'POST', body: {
+              account_id: account.value, model: model.value, name: name.value.trim(),
+            } });
+            await refresh();
+            showNotice('ChatGPT profile created');
+          } catch (error) { showNotice(error.message, true); }
+          finally { save.disabled = false; }
+        });
+        chatgptPanel.append(form);
+        if (chatgptCatalog.has(account.value)) loadCatalog();
+      }
     }
     wrap.append(chatgptPanel);
     return wrap;

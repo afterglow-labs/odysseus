@@ -85,6 +85,18 @@ async def test_oversized_response_is_rejected():
 
 
 @pytest.mark.asyncio
+async def test_afterglow_local_only_rejection_is_preserved():
+    client = AfterglowClient(
+        origin="http://127.0.0.1:8787", token="token",
+        transport=httpx.MockTransport(lambda request: httpx.Response(403, json={"error": "Local browser required"})),
+    )
+    with pytest.raises(AfterglowError) as rejected:
+        await client.request("/api/chatgpt/login", method="POST", body={"account_id": ""})
+    assert rejected.value.status_code == 403
+    assert rejected.value.detail == "Local browser required"
+
+
+@pytest.mark.asyncio
 async def test_markdown_report_stays_bounded_plain_text():
     client = AfterglowClient(
         origin="http://127.0.0.1:8787", token="token",
@@ -220,3 +232,92 @@ def test_operations_use_typed_gateway_and_omit_asset_credentials(monkeypatch):
             "streaming": True, "context_window_k": 32, "max_tokens": 4096,
             "keep_alive": "30m", "llm_max_concurrent": 1,
         }
+
+
+def test_local_model_and_chatgpt_management_boundaries(monkeypatch):
+    calls = []
+    login_url = "https://auth.openai.com/api/accounts/authorize?state=opaque"
+
+    class FakeAfterglow:
+        origin = "http://127.0.0.1:8787"
+
+        async def request(self, path, **kwargs):
+            calls.append((path, kwargs))
+            if path == "/api/llm/profiles" and kwargs["method"] == "GET":
+                return {"profiles": [
+                    {"id": "1", "format": "ollama", "model": "qwen3:32b", "base_url": "http://127.0.0.1:11434"},
+                    {"id": "2", "format": "ollama", "model": "other", "base_url": "http://untrusted.example"},
+                ]}
+            if path == "/api/llm/test":
+                return {"ok": True, "gpu_offload_percent": 100}
+            if path == "/api/chatgpt/status":
+                return {"accounts": [{"id": "account-1", "connected": True, "plan_enabled": True}]}
+            if path == "/api/chatgpt/login":
+                return {"url": login_url, "expires_at": "2026-11-02T20:00:00Z"}
+            if path == "/api/chatgpt/models":
+                return {"models": [{"id": "test-model", "name": "Test model"}]}
+            return {"ok": True}
+
+    class FakeAuth:
+        is_configured = True
+
+        def is_admin(self, user):
+            return user == "admin"
+
+    app = FastAPI()
+    app.state.auth_manager = FakeAuth()
+
+    @app.middleware("http")
+    async def identity(request: Request, call_next):
+        request.state.current_user = request.headers.get("X-Test-User")
+        return await call_next(request)
+
+    app.include_router(cyber_routes.router)
+    monkeypatch.setattr(middleware, "auth_disabled", lambda: False)
+    monkeypatch.setattr(cyber_routes, "get_afterglow_client", lambda: FakeAfterglow())
+    headers = {"X-Test-User": "admin", "X-Requested-With": "XMLHttpRequest"}
+    with TestClient(app, base_url="http://127.0.0.1:7000") as browser:
+        local = browser.post("/api/cybersecurity/models/local/profiles/1/test", headers=headers)
+        assert local.status_code == 200
+        assert local.json()["gpu_offload_percent"] == 100
+        assert calls[-1] == ("/api/llm/test", {"method": "POST", "body": {
+            "profile_id": 1, "provider": "ollama", "model": "qwen3:32b",
+            "base_url": "http://127.0.0.1:11434", "streaming": True,
+            "context_window_k": 32,
+        }, "params": None, "auth": True, "timeout": 120})
+        assert browser.post("/api/cybersecurity/models/local/profiles/2/test", headers=headers).status_code == 404
+        assert browser.post("/api/cybersecurity/models/local/profiles/3/test", headers=headers).status_code == 404
+
+        connect = browser.post("/api/cybersecurity/models/chatgpt/connect", headers=headers, json={})
+        assert connect.status_code == 200
+        assert connect.json()["url"] == login_url
+        assert connect.headers["Cache-Control"] == "no-store"
+        assert browser.post("/api/cybersecurity/models/chatgpt/connect", headers={"X-Test-User": "admin"}, json={}).status_code == 403
+        assert browser.get("/api/cybersecurity/models/chatgpt", headers=headers).headers["Cache-Control"] == "no-store"
+        assert browser.get("/api/cybersecurity/models/chatgpt/catalog?account_id=account-1", headers=headers).json()["models"][0]["id"] == "test-model"
+        assert browser.post("/api/cybersecurity/models/chatgpt/profiles", headers=headers, json={
+            "account_id": "unknown", "model": "test-model", "name": "Bad",
+        }).status_code == 400
+        assert browser.post("/api/cybersecurity/models/chatgpt/profiles", headers=headers, json={
+            "account_id": "account-1", "model": "unavailable-model", "name": "Bad",
+        }).status_code == 400
+        saved = browser.post("/api/cybersecurity/models/chatgpt/profiles", headers=headers, json={
+            "account_id": " account-1 ", "model": " test-model ", "name": " Plan ", "api_key": "ignored",
+        })
+        assert saved.status_code == 200
+        assert calls[-1][1]["body"] == {
+            "name": "Plan", "format": "openai-responses", "auth_mode": "chatgpt_plan",
+            "chatgpt_account_id": "account-1", "model": "test-model",
+            "pool_exclude": True, "streaming": True,
+        }
+        assert browser.post("/api/cybersecurity/models/chatgpt/profiles/1/recheck", headers=headers).status_code == 200
+        assert calls[-1][1]["timeout"] == 120
+        assert browser.post("/api/cybersecurity/models/chatgpt/disconnect", headers=headers, json={"account_id": "account-1"}).status_code == 200
+        login_url = "https://evil.example/api/accounts/authorize?state=opaque"
+        assert browser.post("/api/cybersecurity/models/chatgpt/connect", headers=headers, json={}).status_code == 502
+        login_url = "https://[bad"
+        assert browser.post("/api/cybersecurity/models/chatgpt/connect", headers=headers, json={}).status_code == 502
+
+    with TestClient(app, base_url="https://remote.example") as remote:
+        assert remote.get("/api/cybersecurity/models/chatgpt", headers=headers).status_code == 200
+        assert remote.post("/api/cybersecurity/models/chatgpt/connect", headers=headers, json={}).status_code == 403

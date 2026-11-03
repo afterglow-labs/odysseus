@@ -4,7 +4,7 @@ import os
 from typing import Literal
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 from pydantic import BaseModel, Field, model_validator
 
 from core.middleware import require_admin
@@ -24,11 +24,13 @@ def _client():
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-async def _forward(path: str, *, method="GET", body=None, params=None, auth=True, as_text=False):
+async def _forward(path: str, *, method="GET", body=None, params=None, auth=True, as_text=False, timeout=20):
     try:
         kwargs = {"method": method, "body": body, "params": params, "auth": auth}
         if as_text:
             kwargs["as_text"] = True
+        if timeout != 20:
+            kwargs["timeout"] = timeout
         return await _client().request(path, **kwargs)
     except AfterglowError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
@@ -156,6 +158,7 @@ class ProfileActivate(BaseModel):
 LocalModelEndpoint = Literal[
     "http://127.0.0.1:11434", "http://host.docker.internal:11434", "http://ollama:11434",
 ]
+LOCAL_MODEL_ENDPOINTS = frozenset(LocalModelEndpoint.__args__)
 
 
 class LocalModelTarget(BaseModel):
@@ -168,6 +171,39 @@ class LocalProfileCreate(LocalModelTarget):
 
     @model_validator(mode="after")
     def require_content(self):
+        self.name = self.name.strip()
+        self.model = self.model.strip()
+        if not self.name or not self.model:
+            raise ValueError("Profile name and model are required")
+        return self
+
+
+class ChatGPTConnect(BaseModel):
+    account_id: str = Field("", max_length=200)
+
+    @model_validator(mode="after")
+    def trim_account(self):
+        self.account_id = self.account_id.strip()
+        return self
+
+
+class ChatGPTAccount(BaseModel):
+    account_id: str = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def require_account(self):
+        self.account_id = self.account_id.strip()
+        if not self.account_id:
+            raise ValueError("Account is required")
+        return self
+
+
+class ChatGPTProfile(ChatGPTAccount):
+    name: str = Field(min_length=1, max_length=160)
+    model: str = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def require_profile(self):
         self.name = self.name.strip()
         self.model = self.model.strip()
         if not self.name or not self.model:
@@ -380,9 +416,89 @@ async def create_local_profile(request: Request, body: LocalProfileCreate):
     })
 
 
+@router.post("/models/local/profiles/{profile_id}/test")
+async def test_local_profile(request: Request, profile_id: int = Path(gt=0)):
+    _require_browser_write(request)
+    profiles = await _forward("/api/llm/profiles")
+    profile = next((p for p in profiles.get("profiles", [])
+                    if isinstance(p, dict) and str(p.get("id")) == str(profile_id)), None)
+    if not profile or profile.get("format") != "ollama" or profile.get("base_url") not in LOCAL_MODEL_ENDPOINTS:
+        raise HTTPException(status_code=404, detail="Local Ollama profile not found")
+    model = profile.get("model")
+    if not isinstance(model, str) or not model:
+        raise HTTPException(status_code=404, detail="Local Ollama profile has no model")
+    return await _forward("/api/llm/test", method="POST", timeout=120, body={
+        "profile_id": profile_id, "provider": "ollama", "model": model,
+        "base_url": profile["base_url"], "streaming": True,
+        "context_window_k": 32,
+    })
+
+
 @router.get("/models/chatgpt")
-async def chatgpt_status():
+async def chatgpt_status(response: Response):
+    response.headers["Cache-Control"] = "no-store"
     return await _forward("/api/chatgpt/status")
+
+
+def _require_local_chatgpt(request: Request):
+    if request.url.hostname not in ("localhost", "127.0.0.1", "::1") or urlsplit(_client().origin).hostname not in ("localhost", "127.0.0.1", "::1"):
+        raise HTTPException(status_code=403, detail="ChatGPT account management requires both servers and this browser on the same machine")
+
+
+@router.post("/models/chatgpt/connect")
+async def chatgpt_connect(request: Request, response: Response, body: ChatGPTConnect):
+    _require_browser_write(request)
+    _require_local_chatgpt(request)
+    result = await _forward("/api/chatgpt/login", method="POST", body=body.model_dump())
+    url = result.get("url") if isinstance(result, dict) else None
+    try:
+        parsed = urlsplit(url) if isinstance(url, str) and len(url) <= 8192 else None
+    except ValueError:
+        parsed = None
+    if not parsed or parsed.scheme != "https" or parsed.netloc != "auth.openai.com" or parsed.path != "/api/accounts/authorize" or not parsed.query or parsed.fragment:
+        raise HTTPException(status_code=502, detail="Afterglow returned an invalid ChatGPT authorization URL")
+    response.headers["Cache-Control"] = "no-store"
+    return {"url": url, "expires_at": result.get("expires_at")}
+
+
+@router.post("/models/chatgpt/disconnect")
+async def chatgpt_disconnect(request: Request, body: ChatGPTAccount):
+    _require_browser_write(request)
+    _require_local_chatgpt(request)
+    return await _forward("/api/chatgpt/logout", method="POST", body=body.model_dump())
+
+
+@router.get("/models/chatgpt/catalog")
+async def chatgpt_catalog(account_id: str = Query(min_length=1, max_length=200)):
+    account_id = account_id.strip()
+    if not account_id:
+        raise HTTPException(status_code=422, detail="Account is required")
+    return await _forward("/api/chatgpt/models", params={"account_id": account_id})
+
+
+@router.post("/models/chatgpt/profiles")
+async def chatgpt_profile(request: Request, body: ChatGPTProfile):
+    _require_browser_write(request)
+    status = await _forward("/api/chatgpt/status")
+    accounts = status.get("accounts", []) if isinstance(status, dict) else []
+    if not any(isinstance(a, dict) and a.get("id") == body.account_id and a.get("connected") and a.get("plan_enabled") for a in accounts):
+        raise HTTPException(status_code=400, detail="Choose a connected ChatGPT plan account")
+    catalog = await _forward("/api/chatgpt/models", params={"account_id": body.account_id})
+    models = catalog.get("models", []) if isinstance(catalog, dict) else []
+    if not any(isinstance(model, dict) and model.get("id") == body.model for model in models):
+        raise HTTPException(status_code=400, detail="Choose an available ChatGPT model")
+    return await _forward("/api/llm/profiles", method="POST", body={
+        "name": body.name, "format": "openai-responses", "auth_mode": "chatgpt_plan",
+        "chatgpt_account_id": body.account_id, "model": body.model,
+        "pool_exclude": True, "streaming": True,
+    })
+
+
+@router.post("/models/chatgpt/profiles/{profile_id}/recheck")
+async def chatgpt_profile_recheck(request: Request, profile_id: int = Path(gt=0)):
+    _require_browser_write(request)
+    _require_local_chatgpt(request)
+    return await _forward("/api/chatgpt/recheck", method="POST", body={"profile_id": profile_id}, timeout=120)
 
 
 @router.get("/intercept/pending")
