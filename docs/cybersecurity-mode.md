@@ -8,8 +8,14 @@ controls. The selected mode and task are kept in the browser's local storage.
 
 ## Run the two servers
 
-Start Afterglow from its own checkout. For native Odysseus, set these values in
-Odysseus's `.env` or process environment and start Odysseus normally:
+Start the combined `afterglow-labs/afterglow-cybersecurity` server from its own
+checkout. That checkout supplies the full API used by this workbench, including
+the ChatGPT account and model routes. The standalone `afterglow-labs/scopeweaver`
+checkout currently lacks those ChatGPT routes and is not a complete backend for
+this mode. Its Go module migration is separate from this integration.
+
+For native Odysseus, set these values in Odysseus's `.env` or process
+environment and start Odysseus normally:
 
 ```dotenv
 AFTERGLOW_URL=http://127.0.0.1:8787
@@ -22,12 +28,13 @@ token takes precedence over the password and must be replaced when it expires.
 The password path logs in again when its cached JWT expires. Keep either
 credential server-side. The web client never receives it.
 
-`AFTERGLOW_URL` must be an HTTPS origin or a loopback HTTP origin. For two
-containers connected to a trusted private Docker network, set
-`AFTERGLOW_URL=http://scopeweaver:8787` and `AFTERGLOW_ALLOW_HTTP=true` in the
-Odysseus environment. Both containers must be attached to that network; their
-separate Compose projects do not share a network by default. Odysseus's
-`docker-compose.yml` passes these variables into its container. Keep the
+`AFTERGLOW_URL` must be an HTTPS origin or a loopback HTTP origin. The combined
+backend's Compose service is named `scopeweaver`. For two containers connected
+to a trusted private Docker network, set `AFTERGLOW_URL=http://scopeweaver:8787`
+and `AFTERGLOW_ALLOW_HTTP=true` in the Odysseus environment. Both containers
+must be attached to that network; their separate Compose projects do not share
+a network by default. Odysseus's `docker-compose.yml` passes these variables
+into its container. Keep the
 Afterglow port bound to loopback on the host and do not publish its private
 Docker network. If the servers communicate across an untrusted network, use
 HTTPS instead.
