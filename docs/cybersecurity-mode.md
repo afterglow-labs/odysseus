@@ -38,6 +38,34 @@ operations that are not yet native in Odysseus. It uses Afterglow's own login;
 the gateway credential is never added to the link. Set this to an HTTPS origin
 for remote browsers. Omit it if the browser cannot reach Afterglow directly.
 
+## Local model
+
+Run Ollama on the Afterglow host and install the model before creating a profile
+in the Cybersecurity **Models** tab:
+
+```sh
+OLLAMA_HOST=127.0.0.1:11434 OLLAMA_NO_CLOUD=1 ollama serve
+ollama pull qwen3:32b
+ollama list
+```
+
+Run `ollama serve` as a service or in a separate terminal; the pull and list
+commands use the same Ollama endpoint. Set these values on the **Afterglow**
+server, not Odysseus:
+
+```dotenv
+SCOPEWEAVER_LOCAL_LLM_ONLY=true
+SCOPEWEAVER_LLM_PROVIDER=ollama
+SCOPEWEAVER_LLM_MODEL=qwen3:32b
+SCOPEWEAVER_LLM_BASE_URL=http://127.0.0.1:11434
+SCOPEWEAVER_LLM_CONTEXT_WINDOW_K=32
+```
+
+Use **Find installed models** in the Models tab to confirm that Afterglow can
+reach Ollama. If Afterglow runs in a container, its Ollama endpoint must be
+reachable from that container; `127.0.0.1` inside the container refers to the
+container itself. Keep the Ollama listener private.
+
 ## Current workbench
 
 - Overview: engine readiness, task and finding counts, pending interceptions,
