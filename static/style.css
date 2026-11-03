@@ -41576,7 +41576,8 @@ body.settings-sidebar-resize-active {
 .product-mode-switch button:focus-visible,
 .cyber-workbench button:focus-visible,
 .cyber-workbench input:focus-visible,
-.cyber-workbench select:focus-visible {
+.cyber-workbench select:focus-visible,
+.cyber-workbench textarea:focus-visible {
   outline: 2px solid var(--red);
   outline-offset: 2px;
 }
@@ -41624,7 +41625,10 @@ html.cyber-mode .chat-container.welcome-active .cyber-workbench { flex: 1; }
 }
 .cyber-header h2 { font-size: clamp(24px, 3vw, 34px); line-height: 1.1; margin: 0 0 8px; }
 .cyber-header p { margin: 0; font-size: 12px; opacity: .62; max-width: 700px; }
-.cyber-header-actions { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+.cyber-header-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.cyber-console-link { color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; font-size: 11px; text-decoration: none; }
+.cyber-console-link:hover { border-color: var(--red); }
+.cyber-console-link[hidden] { display: none; }
 .cyber-connection { font-size: 11px; opacity: .72; }
 .cyber-connection::before { content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: var(--border); }
 .cyber-connection.connected::before { background: var(--color-success); }
@@ -41679,6 +41683,18 @@ button.cyber-row.selected { border-color: var(--red); }
 .cyber-form input { min-width: 180px; flex: 1; }
 .cyber-form select { min-width: 125px; }
 .cyber-form button { flex: 0 0 auto; }
+.cyber-stack { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; max-width: 860px; }
+.cyber-stack > input:not([type="checkbox"]), .cyber-stack > textarea, .cyber-stack > select {
+  width: 100%; max-width: 100%; box-sizing: border-box;
+}
+.cyber-stack textarea { min-height: 88px; resize: vertical; }
+.cyber-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+.cyber-check input { width: auto; height: auto; margin: 0; }
+.cyber-transcript { display: flex; flex-direction: column; gap: 10px; max-height: 500px; overflow-y: auto; margin: 16px 0; }
+.cyber-message { max-width: 85%; padding: 12px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; }
+.cyber-message.user { align-self: flex-end; border-color: var(--red); }
+.cyber-message.agent { align-self: flex-start; }
+.cyber-message .cyber-row-sub { margin: 0 0 7px; }
 
 @media (max-width: 768px) {
   .product-mode-switch { position: fixed; top: 8px; left: 10px; right: auto; z-index: 300; }
@@ -41689,6 +41705,8 @@ button.cyber-row.selected { border-color: var(--red); }
   html.cyber-mode .product-mode-switch { position: fixed; top: 8px; left: 12px; right: 12px; }
   html.cyber-mode .product-mode-switch button { flex: 1; }
   .cyber-header { align-items: flex-start; flex-direction: column; padding: 19px 0 15px; gap: 13px; }
+  .cyber-form input, .cyber-form select, .cyber-form button { width: 100%; max-width: none; }
+  .cyber-message { max-width: 100%; }
   .cyber-header-actions { width: 100%; justify-content: space-between; }
   .cyber-tabs button { padding: 0 11px; }
   .cyber-content { padding-top: 15px; }

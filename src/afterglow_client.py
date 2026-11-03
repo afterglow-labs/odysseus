@@ -56,7 +56,7 @@ class AfterglowClient:
         self._login_lock = asyncio.Lock()
         self._transport = transport
 
-    async def _fetch(self, path: str, *, method: str = "GET", body=None, params=None, auth=True):
+    async def _fetch(self, path: str, *, method: str = "GET", body=None, params=None, auth=True, as_text=False):
         if not path.startswith("/api/") or "?" in path or "#" in path or ".." in path:
             raise ValueError("Invalid Afterglow API path")
         headers = {"Accept": "application/json"}
@@ -80,8 +80,14 @@ class AfterglowClient:
                         if size > MAX_RESPONSE_BYTES:
                             raise AfterglowError(502, "Afterglow response is too large")
                         chunks.append(chunk)
+                    payload = b"".join(chunks)
+                    if as_text and response.status_code < 400:
+                        try:
+                            return payload.decode("utf-8")
+                        except UnicodeDecodeError as exc:
+                            raise AfterglowError(502, "Afterglow returned invalid text") from exc
                     try:
-                        data = json.loads(b"".join(chunks))
+                        data = json.loads(payload)
                     except (ValueError, UnicodeDecodeError) as exc:
                         raise AfterglowError(502, "Afterglow returned invalid JSON") from exc
                     if response.status_code >= 400:
@@ -114,18 +120,18 @@ class AfterglowClient:
                 raise AfterglowError(502, "Afterglow login returned no token")
             self._token = token
 
-    async def request(self, path: str, *, method: str = "GET", body=None, params=None, auth=True):
+    async def request(self, path: str, *, method: str = "GET", body=None, params=None, auth=True, as_text=False):
         if auth:
             await self._authenticate()
         try:
-            return await self._fetch(path, method=method, body=body, params=params, auth=auth)
+            return await self._fetch(path, method=method, body=body, params=params, auth=auth, as_text=as_text)
         except AfterglowError as exc:
             if exc.detail != "Afterglow authentication failed" or self._supplied_token or not self._password:
                 raise
             # A password-managed JWT may have expired. Refresh once, then stop.
             self._token = ""
             await self._authenticate()
-            return await self._fetch(path, method=method, body=body, params=params, auth=auth)
+            return await self._fetch(path, method=method, body=body, params=params, auth=auth, as_text=as_text)
 
 
 @lru_cache(maxsize=1)

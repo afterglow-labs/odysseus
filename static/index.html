@@ -250,8 +250,8 @@
        real request is discarded and the font fetched a second time. -->
   <link rel="preload" as="font" type="font/woff2" crossorigin href="/static/fonts/FiraCode-Regular.woff2">
   <link rel="preload" as="font" type="font/woff2" crossorigin href="/static/fonts/FiraCode-SemiBold.woff2">
-  <link rel="stylesheet" href="/static/style.css?v=20261102cyber1">
-  <link rel="modulepreload" href="/static/app.js?v=20261102cyber1">
+  <link rel="stylesheet" href="/static/style.css?v=20261102cyber2">
+  <link rel="modulepreload" href="/static/app.js?v=20261102cyber2">
   <link rel="modulepreload" href="/static/js/chat.js?v=20260815toolapproval4">
   <link rel="modulepreload" href="/static/js/ui.js">
   <link rel="modulepreload" href="/static/js/sessions.js">
@@ -1039,21 +1039,26 @@
         <div>
           <div class="cyber-eyebrow">AFTERGLOW / ODYSSEUS</div>
           <h2>Cybersecurity</h2>
-          <p>Tasks, findings, scope, activity, interception, and traffic from the separate Afterglow server.</p>
+          <p>Run tasks, review findings, manage scope and interception, and check models on the separate Afterglow server.</p>
         </div>
         <div class="cyber-header-actions">
           <span id="cyber-connection" class="cyber-connection" role="status">Connecting</span>
+          <a id="cyber-open-console" class="cyber-console-link" target="_blank" rel="noopener noreferrer" hidden>Full Afterglow console</a>
           <button type="button" id="cyber-refresh">Refresh</button>
         </div>
       </header>
       <nav class="cyber-tabs" aria-label="Cybersecurity sections">
         <button type="button" data-cyber-tab="overview" aria-current="page">Overview</button>
         <button type="button" data-cyber-tab="tasks">Tasks</button>
+        <button type="button" data-cyber-tab="chat">Task chat</button>
         <button type="button" data-cyber-tab="findings">Findings</button>
         <button type="button" data-cyber-tab="scope">Scope</button>
+        <button type="button" data-cyber-tab="assets">Assets</button>
         <button type="button" data-cyber-tab="activity">Activity</button>
         <button type="button" data-cyber-tab="intercept">Intercept</button>
         <button type="button" data-cyber-tab="traffic">Traffic</button>
+        <button type="button" data-cyber-tab="reports">Reports</button>
+        <button type="button" data-cyber-tab="models">Models</button>
       </nav>
       <div id="cyber-notice" class="cyber-notice" role="status" aria-live="polite" hidden></div>
       <div id="cyber-content" class="cyber-content"></div>
@@ -2651,7 +2656,7 @@
 <script type="module" src="/static/js/censor.js"></script>
 <script type="module" src="/static/js/settings.js?v=20260815approvalsave1"></script>
 <script type="module" src="/static/js/assistant.js"></script>
-<script type="module" src="/static/app.js?v=20261102cyber1"></script>  <!-- app.js must be LAST -->
+<script type="module" src="/static/app.js?v=20261102cyber2"></script>  <!-- app.js must be LAST -->
   <script type="module" src="/static/js/init.js?v=20260715freshroot3"></script>
 <script type="module" src="/static/js/a11y.js"></script>
 <script nonce="{{CSP_NONCE}}">if('serviceWorker' in navigator){navigator.serviceWorker.register('/static/sw.js').catch(()=>{});}</script>

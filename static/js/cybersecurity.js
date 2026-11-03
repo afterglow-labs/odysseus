@@ -4,7 +4,7 @@
 
 const MODE_KEY = 'odysseus-product-mode';
 const TASK_KEY = 'odysseus-cyber-task';
-const TABS = new Set(['overview', 'tasks', 'findings', 'scope', 'activity', 'intercept', 'traffic']);
+const TABS = new Set(['overview', 'tasks', 'chat', 'findings', 'scope', 'assets', 'activity', 'intercept', 'traffic', 'reports', 'models']);
 const byId = (id) => document.getElementById(id);
 
 function element(tag, className = '', text = '') {
@@ -28,6 +28,33 @@ function panel(title) {
 }
 
 function empty(message) { return element('div', 'cyber-empty', message); }
+
+function input(placeholder, required = false) {
+  const node = element('input');
+  node.placeholder = placeholder;
+  node.setAttribute('aria-label', placeholder);
+  node.required = required;
+  return node;
+}
+
+function textarea(placeholder, required = false) {
+  const node = element('textarea');
+  node.placeholder = placeholder;
+  node.setAttribute('aria-label', placeholder);
+  node.required = required;
+  return node;
+}
+
+function selectOptions(label, values) {
+  const node = element('select');
+  node.setAttribute('aria-label', label);
+  for (const [value, text] of values) {
+    const option = element('option', '', text);
+    option.value = value;
+    node.append(option);
+  }
+  return node;
+}
 
 function pill(value) {
   const label = String(value || 'unknown');
@@ -56,12 +83,13 @@ function fmtDate(value) {
 
 async function api(path, options = {}) {
   const headers = { Accept: 'application/json' };
-  if (options.body !== undefined) {
-    headers['Content-Type'] = 'application/json';
+  const method = options.method || 'GET';
+  if (method !== 'GET') {
     headers['X-Requested-With'] = 'XMLHttpRequest';
   }
+  if (options.body !== undefined) headers['Content-Type'] = 'application/json';
   const response = await fetch('/api/cybersecurity' + path, {
-    method: options.method || 'GET', credentials: 'same-origin', headers,
+    method, credentials: 'same-origin', headers,
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
     signal: options.signal,
   });
@@ -80,16 +108,22 @@ export function initCybersecurityMode() {
   workbench.dataset.initialized = 'true';
 
   let mode = document.documentElement.classList.contains('cyber-mode') ? 'cybersecurity' : 'odysseus';
+  try { if (localStorage.getItem(MODE_KEY) === 'cybersecurity') mode = 'cybersecurity'; } catch (_) {}
   let tab = 'overview';
   let generation = 0;
   let selectedTask = '';
   let taskList = [];
   let findingPage = 1;
   let findingFilters = { severity: '', status: '', q: '' };
+  let chatDraft = '';
+  let chatPollUntil = 0;
+  let assetType = 'root_domain';
+  let assetOffset = 0;
   try { selectedTask = localStorage.getItem(TASK_KEY) || ''; } catch (_) {}
 
   const notice = byId('cyber-notice');
   const connection = byId('cyber-connection');
+  const consoleLink = byId('cyber-open-console');
   const tabs = [...workbench.querySelectorAll('[data-cyber-tab]')];
 
   function showNotice(message, error = false) {
@@ -188,7 +222,7 @@ export function initCybersecurityMode() {
     wrap.append(metrics);
     const taskPanel = panel('Recent tasks');
     const taskRows = element('div', 'cyber-list');
-    if (!taskList.length) taskRows.append(empty('No tasks yet. Create the first task in Afterglow.'));
+    if (!taskList.length) taskRows.append(empty('No tasks yet. Open Tasks to create one.'));
     for (const task of taskList.slice(0, 5)) {
       taskRows.append(row(task.name || task.description || `Task #${task.id}`,
         `#${task.id} · ${task.goal || task.description || ''}`, task.status,
@@ -212,9 +246,49 @@ export function initCybersecurityMode() {
   async function renderTasks() {
     await loadTasks();
     const wrap = element('div');
+    const createPanel = panel('Create task');
+    createPanel.append(element('p', 'cyber-detail',
+      'A new task starts on the Afterglow server. Choose a model profile when the default is not the one you want.'));
+    const form = element('form', 'cyber-stack');
+    const name = input('Task name'); name.maxLength = 160;
+    const description = textarea('Description', true); description.maxLength = 5000;
+    const goal = textarea('Goal', true); goal.maxLength = 5000;
+    const profile = selectOptions('Model profile', [['', 'Active model profile']]);
+    try {
+      const data = await api('/models/profiles');
+      for (const item of Array.isArray(data.profiles) ? data.profiles : []) {
+        const option = element('option', '', `${item.name || item.model || 'Profile'} · ${item.model || item.format || ''}`);
+        option.value = String(item.id);
+        profile.append(option);
+      }
+    } catch (_) { /* The active profile remains a valid task default. */ }
+    const coverage = input('Track asset coverage'); coverage.type = 'checkbox'; coverage.checked = true;
+    const seed = input('Start a first work item'); seed.type = 'checkbox';
+    const coverageLabel = element('label', 'cyber-check'); coverageLabel.append(coverage, document.createTextNode('Track asset coverage'));
+    const seedLabel = element('label', 'cyber-check'); seedLabel.append(seed, document.createTextNode('Start a first work item'));
+    const checks = element('div', 'cyber-actions'); checks.append(coverageLabel, seedLabel);
+    const submit = element('button', 'primary', 'Create task'); submit.type = 'submit';
+    form.append(name, description, goal, profile, checks, submit);
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      submit.disabled = true;
+      try {
+        const data = await api('/tasks', { method: 'POST', body: {
+          name: name.value.trim(), description: description.value.trim(), goal: goal.value.trim(),
+          coverage_enabled: coverage.checked, seed_first_intent: seed.checked,
+          ...(profile.value ? { llm_profile_id: Number(profile.value) } : {}),
+        } });
+        if (data.id) selectedTask = String(data.id);
+        await refresh();
+        showNotice('Task created');
+      } catch (error) { showNotice(error.message, true); }
+      finally { submit.disabled = false; }
+    });
+    createPanel.append(form);
+    wrap.append(createPanel);
     const listPanel = panel('Tasks');
     const list = element('div', 'cyber-list');
-    if (!taskList.length) list.append(empty('No tasks yet. Task creation remains in Afterglow.'));
+    if (!taskList.length) list.append(empty('No tasks yet. Create one above.'));
     for (const task of taskList) {
       const count = task.findings || {};
       const findings = Object.values(count).reduce((sum, value) => sum + (Number(value) || 0), 0);
@@ -240,10 +314,70 @@ export function initCybersecurityMode() {
             `Task ${action}d`);
         }, 'primary'));
       }
-      actions.append(button('View scope', () => selectTab('scope')),
+      actions.append(button('Open task chat', () => selectTab('chat')),
+        button('View scope', () => selectTab('scope')),
         button('View activity', () => selectTab('activity')));
       detail.append(actions);
       wrap.append(detail);
+    }
+    return wrap;
+  }
+
+  async function renderChat() {
+    await loadTasks();
+    if (!selectedTask) return empty('Create or select a task to open its chat.');
+    const taskId = selectedTask;
+    const [history, status] = await Promise.all([
+      api(`/tasks/${taskId}/activity?limit=200`), api(`/tasks/${taskId}/chat/status`),
+    ]);
+    const wrap = element('div');
+    wrap.append(taskPicker(() => { chatDraft = ''; refresh(); }));
+    const chatPanel = panel('Main agent conversation');
+    const controls = element('div', 'cyber-actions');
+    controls.append(pill(status.running ? 'Responding' : 'Ready'),
+      button('New conversation', () => act(
+        () => api(`/tasks/${taskId}/chat/new-session`, { method: 'POST', body: {} }), 'New conversation started')),
+      button('Refresh conversation', refresh));
+    if (status.running) controls.append(button('Stop reply', () => act(
+      () => api(`/tasks/${taskId}/chat/stop`, { method: 'POST', body: {} }), 'Stop requested')));
+    chatPanel.append(controls);
+    const transcript = element('div', 'cyber-transcript');
+    const turns = (Array.isArray(history.items) ? history.items : []).filter((item) =>
+      item.kind === 'user' || item.kind === 'text');
+    if (!status.running && turns.at(-1)?.kind === 'text') chatPollUntil = 0;
+    if (!turns.length) transcript.append(empty('No messages in this conversation.'));
+    for (const item of turns) {
+      const bubble = element('article', `cyber-message ${item.kind === 'user' ? 'user' : 'agent'}`);
+      bubble.append(element('div', 'cyber-row-sub', `${item.kind === 'user' ? 'You' : 'Afterglow'} · ${fmtDate(item.ts)}`),
+        element('div', 'cyber-detail', item.summary || item.detail || ''));
+      transcript.append(bubble);
+    }
+    chatPanel.append(transcript);
+    const form = element('form', 'cyber-stack');
+    const message = textarea('Message the task agent', true);
+    message.maxLength = 10000; message.value = chatDraft;
+    message.addEventListener('input', () => { chatDraft = message.value; });
+    const send = element('button', 'primary', 'Send message'); send.type = 'submit';
+    form.append(message, send);
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      send.disabled = true;
+      try {
+        await api(`/tasks/${taskId}/chat`, { method: 'POST', body: { message: message.value.trim() } });
+        chatDraft = '';
+        chatPollUntil = Date.now() + 120000;
+        await refresh();
+        showNotice('Message accepted by Afterglow');
+      } catch (error) { showNotice(error.message, true); }
+      finally { send.disabled = false; }
+    });
+    chatPanel.append(form);
+    wrap.append(chatPanel);
+    if (status.running || Date.now() < chatPollUntil) {
+      const expectedGeneration = generation;
+      setTimeout(() => {
+        if (mode === 'cybersecurity' && tab === 'chat' && generation === expectedGeneration) refresh();
+      }, 3000);
     }
     return wrap;
   }
@@ -263,6 +397,31 @@ export function initCybersecurityMode() {
       if (finding.evidence) detail.append(element('pre', 'cyber-detail', finding.evidence));
       if (finding.report) detail.append(element('pre', 'cyber-detail', finding.report));
       if (!finding.evidence && !finding.report) detail.append(empty('No evidence or report attached.'));
+      const triage = element('form', 'cyber-form');
+      const severity = selectOptions('Set severity', ['critical', 'high', 'medium', 'low']
+        .map((value) => [value, value]));
+      severity.value = finding.severity || 'medium';
+      const status = selectOptions('Set status', [
+        'pending', 'in_progress', 'confirmed', 'resolved', 'fixed',
+        'false_positive', 'ignored', 'duplicate', 'risk_accepted',
+      ].map((value) => [value, value.replaceAll('_', ' ')]));
+      status.value = finding.status || 'pending';
+      const save = element('button', 'primary', 'Save triage'); save.type = 'submit';
+      triage.append(severity, status, save);
+      triage.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        save.disabled = true;
+        try {
+          await api(`/findings/${finding.id}`, { method: 'PATCH', body: {
+            severity: severity.value, status: status.value,
+          } });
+          await refresh();
+          await openFinding(finding.id);
+          showNotice('Finding triage saved');
+        } catch (error) { showNotice(error.message, true); }
+        finally { save.disabled = false; }
+      });
+      detail.append(triage);
       content.prepend(detail);
     } catch (error) { showNotice(error.message, true); }
   }
@@ -331,15 +490,102 @@ export function initCybersecurityMode() {
     if (coverage.enabled === false) coveragePanel.append(empty('Coverage is disabled for this task.'));
     wrap.append(coveragePanel);
     const scopePanel = panel('Declared task scope');
+    const addForm = element('form', 'cyber-form');
+    const kind = selectOptions('Scope kind', [
+      ['root_domain', 'Root domain'], ['subdomain', 'Subdomain'], ['ip', 'IP address'],
+      ['cidr', 'CIDR network'], ['company', 'Company'], ['icp', 'ICP'], ['keyword', 'Keyword'],
+    ]);
+    const value = input('Scope value', true); value.maxLength = 500;
+    const reason = input('Reason'); reason.maxLength = 1000;
+    const add = element('button', 'primary', 'Add scope'); add.type = 'submit';
+    addForm.append(kind, value, reason, add);
+    addForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      add.disabled = true;
+      try {
+        await act(() => api(`/tasks/${selectedTask}/scope`, { method: 'POST', body: {
+          kind: kind.value, value: value.value.trim(), reason: reason.value.trim(),
+        } }), 'Scope added');
+      } finally { add.disabled = false; }
+    });
+    scopePanel.append(addForm);
     const list = element('div', 'cyber-list');
     const entries = Array.isArray(scope.scope) ? scope.scope : [];
     if (!entries.length) list.append(empty('No scope rows recorded.'));
     for (const entry of entries) {
-      list.append(row(entry.company_name || entry.domain || entry.net || entry.value || `Scope #${entry.id}`,
-        `${entry.kind} · ${entry.source}${entry.reason ? ` · ${entry.reason}` : ''}`, null));
+      const item = row(entry.company_name || entry.domain || entry.net || entry.value || `Scope #${entry.id}`,
+        `${entry.kind} · ${entry.source}${entry.reason ? ` · ${entry.reason}` : ''}`, null);
+      if (entry.source === 'manual' && entry.id) item.append(button('Remove', () => act(
+        () => api(`/tasks/${selectedTask}/scope/${entry.id}`, { method: 'DELETE' }), 'Scope removed')));
+      list.append(item);
     }
     scopePanel.append(list);
     wrap.append(scopePanel);
+    return wrap;
+  }
+
+  async function renderAssets() {
+    await loadTasks();
+    const params = new URLSearchParams({
+      task_id: selectedTask || '0', type: assetType, limit: '50', offset: String(assetOffset),
+    });
+    const data = await api(`/assets?${params}`);
+    const wrap = element('div');
+    if (selectedTask) wrap.append(taskPicker(() => { assetOffset = 0; refresh(); }));
+    const toolbar = element('div', 'cyber-toolbar');
+    const viewType = selectOptions('Asset type', [
+      ['root_domain', 'Root domains'], ['subdomain', 'Subdomains'], ['ip', 'IP addresses'],
+      ['service', 'Services'], ['endpoint', 'Endpoints'], ['app', 'Apps'],
+    ]);
+    viewType.value = assetType;
+    viewType.addEventListener('change', () => { assetType = viewType.value; assetOffset = 0; refresh(); });
+    toolbar.append(viewType);
+    wrap.append(toolbar);
+    if (selectedTask) {
+      const addPanel = panel('Register task asset');
+      const form = element('form', 'cyber-form');
+      const kind = selectOptions('New asset type', [
+        ['root_domain', 'Root domain'], ['subdomain', 'Subdomain'],
+        ['ip', 'IP address'], ['service', 'HTTP service URL'],
+      ]);
+      const value = input('Domain, IP address, or URL', true); value.maxLength = 2000;
+      const add = element('button', 'primary', 'Add asset'); add.type = 'submit';
+      form.append(kind, value, add);
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        add.disabled = true;
+        try {
+          const result = await api('/assets', { method: 'POST', body: {
+            task_id: Number(selectedTask), kind: kind.value, value: value.value.trim(),
+          } });
+          if (Array.isArray(result.errors) && result.errors.length) {
+            throw new Error(result.errors[0].error || 'Asset was rejected');
+          }
+          assetType = kind.value;
+          assetOffset = 0;
+          await refresh();
+          showNotice('Asset registered');
+        } catch (error) { showNotice(error.message, true); }
+        finally { add.disabled = false; }
+      });
+      addPanel.append(form);
+      wrap.append(addPanel);
+    }
+    const listPanel = panel(`Assets · ${data.total ?? 0}`);
+    const list = element('div', 'cyber-list');
+    const assets = Array.isArray(data.assets) ? data.assets : [];
+    if (!assets.length) list.append(empty('No assets match this view.'));
+    for (const asset of assets) {
+      list.append(row(asset.domain || asset.ip || asset.url || asset.app_name || `Asset #${asset.id}`,
+        `#${asset.id} · ${asset.type}${asset.last_seen ? ` · Last seen ${fmtDate(asset.last_seen)}` : ''}`,
+        asset.status_code || null));
+    }
+    listPanel.append(list);
+    const paging = element('div', 'cyber-actions');
+    if (assetOffset > 0) paging.append(button('Previous', () => { assetOffset = Math.max(0, assetOffset - 50); refresh(); }));
+    if (assetOffset + 50 < (data.total || 0)) paging.append(button('Next', () => { assetOffset += 50; refresh(); }));
+    listPanel.append(paging);
+    wrap.append(listPanel);
     return wrap;
   }
 
@@ -364,6 +610,7 @@ export function initCybersecurityMode() {
 
   async function renderIntercept() {
     const data = await api('/intercept/pending');
+    await loadTasks();
     const wrap = element('div');
     const listPanel = panel('Pending interception decisions');
     const list = element('div', 'cyber-list');
@@ -387,6 +634,53 @@ export function initCybersecurityMode() {
     }
     listPanel.append(list);
     wrap.append(listPanel);
+    if (selectedTask) {
+      wrap.append(taskPicker(refresh));
+      const rulesPanel = panel('Task asset interception rules');
+      rulesPanel.append(element('p', 'cyber-detail',
+        'These rules govern task asset access. Declared scope alone does not block tool operations.'));
+      const form = element('form', 'cyber-form');
+      const action = selectOptions('Rule action', [['block', 'Block'], ['allow', 'Allow']]);
+      const kind = selectOptions('Match kind', [
+        ['exact_domain', 'Exact domain'], ['fuzzy_domain', 'Domain contains'],
+        ['exact_ip', 'Exact IP'], ['fuzzy_ip', 'IP contains'], ['cidr', 'CIDR'],
+        ['exact_url', 'Exact URL'], ['fuzzy_url', 'URL contains'],
+      ]);
+      const pattern = input('Match pattern', true); pattern.maxLength = 500;
+      const note = input('Rule note'); note.maxLength = 1000;
+      const add = element('button', 'primary', 'Add rule'); add.type = 'submit';
+      form.append(action, kind, pattern, note, add);
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        add.disabled = true;
+        try {
+          await act(() => api(`/tasks/${selectedTask}/rules`, { method: 'POST', body: {
+            enabled: true, action: action.value, kind: kind.value,
+            pattern: pattern.value.trim(), note: note.value.trim(),
+          } }), 'Task rule added');
+        } finally { add.disabled = false; }
+      });
+      rulesPanel.append(form);
+      const rulesData = await api(`/tasks/${selectedTask}/rules`);
+      const rulesList = element('div', 'cyber-list');
+      const rules = Array.isArray(rulesData.rules) ? rulesData.rules : [];
+      if (!rules.length) rulesList.append(empty('No task rules configured.'));
+      for (const rule of rules) {
+        const entry = row(`${rule.action || 'block'} · ${rule.kind || ''} · ${rule.pattern || ''}`,
+          rule.note || `Rule #${rule.id}`, rule.enabled ? 'enabled' : 'disabled');
+        const controls = element('div', 'cyber-actions');
+        controls.append(button(rule.enabled ? 'Disable' : 'Enable', () => act(
+          () => api(`/tasks/${selectedTask}/rules/${rule.id}/toggle`, {
+            method: 'POST', body: { enabled: !rule.enabled },
+          }), `Rule ${rule.enabled ? 'disabled' : 'enabled'}`)),
+        button('Remove', () => act(
+          () => api(`/tasks/${selectedTask}/rules/${rule.id}`, { method: 'DELETE' }), 'Rule removed')));
+        entry.append(controls);
+        rulesList.append(entry);
+      }
+      rulesPanel.append(rulesList);
+      wrap.append(rulesPanel);
+    }
     return wrap;
   }
 
@@ -409,10 +703,145 @@ export function initCybersecurityMode() {
     if (!items.length) list.append(empty('No traffic recorded.'));
     for (const exchange of items) {
       list.append(row(`${exchange.method || 'GET'} ${exchange.url || exchange.host || ''}`,
-        `${fmtDate(exchange.ts)} · ${exchange.host || ''}`, exchange.status));
+        `${fmtDate(exchange.ts)} · ${exchange.host || ''}`, exchange.status,
+        () => openTrafficExchange(exchange.id)));
     }
     trafficPanel.append(list);
     wrap.append(trafficPanel);
+    return wrap;
+  }
+
+  async function openTrafficExchange(id) {
+    try {
+      const data = await api(`/traffic/exchange?id=${encodeURIComponent(id)}`);
+      if (mode !== 'cybersecurity' || tab !== 'traffic') return;
+      byId('cyber-traffic-detail')?.remove();
+      const detail = panel(`Exchange ${id}`);
+      detail.id = 'cyber-traffic-detail';
+      detail.append(element('h4', '', 'Request'),
+        element('pre', 'cyber-detail', JSON.stringify(data.req || {}, null, 2)),
+        element('h4', '', 'Response'),
+        element('pre', 'cyber-detail', JSON.stringify(data.resp || {}, null, 2)));
+      content.prepend(detail);
+    } catch (error) { showNotice(error.message, true); }
+  }
+
+  async function renderReports() {
+    await loadTasks();
+    if (!selectedTask) return empty('Create or select a task to view its report.');
+    const taskId = selectedTask;
+    const data = await api(`/tasks/${taskId}/report`);
+    const wrap = element('div');
+    wrap.append(taskPicker(refresh));
+    const reportPanel = panel('Generated task report');
+    const markdown = String(data.markdown || '');
+    const actions = element('div', 'cyber-actions');
+    actions.append(button('Download Markdown', () => {
+      const url = URL.createObjectURL(new Blob([markdown], { type: 'text/markdown;charset=utf-8' }));
+      const link = element('a');
+      link.href = url;
+      link.download = `afterglow-task-${String(taskId).replace(/\D/g, '')}-report.md`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }));
+    reportPanel.append(actions);
+    reportPanel.append(markdown ? element('pre', 'cyber-detail', markdown) : empty('No report content yet.'));
+    wrap.append(reportPanel);
+    return wrap;
+  }
+
+  async function renderModels() {
+    const [engine, profileData, chatgptResult, poolResult] = await Promise.all([
+      api('/models'), api('/models/profiles'),
+      api('/models/chatgpt').then((value) => ({ value }), (error) => ({ error })),
+      api('/models/pool').then((value) => ({ value }), (error) => ({ error })),
+    ]);
+    const wrap = element('div');
+    const statusPanel = panel('Active engine');
+    const metrics = element('div', 'cyber-grid');
+    metrics.append(card('Configured', engine.configured ? 'Ready' : 'Not set'),
+      card('Provider', engine.provider || '—'), card('Model', engine.model || '—'));
+    statusPanel.append(metrics);
+    if (engine.base_url) statusPanel.append(element('p', 'cyber-detail', `Endpoint: ${engine.base_url}`));
+    wrap.append(statusPanel);
+    const profilesPanel = panel('Model profiles');
+    const profiles = Array.isArray(profileData.profiles) ? profileData.profiles : [];
+    const profileList = element('div', 'cyber-list');
+    if (!profiles.length) profileList.append(empty('No model profiles configured on Afterglow.'));
+    for (const profile of profiles) {
+      const entry = row(profile.name || profile.model || `Profile #${profile.id}`,
+        `${profile.format || 'provider'} · ${profile.model || 'No model'}${profile.base_url ? ` · ${profile.base_url}` : ''}`,
+        profile.is_default ? 'active' : 'available');
+      if (!profile.is_default) entry.append(button('Make active', () => act(
+        () => api('/models/active', { method: 'POST', body: { id: profile.id } }), 'Model profile activated')));
+      profileList.append(entry);
+    }
+    profilesPanel.append(profileList);
+    wrap.append(profilesPanel);
+    const localPanel = panel('Add a local Ollama profile');
+    localPanel.append(element('p', 'cyber-detail',
+      'Choose an Ollama endpoint reachable from the Afterglow server. Discovery lists installed models; it does not download one.'));
+    const localForm = element('form', 'cyber-stack');
+    const target = selectOptions('Ollama location', [
+      ['http://127.0.0.1:11434', 'Ollama on the Afterglow host'],
+      ['http://host.docker.internal:11434', 'Ollama on the Docker host'],
+      ['http://ollama:11434', 'Ollama container'],
+    ]);
+    const model = input('Installed model tag', true); model.maxLength = 200;
+    const suggestions = element('datalist');
+    suggestions.id = 'cyber-local-model-options';
+    model.setAttribute('list', suggestions.id);
+    const name = input('Profile name', true); name.maxLength = 160;
+    const localActions = element('div', 'cyber-actions');
+    const discover = button('Find installed models', async () => {
+      discover.disabled = true;
+      try {
+        const result = await api('/models/local/discover', { method: 'POST', body: { base_url: target.value } });
+        if (!result.ok) throw new Error(result.error || 'Model discovery failed');
+        suggestions.replaceChildren();
+        for (const tag of Array.isArray(result.models) ? result.models : []) {
+          const option = element('option'); option.value = String(tag); suggestions.append(option);
+        }
+        if (result.models?.length) model.value = String(result.models[0]);
+        showNotice(result.models?.length ? `${result.models.length} installed model(s) found` : 'No installed models found');
+      } catch (error) { showNotice(error.message, true); }
+      finally { discover.disabled = false; }
+    });
+    const create = element('button', 'primary', 'Create local profile'); create.type = 'submit';
+    localActions.append(discover, create);
+    localForm.append(target, model, suggestions, name, localActions);
+    localForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      create.disabled = true;
+      try {
+        await api('/models/local/profiles', { method: 'POST', body: {
+          base_url: target.value, name: name.value.trim(), model: model.value.trim(),
+        } });
+        await refresh();
+        showNotice('Local model profile created');
+      } catch (error) { showNotice(error.message, true); }
+      finally { create.disabled = false; }
+    });
+    localPanel.append(localForm);
+    wrap.append(localPanel);
+    if (poolResult.value) {
+      const poolPanel = panel('Model failover');
+      poolPanel.append(element('pre', 'cyber-detail', JSON.stringify(poolResult.value, null, 2)));
+      wrap.append(poolPanel);
+    }
+    const chatgptPanel = panel('ChatGPT connection');
+    if (chatgptResult.error) chatgptPanel.append(empty(`Status unavailable: ${chatgptResult.error.message}`));
+    else {
+      const accounts = Array.isArray(chatgptResult.value?.accounts) ? chatgptResult.value.accounts : [];
+      if (!accounts.length) chatgptPanel.append(empty('No ChatGPT account connected on Afterglow.'));
+      for (const account of accounts) {
+        chatgptPanel.append(row(account.email || account.id || 'ChatGPT account',
+          account.plan_block_reason || (account.plan_enabled ? 'Plan enabled' : 'Plan unavailable'),
+          account.connected ? 'connected' : 'disconnected'));
+      }
+      if (chatgptResult.value?.error) chatgptPanel.append(element('p', 'cyber-detail', chatgptResult.value.error));
+    }
+    wrap.append(chatgptPanel);
     return wrap;
   }
 
@@ -435,17 +864,26 @@ export function initCybersecurityMode() {
       if (run !== generation || mode !== 'cybersecurity') return;
       connected = true;
       setConnection('connected', status.health?.ok ? 'Connected' : 'Connected · degraded');
+      if (consoleLink) {
+        consoleLink.hidden = !status.console_url;
+        if (status.console_url) consoleLink.href = status.console_url;
+        else consoleLink.removeAttribute('href');
+      }
       let view;
       if (tab === 'overview') view = await renderOverview(status);
       else if (tab === 'tasks') view = await renderTasks();
+      else if (tab === 'chat') view = await renderChat();
       else if (tab === 'findings') view = await renderFindings();
       else if (tab === 'scope') view = await renderScope();
+      else if (tab === 'assets') view = await renderAssets();
       else if (tab === 'activity') view = await renderActivity();
       else if (tab === 'intercept') view = await renderIntercept();
-      else view = await renderTraffic();
+      else if (tab === 'traffic') view = await renderTraffic();
+      else if (tab === 'reports') view = await renderReports();
+      else view = await renderModels();
       if (run !== generation || mode !== 'cybersecurity') return;
       content.replaceChildren(view);
-      showNotice('');
+      showNotice(status.console_error || '', !!status.console_error);
     } catch (error) {
       if (run !== generation || mode !== 'cybersecurity') return;
       if (!connected) setConnection('disconnected', 'Unavailable');

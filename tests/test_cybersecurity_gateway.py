@@ -84,6 +84,17 @@ async def test_oversized_response_is_rejected():
         await client.request("/api/tasks")
 
 
+@pytest.mark.asyncio
+async def test_markdown_report_stays_bounded_plain_text():
+    client = AfterglowClient(
+        origin="http://127.0.0.1:8787", token="token",
+        transport=httpx.MockTransport(lambda request: httpx.Response(
+            200, text="# Report\n<script>alert(1)</script>", headers={"Content-Type": "text/markdown"},
+        )),
+    )
+    assert await client.request("/api/report", params={"task": 7}, as_text=True) == "# Report\n<script>alert(1)</script>"
+
+
 def test_gateway_requires_admin_and_write_header(monkeypatch):
     calls = []
 
@@ -122,3 +133,90 @@ def test_gateway_requires_admin_and_write_header(monkeypatch):
         assert browser.post(path, headers={"X-Test-User": "admin", "X-Requested-With": "XMLHttpRequest"}, json={"action": "delete"}).status_code == 422
         assert browser.get("/api/cybersecurity/tasks/12/activity", headers={"X-Test-User": "admin"}).status_code == 200
         assert calls[-1] == ("/api/exploration/activity/history", {"method": "GET", "body": None, "params": {"task": 12, "session": "main", "before": 0, "limit": 100}, "auth": True})
+
+
+def test_operations_use_typed_gateway_and_omit_asset_credentials(monkeypatch):
+    calls = []
+
+    class FakeAfterglow:
+        async def request(self, path, **kwargs):
+            calls.append((path, kwargs))
+            if path == "/api/assets" and kwargs["method"] == "GET":
+                return {"assets": [{"id": 3, "domain": "example.test", "auth": [{"token": "secret"}]}]}
+            if path == "/api/report":
+                return "# Report"
+            return {"id": "7", "ok": True}
+
+    class FakeAuth:
+        is_configured = True
+
+        def is_admin(self, user):
+            return user == "admin"
+
+    app = FastAPI()
+    app.state.auth_manager = FakeAuth()
+
+    @app.middleware("http")
+    async def identity(request: Request, call_next):
+        request.state.current_user = request.headers.get("X-Test-User")
+        return await call_next(request)
+
+    app.include_router(cyber_routes.router)
+    monkeypatch.setattr(middleware, "auth_disabled", lambda: False)
+    monkeypatch.setattr(cyber_routes, "get_afterglow_client", lambda: FakeAfterglow())
+    headers = {"X-Test-User": "admin", "X-Requested-With": "XMLHttpRequest"}
+    with TestClient(app) as browser:
+        monkeypatch.setenv("AFTERGLOW_PUBLIC_URL", "http://untrusted.example")
+        invalid_status = browser.get("/api/cybersecurity/status", headers=headers)
+        assert invalid_status.status_code == 200
+        assert invalid_status.json()["console_url"] == ""
+        assert "AFTERGLOW_PUBLIC_URL" in invalid_status.json()["console_error"]
+        monkeypatch.setenv("AFTERGLOW_PUBLIC_URL", "https://afterglow.example")
+        assert browser.get("/api/cybersecurity/status", headers=headers).json()["console_url"] == "https://afterglow.example"
+        created = browser.post("/api/cybersecurity/tasks", headers=headers, json={
+            "name": " Lab ", "description": " Test target ", "goal": " Find issues ", "injected": "ignored",
+        })
+        assert created.status_code == 200
+        assert calls[-1] == ("/api/tasks", {"method": "POST", "body": {
+            "name": "Lab", "description": "Test target", "goal": "Find issues",
+            "coverage_enabled": True, "seed_first_intent": False,
+        }, "params": None, "auth": True})
+        assert browser.post("/api/cybersecurity/tasks", headers=headers, json={
+            "description": "  ", "goal": "find issues",
+        }).status_code == 422
+        assert browser.post("/api/cybersecurity/tasks/7/chat", headers=headers, json={"message": " hello "}).status_code == 200
+        assert calls[-1] == ("/api/chat", {"method": "POST", "body": {"message": "hello"}, "params": {"task": 7}, "auth": True})
+        assert browser.post("/api/cybersecurity/tasks/7/scope", headers=headers, json={
+            "kind": "root_domain", "value": "  ",
+        }).status_code == 422
+        assert browser.post("/api/cybersecurity/assets", headers=headers, json={
+            "kind": "service", "value": "file:///etc/passwd", "task_id": 7,
+        }).status_code == 422
+        assert browser.get("/api/cybersecurity/assets?task_id=7", headers=headers).json() == {
+            "assets": [{"id": 3, "domain": "example.test"}],
+        }
+        assert browser.get("/api/cybersecurity/tasks/7/report", headers=headers).json() == {"markdown": "# Report"}
+        assert calls[-1][1]["as_text"] is True
+        assert browser.delete("/api/cybersecurity/tasks/7/rules/3", headers={"X-Test-User": "admin"}).status_code == 403
+        assert browser.delete("/api/cybersecurity/tasks/7/rules/3", headers=headers).status_code == 200
+        assert browser.post("/api/cybersecurity/tasks/7/rules", headers=headers, json={
+            "action": "block", "kind": "root_domain", "pattern": "example.test",
+        }).status_code == 422
+        assert browser.post("/api/cybersecurity/models/active", headers={**headers, "Origin": "https://other.example"}, json={"id": 3}).status_code == 403
+        assert browser.post("/api/cybersecurity/models/local/discover", headers=headers, json={
+            "base_url": "http://untrusted.example:11434",
+        }).status_code == 422
+        assert browser.post("/api/cybersecurity/models/local/discover", headers=headers, json={
+            "base_url": "http://ollama:11434",
+        }).status_code == 200
+        assert calls[-1] == ("/api/llm/models", {"method": "POST", "body": {
+            "provider": "ollama", "base_url": "http://ollama:11434",
+        }, "params": None, "auth": True})
+        assert browser.post("/api/cybersecurity/models/local/profiles", headers=headers, json={
+            "base_url": "http://ollama:11434", "name": " Lab ", "model": " security-model ", "api_key": "ignored",
+        }).status_code == 200
+        assert calls[-1][1]["body"] == {
+            "name": "Lab", "format": "ollama", "model": "security-model", "base_url": "http://ollama:11434",
+            "streaming": True, "context_window_k": 32, "max_tokens": 4096,
+            "keep_alive": "30m", "llm_max_concurrent": 1,
+        }
