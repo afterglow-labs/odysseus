@@ -138,6 +138,7 @@ def helper_error(workflow, runtime, project):
 
 def discover_components(roots):
     from src.model_library import component_aliases
+    from scripts.h3_lora_help import known_h3_lora, lora_documentation
     result, seen, known_ids, metadata_cache = [], set(), set(), {}
     patterns = [s['pattern'] for w in WORKFLOWS for s in w['slots']]
     for root in roots:
@@ -160,7 +161,8 @@ def discover_components(roots):
                     continue
                 known_ids.update([identity, *aliases])
                 result.append({'id': identity, **({'aliases': aliases} if aliases else {}),
-                               'name': name, 'path': str(path.absolute()), 'nvfp4': 'nvfp4' in name.lower()})
+                               'name': name, 'path': str(path.absolute()), 'nvfp4': 'nvfp4' in name.lower(),
+                               **({'lora_help': lora_documentation(name)} if known_h3_lora(name) else {})})
     return sorted(result, key=lambda c: (0 if c['nvfp4'] else 1 if 'int8' in c['name'].lower() else 2, c['name']))
 
 

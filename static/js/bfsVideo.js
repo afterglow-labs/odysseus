@@ -317,6 +317,17 @@ export function showBfsVideo({ preferred = null, layout = 'classic' } = {}, anch
       const wanted = incompatibleAdapter && slot.key === 'lora' ? '' : bfsComponentId(selectedAdapter?.id ?? previous.components?.[slot.key] ?? slot.default_id, candidates);
       if (wanted && !candidates.some(item => optionId(item.id) === wanted)) control.add(new Option('Previously selected component is unavailable', wanted));
       if ([...control.options].some(option => option.value === wanted)) control.value = wanted;
+      if (slot.key === 'lora' || candidates.some(item => item.lora_help)) {
+        const help = el('button', 'memory-toolbar-btn', 'About this LoRA'); help.type = 'button';
+        help.disabled = !control.value; control.parentElement.append(help);
+        control.addEventListener('change', () => { help.disabled = !control.value; });
+        help.onclick = async event => {
+          event.preventDefault();
+          const component = candidates.find(item => optionId(item.id) === control.value);
+          const { showLoraHelp } = await import('./h3LoraPromptExample.js');
+          if (help.isConnected) showLoraHelp(component, help);
+        };
+      }
       slots.set(slot.key, { control, ids: new Set(candidates.map(item => optionId(item.id))), required: !!slot.required, label: slot.label || slot.key });
     }
     for (const spec of workflow.controls || []) {

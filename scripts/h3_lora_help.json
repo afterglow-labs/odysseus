@@ -1,0 +1,684 @@
+{
+  "Anime2Realsim__H3.safetensors": {
+    "title": "Anime to Realism · H3 Ref2VA",
+    "summary": "Converts an anime reference toward a live-action look while retaining its composition and character details.",
+    "trigger": "Use LumiReal with a description of the intended live-action style.",
+    "trigger_words": "LumiReal",
+    "usage": [
+      "Provide the anime reference in a Ref2VA workflow. Describe the scene and whether you want natural photography, cosplay photography, or a cinematic appearance."
+    ],
+    "settings": [],
+    "caveats": [
+      "The README does not publish a fixed strength or sampling recipe for this file."
+    ],
+    "sources": [
+      {
+        "label": "Publisher README",
+        "url": "https://huggingface.co/LiseTY/Minimax-H3-ref2v_Anime_2_Realism/blob/main/README.md"
+      }
+    ],
+    "coverage": "documented",
+    "verified_on": "2026-11-03"
+  },
+  "H3-Person-Remover-V1.safetensors": {
+    "title": "Person Remover V1",
+    "summary": "Removes a masked person from source footage and reconstructs the background.",
+    "trigger": "Use a removal instruction describing the green-masked person; no separate magic token is published.",
+    "trigger_words": "",
+    "usage": [
+      "The author workflow requires a source clip, a clean first-frame background, and a tracked green mask. Use its aligned-guide workflow; simply selecting the LoRA does not create these inputs."
+    ],
+    "settings": [
+      "Author starting point: strength 1, 12 steps, er_sde / simple, CFG 1; source at 24 fps with dimensions divisible by 32."
+    ],
+    "caveats": [
+      "The author processes short windows with history. This is not a general text-only removal switch."
+    ],
+    "sources": [
+      {
+        "label": "Publisher README",
+        "url": "https://huggingface.co/akatz-ai/MiniMax-H3-Person-Remover-LoRA/blob/main/README.md"
+      },
+      {
+        "label": "Author workflow",
+        "url": "https://github.com/akatz-ai/h3-relay/blob/main/example_workflows/H3-Relay-Person-Remover-V1.json"
+      }
+    ],
+    "coverage": "documented",
+    "verified_on": "2026-11-03"
+  },
+  "H3_Combat_V2.safetensors": {
+    "title": "Combat Base V2",
+    "summary": "Improves action continuity, physical reactions, and body performance, including dialogue scenes.",
+    "trigger": "Start without a trigger. Optional prfight2 increases intensity; prfin1 adds stronger stunt reactions.",
+    "trigger_words": "prfight2",
+    "usage": [
+      "Describe who acts, the movement, and the response. Place action before dialogue in the same shot. The LoRA does not choreograph a scene automatically."
+    ],
+    "settings": [
+      "Author choices: res_multistep / simple, or euler / beta. No single strength or step count is specified."
+    ],
+    "caveats": [],
+    "sources": [
+      {
+        "label": "Publisher README",
+        "url": "https://huggingface.co/JOKER141/MiniMax-H3-Combat-Base-V2/blob/main/README.md"
+      }
+    ],
+    "coverage": "documented",
+    "verified_on": "2026-11-03"
+  },
+  "HMNSFW-AIO-V2.5.safetensors": {
+    "title": "HMNSFW AIO V2.5",
+    "summary": "Adult-content motion adapter trained on video.",
+    "trigger": "Use hmmotion.",
+    "trigger_words": "hmmotion",
+    "usage": [],
+    "settings": [
+      "Publisher range for V2.5: strength 0.5–0.9."
+    ],
+    "caveats": [
+      "The older V2 limit of 0.5 does not describe this V2.5 file."
+    ],
+    "sources": [
+      {
+        "label": "Publisher README",
+        "url": "https://huggingface.co/Hearmeman/minimax-h3-loras/blob/main/README.md"
+      }
+    ],
+    "coverage": "documented",
+    "verified_on": "2026-11-03"
+  },
+  "HMPenis_v2_e35.safetensors": {
+    "title": "HMPenis · anatomy",
+    "summary": "Adult male anatomy adapter trained on still images.",
+    "trigger": "Put HMPenis at the start of the prompt.",
+    "trigger_words": "HMPenis",
+    "usage": [],
+    "settings": [
+      "No fixed strength published; the author’s general starting point is 1.0."
+    ],
+    "caveats": [
+      "The README calls this release v1.0 despite v2 in the filename. Motion comes from the base model."
+    ],
+    "sources": [
+      {
+        "label": "Publisher README",
+        "url": "https://huggingface.co/Hearmeman/minimax-h3-loras/blob/main/README.md"
+      }
+    ],
+    "coverage": "documented",
+    "verified_on": "2026-11-03"
+  },
+  "HMBreastsV2.safetensors": {
+    "title": "HMBreasts V2 · anatomy",
+    "summary": "Adult chest anatomy adapter trained on still images.",
+    "trigger": "Use tits in ordinary descriptive prose, without a leading HMBreasts token.",
+    "trigger_words": "tits",
+    "usage": [],
+    "settings": [
+      "Author setup: seeds2 / ddim_uniform with an 8-step Turbo adapter; no fixed strength published."
+    ],
+    "caveats": [
+      "The V1 HMBreasts trigger does not describe V2."
+    ],
+    "sources": [
+      {
+        "label": "Publisher README",
+        "url": "https://huggingface.co/Hearmeman/minimax-h3-loras/blob/main/README.md"
+      }
+    ],
+    "coverage": "documented",
+    "verified_on": "2026-11-03"
+  },
+  "HMSquirtV0.1.safetensors": {
+    "title": "HMSquirt V0.1",
+    "summary": "Experimental adult-content effect adapter trained on a small video dataset.",
+    "trigger": "Use hmsquirt.",
+    "trigger_words": "hmsquirt",
+    "usage": [],
+    "settings": [
+      "Author setup: Euler / simple, 12 steps, shift 6; Turbo strength 0.5 and accompanying HMPussy strength 0.4."
+    ],
+    "caveats": [
+      "The README does not give a fixed strength for this adapter itself."
+    ],
+    "sources": [
+      {
+        "label": "Publisher README",
+        "url": "https://huggingface.co/Hearmeman/minimax-h3-loras/blob/main/README.md"
+      }
+    ],
+    "coverage": "documented",
+    "verified_on": "2026-11-03"
+  },
+  "Vagina_minimax-h3_epoch20.safetensors": {
+    "title": "HMPussy V1 · anatomy",
+    "summary": "Adult female anatomy adapter trained on still images.",
+    "trigger": "Use pussy.",
+    "trigger_words": "pussy",
+    "usage": [],
+    "settings": [
+      "Publisher strength: 1.0."
+    ],
+    "caveats": [
+      "This file is V1, not HMPussy V2. It does not train motion."
+    ],
+    "sources": [
+      {
+        "label": "Publisher README",
+        "url": "https://huggingface.co/Hearmeman/minimax-h3-loras/blob/main/README.md"
+      }
+    ],
+    "coverage": "documented",
+    "verified_on": "2026-11-03"
+  },
+  "MM-H3 - Ref2VA - Age Slider v2 - EXPERIMENTAL.safetensors": {
+    "title": "Age Slider v2 · Ref2VA",
+    "summary": "Changes apparent subject age using a signed LoRA strength.",
+    "trigger": "No trigger is listed. Adjust the Age control.",
+    "trigger_words": "",
+    "usage": [
+      "Odysseus exposes −5 to +5: negative is younger, positive is older, and 0 disables the effect. This range is the app’s control, not a publisher-tested recommendation."
+    ],
+    "settings": [],
+    "caveats": [
+      "The publisher labels this Ref2VA release untested and experimental. No detailed usage README is provided beyond that release note and a video."
+    ],
+    "sources": [
+      {
+        "label": "Publisher README",
+        "url": "https://huggingface.co/Playtime-AI/Minimax_H3-Age_Slider/blob/main/README.md"
+      }
+    ],
+    "coverage": "partial",
+    "verified_on": "2026-11-03"
+  },
+  "Minimax-h3_Third_person_view.safetensors": {
+    "title": "Third-person View",
+    "summary": "Game-style camera framing, tracking, and HUD aesthetics.",
+    "trigger": "Use camera tags appropriate to the shot; third-person perspective and over-the-shoulder camera are author examples.",
+    "trigger_words": "third-person perspective, over-the-shoulder camera",
+    "usage": [
+      "Use Ref2VA image references and describe the camera view, subject movement, and any HUD explicitly. The README also covers first-person POV and FPV HUD."
+    ],
+    "settings": [
+      "Publisher strength: 0.6–0.85; start at 0.7."
+    ],
+    "caveats": [],
+    "sources": [
+      {
+        "label": "Publisher README",
+        "url": "https://huggingface.co/WarmBloodAban/Minimax_H3_LoRAs/blob/main/README.md"
+      }
+    ],
+    "coverage": "documented",
+    "verified_on": "2026-11-03"
+  },
+  "h3-realism-people-t2v-i2v-r2v.safetensors": {
+    "title": "Realism People",
+    "summary": "Adds natural skin texture, hair detail, and photographic character to people.",
+    "trigger": "Start the prompt with r34l1sm.",
+    "trigger_words": "r34l1sm",
+    "usage": [
+      "Supports text, image, and reference video generation. Describe the scene after the trigger."
+    ],
+    "settings": [
+      "Publisher strength: 1.0; use 0.6–0.8 for a lighter effect."
+    ],
+    "caveats": [],
+    "sources": [
+      {
+        "label": "Publisher README",
+        "url": "https://huggingface.co/fal/MiniMax-H3-Realism-People-LoRA/blob/main/README.md"
+      }
+    ],
+    "coverage": "documented",
+    "verified_on": "2026-11-03"
+  },
+  "h3_character_swap_v1.5.safetensors": {
+    "title": "Character Swap V1.5",
+    "summary": "Replaces a character while retaining a source performance.",
+    "trigger": "Use a replacement instruction naming <Video 1> and <Picture 1>; no separate trigger token is published.",
+    "trigger_words": "",
+    "usage": [
+      "Source performance is Video 1; replacement character is Picture 1. The author workflow also uses segmentation and aligned conditioning. Selecting the LoRA alone does not provide masks or preserve the original soundtrack."
+    ],
+    "settings": [
+      "Author setup: Ref2VA base; Character Swap strength 1 plus FL2VA Turbo 8-step v1.0 768p at strength 1; 8 steps, er_sde / normal, video shift 12, audio shift 3."
+    ],
+    "caveats": [],
+    "sources": [
+      {
+        "label": "Publisher README",
+        "url": "https://huggingface.co/akatz-ai/MiniMax-H3-Character-Swap-LoRA/blob/main/README.md"
+      }
+    ],
+    "coverage": "documented",
+    "verified_on": "2026-11-03"
+  },
+  "minimax-h3-rough-2d-cartoon-illustration-1200.safetensors": {
+    "title": "Rough 2D Cartoon · checkpoint 1200",
+    "summary": "Produces a rough, hand-drawn cartoon illustration style.",
+    "trigger": "Include the phrase rough 2D cartoon illustration.",
+    "trigger_words": "rough 2D cartoon illustration",
+    "usage": [
+      "Describe the subject and motion along with the style phrase. This is the publisher-recommended 1200 training checkpoint; 1200 is not the sampling step count."
+    ],
+    "settings": [],
+    "caveats": [
+      "The README does not prescribe a single LoRA strength or inference schedule."
+    ],
+    "sources": [
+      {
+        "label": "Publisher README",
+        "url": "https://huggingface.co/prithivMLmods/MiniMax-H3-Rough-2D-Cartoon-Illustration/blob/main/README.md"
+      }
+    ],
+    "coverage": "documented",
+    "verified_on": "2026-11-03"
+  },
+  "minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors": {
+    "title": "DMAD 4-step · rank-reduced conversion",
+    "summary": "Kijai’s reduced-rank conversion of a distilled audio-video generation adapter.",
+    "trigger": "No text trigger; its effect comes from loading the adapter and using its sampling schedule.",
+    "trigger_words": "",
+    "usage": [],
+    "settings": [
+      "Original DMAD guidance: strength 1, CFG 1, 4 steps, lcm / simple, video shift 12 and audio shift 2."
+    ],
+    "caveats": [
+      "Those settings come from DMAD’s original full-critic release. Kijai’s rank-39 conversion is not byte-identical; its README gives no separate validation recipe. Euler is not the original DMAD operating point."
+    ],
+    "sources": [
+      {
+        "label": "Publisher README",
+        "url": "https://huggingface.co/Kijai/MiniMax-H3-experimental/blob/main/README.md"
+      },
+      {
+        "label": "Publisher README",
+        "url": "https://huggingface.co/ZhengmingYu/DMAD/blob/main/README.md"
+      }
+    ],
+    "coverage": "partial",
+    "verified_on": "2026-11-03"
+  },
+  "minimax_h3_open_regenerate_2k_refiner_rank_384_bf16.safetensors": {
+    "title": "Open Regenerate 2K · refiner only",
+    "summary": "Extracted refinement adapter for a later enhancement pass.",
+    "trigger": "No trigger is documented for this extraction.",
+    "trigger_words": "",
+    "usage": [
+      "Use with the matching Open Regenerate refinement workflow. A LoRA selection alone does not add latent upscaling or a second pass."
+    ],
+    "settings": [],
+    "caveats": [
+      "Kijai explicitly says this file contains only the refiner, without LMS or LightX2V Turbo. Strength, steps, and a complete standalone recipe are not documented on its card."
+    ],
+    "sources": [
+      {
+        "label": "Publisher README",
+        "url": "https://huggingface.co/Kijai/MiniMax-H3-experimental/blob/main/README.md"
+      }
+    ],
+    "coverage": "partial",
+    "verified_on": "2026-11-03"
+  },
+  "minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16.safetensors": {
+    "title": "LightX2V FL2VA Turbo · 4-step v1.3 768p",
+    "summary": "First/last-frame acceleration adapter.",
+    "trigger": "No prompt trigger; enable it with the matching model and sampling recipe.",
+    "trigger_words": "",
+    "usage": [],
+    "settings": [
+      "This is a 4-step FL2VA adapter. Use a workflow written for v1.3; exact version-specific shifts and strength are not listed in the current publisher table."
+    ],
+    "caveats": [
+      "The current publisher specification table does not cover this exact version. App preset settings are labeled separately from author specifications."
+    ],
+    "sources": [
+      {
+        "label": "LightX2V model specifications",
+        "url": "https://github.com/ModelTC/Minimax-H3-Turbo/blob/main/README.md"
+      },
+      {
+        "label": "Published files / model card",
+        "url": "https://huggingface.co/lightx2v/Minimax-h3-Turbo"
+      }
+    ],
+    "coverage": "partial",
+    "verified_on": "2026-11-03"
+  },
+  "minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors": {
+    "title": "LightX2V FL2VA Turbo · 8-step v1.0 768p",
+    "summary": "First/last-frame acceleration adapter, trained at 768p.",
+    "trigger": "No prompt trigger; enable it with the matching model and sampling recipe.",
+    "trigger_words": "",
+    "usage": [],
+    "settings": [
+      "Author specification: 8 steps; video/audio shifts 6/3."
+    ],
+    "caveats": [],
+    "sources": [
+      {
+        "label": "LightX2V model specifications",
+        "url": "https://github.com/ModelTC/Minimax-H3-Turbo/blob/main/README.md"
+      },
+      {
+        "label": "Published files / model card",
+        "url": "https://huggingface.co/lightx2v/Minimax-h3-Turbo"
+      }
+    ],
+    "coverage": "documented",
+    "verified_on": "2026-11-03"
+  },
+  "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors": {
+    "title": "LightX2V FL2VA Turbo · 8-step v1.0 544p",
+    "summary": "Earlier first/last-frame acceleration adapter, trained at 544p.",
+    "trigger": "No prompt trigger; enable it with the matching model and sampling recipe.",
+    "trigger_words": "",
+    "usage": [],
+    "settings": [
+      "Author specification: 8 or 4 steps; shifts 12/3."
+    ],
+    "caveats": [
+      "PinkCherry uses this exact file. The file with _768p in its name is a different version."
+    ],
+    "sources": [
+      {
+        "label": "LightX2V model specifications",
+        "url": "https://github.com/ModelTC/Minimax-H3-Turbo/blob/main/README.md"
+      },
+      {
+        "label": "Published files / model card",
+        "url": "https://huggingface.co/lightx2v/Minimax-h3-Turbo"
+      }
+    ],
+    "coverage": "documented",
+    "verified_on": "2026-11-03"
+  },
+  "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors": {
+    "title": "LightX2V Ref2VA Turbo · 4-step v0.1",
+    "summary": "Reference-conditioned acceleration adapter, trained at 544p.",
+    "trigger": "No prompt trigger; enable it with the matching model and sampling recipe.",
+    "trigger_words": "",
+    "usage": [],
+    "settings": [
+      "Author specification: 4 steps; shifts 12/3."
+    ],
+    "caveats": [],
+    "sources": [
+      {
+        "label": "LightX2V model specifications",
+        "url": "https://github.com/ModelTC/Minimax-H3-Turbo/blob/main/README.md"
+      },
+      {
+        "label": "Published files / model card",
+        "url": "https://huggingface.co/lightx2v/Minimax-h3-Turbo"
+      }
+    ],
+    "coverage": "documented",
+    "verified_on": "2026-11-03"
+  },
+  "minimax_h3_ref2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors": {
+    "title": "LightX2V Ref2VA Turbo · 4-step v1.0 768p",
+    "summary": "Reference-conditioned acceleration adapter.",
+    "trigger": "No prompt trigger; enable it with the matching model and sampling recipe.",
+    "trigger_words": "",
+    "usage": [],
+    "settings": [
+      "Odysseus Seed Hunter preset: strength 1, 4 steps, Euler / simple, shifts 6/3."
+    ],
+    "caveats": [
+      "The current publisher specification table does not cover this exact version. App preset settings are labeled separately from author specifications."
+    ],
+    "sources": [
+      {
+        "label": "LightX2V model specifications",
+        "url": "https://github.com/ModelTC/Minimax-H3-Turbo/blob/main/README.md"
+      },
+      {
+        "label": "Published files / model card",
+        "url": "https://huggingface.co/lightx2v/Minimax-h3-Turbo"
+      }
+    ],
+    "coverage": "partial",
+    "verified_on": "2026-11-03"
+  },
+  "minimax_h3_ref2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors": {
+    "title": "LightX2V Ref2VA Turbo · 8-step v1.0 768p",
+    "summary": "Reference-conditioned acceleration adapter.",
+    "trigger": "No prompt trigger; enable it with the matching model and sampling recipe.",
+    "trigger_words": "",
+    "usage": [],
+    "settings": [
+      "Use the matching 8-step v1.0 workflow; this is distinct from v1.1."
+    ],
+    "caveats": [
+      "The current publisher specification table does not cover this exact version. App preset settings are labeled separately from author specifications."
+    ],
+    "sources": [
+      {
+        "label": "LightX2V model specifications",
+        "url": "https://github.com/ModelTC/Minimax-H3-Turbo/blob/main/README.md"
+      },
+      {
+        "label": "Published files / model card",
+        "url": "https://huggingface.co/lightx2v/Minimax-h3-Turbo"
+      }
+    ],
+    "coverage": "partial",
+    "verified_on": "2026-11-03"
+  },
+  "minimax_h3_ref2v_turbo_8step_v1.1_768p_comfyui_bf16.safetensors": {
+    "title": "LightX2V Ref2VA Turbo · 8-step v1.1 768p",
+    "summary": "Reference-conditioned acceleration adapter.",
+    "trigger": "No prompt trigger; enable it with the matching model and sampling recipe.",
+    "trigger_words": "",
+    "usage": [],
+    "settings": [
+      "Odysseus Seed Hunter preset: strength 1, 8 steps, Euler / simple, shifts 6/3."
+    ],
+    "caveats": [
+      "The current publisher specification table does not cover this exact version. App preset settings are labeled separately from author specifications."
+    ],
+    "sources": [
+      {
+        "label": "LightX2V model specifications",
+        "url": "https://github.com/ModelTC/Minimax-H3-Turbo/blob/main/README.md"
+      },
+      {
+        "label": "Published files / model card",
+        "url": "https://huggingface.co/lightx2v/Minimax-h3-Turbo"
+      }
+    ],
+    "coverage": "partial",
+    "verified_on": "2026-11-03"
+  },
+  "minimax_h3_turbo_4step_ema_ckpt500_pruned_comfyui.safetensors": {
+    "title": "Turbo EMA checkpoint 500 · pruned ComfyUI",
+    "summary": "Few-step acceleration conversion used by the Muse Director workflow.",
+    "trigger": "No prompt trigger.",
+    "trigger_words": "",
+    "usage": [
+      "Use the Muse Director preset for its complete preview/refinement settings. Its refinement stage has a separate schedule."
+    ],
+    "settings": [],
+    "caveats": [
+      "The publisher’s current 8-step Euler / beta recommendation targets v4 step-600. It should not be presented as a checkpoint-500-specific recommendation."
+    ],
+    "sources": [
+      {
+        "label": "Publisher README",
+        "url": "https://huggingface.co/Momoking/MiniMax-H3-Turbo-Lora-ComfyUI/blob/main/README.md"
+      },
+      {
+        "label": "Muse Director workflow",
+        "url": "https://github.com/muse-collective-26/MiniMaxH3-Director-Seed-Hunt"
+      }
+    ],
+    "coverage": "partial",
+    "verified_on": "2026-11-03"
+  },
+  "minimax_h3_turbo_v4_step600_ema.safetensors": {
+    "title": "Turbo v4 · step-600 EMA",
+    "summary": "Distilled video-and-audio acceleration adapter.",
+    "trigger": "No prompt trigger.",
+    "trigger_words": "",
+    "usage": [],
+    "settings": [
+      "Publisher: strength 1, 4–8 sampling steps; 6–8 helps fast motion. Use the author’s MiniMax-H3 Turbo Sampler with the simple scheduler."
+    ],
+    "caveats": [
+      "600 is the training checkpoint, not a sampling step count. More than 8 sampling steps may introduce oversharpening. Use a conversion that matches the selected base model’s tensor layout."
+    ],
+    "sources": [
+      {
+        "label": "Publisher README",
+        "url": "https://huggingface.co/larryvrh/MiniMax-H3-Turbo-Lora/blob/main/README.md"
+      }
+    ],
+    "coverage": "documented",
+    "verified_on": "2026-11-03"
+  },
+  "minimax_h3_turbo_v4_step600_ema_DasiwaREF2VAHybridV1_0_curveproj1025_compat_v001.safetensors": {
+    "title": "Turbo v4 · Dasiwa compatibility conversion",
+    "summary": "A local curve-projected conversion for Dasiwa REF2VA Hybrid V1.0.",
+    "trigger": "No prompt trigger.",
+    "trigger_words": "",
+    "usage": [
+      "Use only with the exact compatible Dasiwa checkpoint recorded in the file metadata. This is not the generic v4 adapter."
+    ],
+    "settings": [
+      "Embedded metadata specifies 4 sampling steps."
+    ],
+    "caveats": [
+      "The file reports static projection validation, with perceptual rendering still pending. Its exact local filename has no published README; the link describes the original adapter."
+    ],
+    "sources": [
+      {
+        "label": "Publisher README",
+        "url": "https://huggingface.co/larryvrh/MiniMax-H3-Turbo-Lora/blob/main/README.md"
+      }
+    ],
+    "coverage": "partial",
+    "verified_on": "2026-11-03"
+  },
+  "minimax_h3_turbo_4step_10ErosMax_test4_pruned_curveproj1025_exp_v001-T8.safetensors": {
+    "title": "Turbo 4-step · 10ErosMax compatibility",
+    "summary": "Experimental acceleration projection for a specific pruned 10ErosMax base.",
+    "trigger": "No prompt trigger.",
+    "trigger_words": "",
+    "usage": [],
+    "settings": [
+      "Author’s validated path: strength 1; 4 video and 4 audio steps; shifts 12/3; dual_clock_euler / native_flow."
+    ],
+    "caveats": [
+      "Requires the matching base checkpoint and the author’s custom sampling route. Ordinary Euler plus an external sigma-shift node is not equivalent. The card does not validate arbitrary bases or extra steps."
+    ],
+    "sources": [
+      {
+        "label": "Publisher README",
+        "url": "https://huggingface.co/t8star/minimax_h3_turbo_4step_10ErosMax_test4_pruned_curveproj1025_T8/blob/main/README.md"
+      }
+    ],
+    "coverage": "documented",
+    "verified_on": "2026-11-03"
+  },
+  "minimax_h3_head_swap_v1.0_r32.safetensors": {
+    "title": "Head Swap v1.0",
+    "summary": "Experimental head replacement guided by a source video and a reference face.",
+    "trigger": "Start the edit instruction with head_swap:.",
+    "trigger_words": "head_swap:",
+    "usage": [
+      "Send the face image through the native image-reference path as Picture 1. The full source video needs an aligned Add Guide, not the ordinary video-reference path. BFS supplies its workflow-specific inputs."
+    ],
+    "settings": [
+      "Author starting strength: 1.0; match source resolution, aspect ratio, and frame count."
+    ],
+    "caveats": [],
+    "sources": [
+      {
+        "label": "Head Swap README and prompt template",
+        "url": "https://huggingface.co/Alissonerdx/Minimax-H3-ComfyUI/blob/main/docs/head-swap.md"
+      },
+      {
+        "label": "BFS workflow README",
+        "url": "https://huggingface.co/Alissonerdx/BFS-Best-Face-Swap-Video/blob/main/README.md"
+      }
+    ],
+    "coverage": "documented",
+    "verified_on": "2026-11-03"
+  },
+  "minimax_h3_lms_v1.0_r64.safetensors": {
+    "title": "LMS v1.0 · sharpness",
+    "summary": "A detail-enhancement pass over an existing video.",
+    "trigger": "Use the author’s enhancement caption below.",
+    "trigger_words": "Enhance this video with sharp, crisp details while preserving a natural photorealistic appearance.",
+    "usage": [
+      "Requires an aligned source-video guide starting at frame 0. Keep the output dimensions and frame count matched to the source. Ordinary references are not the same conditioning path."
+    ],
+    "settings": [
+      "Author starting strength: 1.0, primarily Ref2VA."
+    ],
+    "caveats": [
+      "This LoRA is not a latent-upscaler model and does not enable an upscale stage by itself."
+    ],
+    "sources": [
+      {
+        "label": "LMS README and workflow",
+        "url": "https://huggingface.co/Alissonerdx/Minimax-H3-ComfyUI/blob/main/docs/lms.md"
+      }
+    ],
+    "coverage": "documented",
+    "verified_on": "2026-11-03"
+  },
+  "minimax_h3_vfx_edit_v1.0_r128.safetensors": {
+    "title": "VFX Edit v1.0",
+    "summary": "Prompt-directed visual edits that follow an aligned source video.",
+    "trigger": "Begin with vfx_edit: and describe the requested change.",
+    "trigger_words": "vfx_edit:",
+    "usage": [
+      "Use the VFX Edit workflow with its source-video guide. Match the source timing and framing."
+    ],
+    "settings": [
+      "Author starting strength: 1.0."
+    ],
+    "caveats": [
+      "This installed file is the regular version, not the separate FFP adapter."
+    ],
+    "sources": [
+      {
+        "label": "VFX Edit README and workflow",
+        "url": "https://huggingface.co/Alissonerdx/Minimax-H3-ComfyUI/blob/main/docs/vfx-edit.md"
+      }
+    ],
+    "coverage": "documented",
+    "verified_on": "2026-11-03"
+  },
+  "pika_h3_flex_ref2va_v1_bf16.safetensors": {
+    "title": "Pika H3 Flex · Ref2VA",
+    "summary": "Six-step generation with multimodal references, motion, and synchronized audio.",
+    "trigger": "No fixed trigger. Describe the scene and identify the ordered references.",
+    "trigger_words": "",
+    "usage": [
+      "Use the Pika Flex preset with a Ref2VA base and its exact six-step schedule."
+    ],
+    "settings": [],
+    "caveats": [
+      "Generic six-step Euler sampling is not equivalent. This file is the Ref2VA adapter, not Pika’s FL2VA adapter. Hosted Pika output options do not imply the same local capabilities."
+    ],
+    "sources": [
+      {
+        "label": "Publisher README",
+        "url": "https://huggingface.co/Pika-Labs/Pika-H3-Flex/blob/main/README.md"
+      },
+      {
+        "label": "Prompt guide",
+        "url": "https://github.com/Pika-Labs/Pika-H3-Flex/blob/main/docs/prompt-guidance.md"
+      }
+    ],
+    "coverage": "documented",
+    "verified_on": "2026-11-03"
+  }
+}

@@ -297,6 +297,11 @@
 .h3-prompt-example-dialog h2 { margin:0; font-size:18px; }
 .h3-prompt-example-dialog p { margin:0; overflow-wrap:anywhere; }
 .h3-prompt-example-dialog textarea { box-sizing:border-box; width:100%; height:min(55dvh,560px); min-height:120px; resize:none; padding:12px; color:inherit; background:var(--bg,#1d1b24); border:1px solid var(--border,#544c60); border-radius:6px; font:13px/1.6 ui-monospace,monospace; user-select:text; -webkit-user-select:text; }
+.h3-lora-help-content { overflow-y:auto; min-height:0; display:flex; flex-direction:column; gap:16px; }
+.h3-lora-help-content section { display:flex; flex-direction:column; gap:8px; }
+.h3-lora-help-content h3 { margin:0; }
+.h3-lora-help-content textarea { height:auto; min-height:0; }
+.h3-lora-help-content a { color:var(--fg); text-decoration:underline; overflow-wrap:anywhere; }
 .h3-lora-library-dialog { width:min(900px,100%); }
 .h3-lora-library-dialog .h3-video-scroll { display:block; }
 .h3-lora-library-source,.h3-lora-profile-form { display:grid; gap:12px; margin:12px 0; }
