@@ -26,11 +26,11 @@ def _scope(manager, scope, recipe, stage):
         if recipe is not None or stage is not None:
             raise ValueError("All history scope does not accept workflow filters")
     elif recipe is not None:
-        if manager.root.name != "h3" or not isinstance(recipe, str) or recipe not in {"seed_hunter", "director"}:
-            raise ValueError("Choose the H3 seed_hunter or director history filter")
-        if recipe == "director":
+        if manager.root.name != "h3" or not isinstance(recipe, str) or recipe not in {"seed_hunter", "director", "h3md", "pinkcherry"}:
+            raise ValueError("Choose an available H3 workflow history filter")
+        if recipe in {"director", "h3md", "pinkcherry"}:
             if stage is not None:
-                raise ValueError("Director history does not use a Seed Hunter stage")
+                raise ValueError("This workflow does not use a Seed Hunter stage")
             return
         if not isinstance(stage, str) or stage not in {"scout", "not_scout"}:
             raise ValueError("Choose scout or not_scout for Seed Hunter history")
@@ -45,8 +45,8 @@ def _matches(manager, state, manifest, scope, recipe, stage):
     config = config if isinstance(config, dict) else {}
     saved_recipe = state.get("recipe", config.get("recipe"))
     if recipe is None:
-        return saved_recipe not in {"seed_hunter", "director"}
-    if recipe == "director":
+        return saved_recipe not in {"seed_hunter", "director", "h3md", "pinkcherry"}
+    if recipe in {"director", "h3md", "pinkcherry"}:
         return saved_recipe == recipe
     options = config.get("seed_hunter", {})
     scout = isinstance(options, dict) and options.get("stage") == "scout"

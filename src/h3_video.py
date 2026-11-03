@@ -221,7 +221,7 @@ def discover_components(roots):
                     continue
                 known_ids.update([identity, *aliases])
                 lower = name.lower()
-                if "latent_upscaler" in lower:
+                if "latent_upscaler" in lower or lower.startswith("h3_upscaler_"):
                     role = "latent_upscaler"
                 elif adapter or "lora" in lower:
                     role = "lora"
@@ -355,14 +355,18 @@ def validate_config(raw, components, gpus, uploads):
     if not isinstance(raw, dict):
         raise ValueError("config must be a JSON object")
     from src.h3_loras import lora_entries
-    allowed = set(DEFAULTS) | {"prompt", "model", "encoder", "video_vae", "audio_vae", "lora", "loras", "recipe", "seed_hunter", "director", "model_fl2va", "latent_upscaler", "reference_video_ranges"}
+    allowed = set(DEFAULTS) | {"prompt", "model", "encoder", "video_vae", "audio_vae", "lora", "loras", "recipe", "seed_hunter", "director", "h3md", "model_fl2va", "latent_upscaler", "reference_video_ranges"}
     if set(raw) - allowed:
         raise ValueError("Unknown generation setting: " + sorted(set(raw) - allowed)[0])
     config = {**DEFAULTS, **raw}
     from scripts.h3_seed_hunter_controls import validate_options, limits, SAMPLERS, SCHEDULERS, scout_upscale_enabled, validate_scout_output
     hunt = config.get("recipe") == "seed_hunter"
     director = config.get("recipe") == "director"
-    if ("recipe" in raw and not (hunt or director) or not hunt and ("seed_hunter" in raw or "latent_upscaler" in raw)
+    h3md = config.get("recipe") == "h3md"
+    pinkcherry = config.get("recipe") == "pinkcherry"
+    if ("recipe" in raw and not (hunt or director or h3md or pinkcherry) or not hunt and "seed_hunter" in raw
+            or not (hunt or h3md) and "latent_upscaler" in raw
+            or not h3md and "h3md" in raw
             or not director and ("director" in raw or "model_fl2va" in raw)):
         raise ValueError("Unknown H3 recipe")
     options = validate_options(config.get("seed_hunter", {})) if hunt else None
@@ -371,22 +375,28 @@ def validate_config(raw, components, gpus, uploads):
         from scripts import h3_director_controls as dc
         config["director"] = dc.validate_options(config.get("director", {}))
         bounds = {"min_edge": 256, "max_edge": 4096, "max_pixels": 4_000_000, "min_frames": 5}
+    if h3md:
+        from scripts import h3md_controls as md
+        config["h3md"] = md.validate_options(config.get("h3md", {}))
+        bounds = {"min_edge": 256, "max_edge": 4096, "max_pixels": 4_000_000, "min_frames": 5}
     if hunt:
         config["seed_hunter"] = options
     by_id = {alias: item for item in components for alias in item.get("aliases", [])}
     by_id.update({item["id"]: item for item in components})
     adapters = lora_entries(config, components=by_id)
     vfx_edit = any(row["strength"] != 0 and by_id.get(row["id"], {}).get("name", "").lower() in VFX_LORAS for row in adapters)
-    if (hunt or director) and vfx_edit:
+    if (hunt or director or h3md) and vfx_edit:
         raise ValueError("Use the standard H3 VFX workflow for the VFX Edit adapter")
     if "loras" in raw:
         config["lora_scale"] = adapters[0]["strength"] if adapters else 1
     if not isinstance(config["mode"], str) or config["mode"] not in {"t2va", "fl2va", "ref2va"}:
         raise ValueError("Choose text, first/last frame, or reference generation")
+    if pinkcherry and config["mode"] != "ref2va":
+        raise ValueError("PinkCherry uses Reference mode")
     if hunt and config["mode"] != "ref2va":
         raise ValueError("Seed Hunter requires a Ref2VA base model")
     prompt = config.get("prompt")
-    if not isinstance(prompt, str) or (not director and not prompt.strip()) or len(prompt) > 16000:
+    if not isinstance(prompt, str) or (not (director or h3md) and not prompt.strip()) or len(prompt) > 16000:
         raise ValueError("A prompt of 1–16,000 characters is required")
     for key, low, high in (("width", bounds["min_edge"], bounds["max_edge"]), ("height", bounds["min_edge"], bounds["max_edge"]), ("frames", 73 if vfx_edit else bounds["min_frames"], 362),
                            ("steps", 1, 100), ("seed", 0, 2**63 - 1)):
@@ -456,7 +466,7 @@ def validate_config(raw, components, gpus, uploads):
         if path in paths:
             raise ValueError("The same LoRA file cannot be selected more than once")
         paths.add(path)
-        if row["strength"] != 0 and not compatible_adapter(lora["name"], lora.get("variant", "shared"), wanted, active_names, selected["model"]["name"]):
+        if row["strength"] != 0 and not (h3md and selected["model"]["name"] == md.MODEL) and not compatible_adapter(lora["name"], lora.get("variant", "shared"), wanted, active_names, selected["model"]["name"]):
             raise ValueError(f"{lora['name']} is a {lora['variant'].upper()} LoRA; choose a compatible LoRA for {config['mode']} mode")
         config["loras"].append({"path": lora["path"], "strength": row["strength"]})
         config.setdefault("lora_profiles", {})[lora["path"]] = validate_lora_profile(
@@ -472,6 +482,11 @@ def validate_config(raw, components, gpus, uploads):
         if not upscaler or upscaler["role"] != "latent_upscaler" or not Path(upscaler["path"]).is_file():
             raise ValueError("Choose an installed H3 latent upscaler")
         config["latent_upscaler"] = upscaler["path"]
+    if h3md:
+        upscaler = by_id.get(config.get("latent_upscaler")) if isinstance(config.get("latent_upscaler"), str) else None
+        if not upscaler or upscaler["role"] != "latent_upscaler" or not Path(upscaler["path"]).is_file():
+            raise ValueError("Choose an installed H3 latent upscaler")
+        config["latent_upscaler"] = upscaler["path"]
     uploads = normalize_vfx_inputs(config, uploads)
     counts = {key: len(uploads.get(key, [])) for key in UPLOAD_EXTENSIONS}
     if "reference_video_ranges" in config:
@@ -482,10 +497,12 @@ def validate_config(raw, components, gpus, uploads):
         if counts[key] > limit:
             raise ValueError(f"At most {limit} {key.replace('_', ' ')} allowed")
     reference_count = sum(counts[key] for key in ("reference_images", "reference_videos", "reference_audio"))
-    if reference_count > (15 if director else 12):
-        raise ValueError(f"At most {15 if director else 12} reference files are allowed")
+    if reference_count > (15 if director or h3md else 12):
+        raise ValueError(f"At most {15 if director or h3md else 12} reference files are allowed")
     if not hunt and counts["reference_mods"]:
         raise ValueError("RefMods require the Seed Hunter workflow")
+    if h3md:
+        md.validate(config, counts)
     if director:
         dc.validate_inputs(config, counts)
     if hunt:
@@ -527,7 +544,7 @@ def validate_config(raw, components, gpus, uploads):
     elif counts["source_video"] and not hunt:
         raise ValueError("A source video guide requires an active VFX Edit LoRA")
     if config["mode"] == "ref2va":
-        if not (hunt or director or vfx_edit or counts["reference_images"] or counts["reference_videos"]) or not hunt and (counts["first_frame"] or counts["last_frame"]):
+        if not (hunt or director or h3md or vfx_edit or counts["reference_images"] or counts["reference_videos"]) or not hunt and (counts["first_frame"] or counts["last_frame"]):
             raise ValueError("Reference mode needs an image or video reference and does not accept first/last frames")
     elif config["mode"] == "fl2va":
         if not (director or counts["first_frame"] or counts["last_frame"]) or reference_count:
@@ -810,9 +827,13 @@ class H3JobManager:
         preset, preset_error = installed_h3_preset(self.preset_file, components, gpus, defaults)
         from src.h3_seed_hunter import capabilities
         from src.h3_director import capabilities as director_capabilities
+        from src.h3md import capabilities as h3md_capabilities
+        from src.h3_pinkcherry import capabilities as pinkcherry_capabilities
         return {"components": components, "component_scan": scan_status, "gpus": gpus, "runtime_ready": not error, "batch_jobs": True,
                 "seed_hunter": capabilities(self.project, self.runtime, components, gpus),
                 "director": director_capabilities(components),
+                "h3md": h3md_capabilities(self.project, components),
+                "pinkcherry": pinkcherry_capabilities(components),
                 "batch_auto_video_length": True, "reference_video_ranges": True,
                 "server_video_files": True,
                 "lora_stack": True, "lora_library": True, "max_loras": MAX_LORAS, "vfx_references": True,
@@ -930,6 +951,9 @@ class H3JobManager:
 
     def launch(self, directory, owner, config, uploads):
         directory = Path(directory)
+        if (config.get("recipe") == "h3md" and config["h3md"]["resume_from_cache"]
+                and not (directory / "h3md-cache").is_dir()):
+            raise ValueError("Use Edit & rerun on an existing H3MD job to resume its saved segments")
         # Persist the FIFO receipt before starting a lightweight supervisor. Its
         # worker will acquire the separate execution lock only when it has turn.
         with _locked(self.root.parent / "video-render.lock"):

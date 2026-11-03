@@ -30,8 +30,10 @@ def final_size(config, megapixels=2):
 def compatible_adapter(name, variant, wanted, active_names, base_name=""):
     # The Character Swap publisher explicitly tests this one FL Turbo adapter
     # with Ref2VA. Other FL adapters still require their matching checkpoint.
-    return variant in {"shared", wanted} or (wanted == "ref2va" and name == CHARACTER_TURBO
-                                             and (CHARACTER_SWAP in active_names or base_name == PINKCHERRY))
+    return variant in {"shared", wanted} or (wanted == "ref2va" and (
+        name == CHARACTER_TURBO and (CHARACTER_SWAP in active_names or base_name == PINKCHERRY)
+        or name == "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors" and base_name == PINKCHERRY))
+
 
 
 def candidate_limit(options):

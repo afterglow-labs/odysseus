@@ -1,4 +1,5 @@
 """Resolve named Seed Hunter setups against the server's actual inventory."""
+from scripts.h3_pinkcherry_controls import LORA as PINKCHERRY_TURBO
 from copy import deepcopy
 
 from scripts.h3_seed_hunter_presets import (LIGHTVAE, PIKA, TURBO4, TURBO8,
@@ -24,8 +25,8 @@ def catalog(components):
         ("lightvae", "Singularity + LightVAE · 20 / 2 steps", "The quality setup with a smaller video encoder and decoder.", quality, None, named(LIGHTVAE, "video_vae")),
         ("prism8", "Singularity × 10Eros · 8 steps", "Beta 7 INT8 comparison from the PRISM publisher. Turbo is already merged into the checkpoint.", named(PRISM8, "model"), None, vae),
         ("character_swap", "Character Swap V1.5 · 8 steps", "Use source performance as Video 1 and the replacement character as Picture 1. Includes the publisher's Turbo pairing; no automatic masks.", base, named(CHARACTER_SWAP, "lora"), vae),
-        ("pinkcherry12", "PinkCherry v1.8 · 12 / 2 steps", "The supplied workflow's active 12-step Euler/simple branch and FL2V Turbo v1.0 pairing, adapted to short seed previews.", named(PINKCHERRY, "model"), named(CHARACTER_TURBO, "lora"), vae),
-        ("pinkcherry4", "PinkCherry v1.8 · 4 / 2 steps", "The supplied workflow's alternate four-step branch, with the same model and Turbo adapter.", named(PINKCHERRY, "model"), named(CHARACTER_TURBO, "lora"), vae),
+        ("pinkcherry12", "PinkCherry v1.8 · 12 / 2 steps", "The supplied workflow's active 12-step Euler/simple branch and FL2V Turbo v1.0 pairing, adapted to short seed previews.", named(PINKCHERRY, "model"), named(PINKCHERRY_TURBO, "lora"), vae),
+        ("pinkcherry4", "PinkCherry v1.8 · 4 / 2 steps", "The supplied workflow's alternate four-step branch, with the same model and Turbo adapter.", named(PINKCHERRY, "model"), named(PINKCHERRY_TURBO, "lora"), vae),
     ]
     rows = []
     for key, label, description, model, adapter, video_vae in definitions:
@@ -77,7 +78,7 @@ def final_defaults(config, components):
     result = deepcopy(refinement_settings(key))
     result["seed_hunter"]["preset"] = key
     if key in ("turbo4", "turbo8", "pika", "pinkcherry12", "pinkcherry4"):
-        accelerators = {TURBO4, TURBO8, PIKA, CHARACTER_TURBO}
+        accelerators = {TURBO4, TURBO8, PIKA, CHARACTER_TURBO, PINKCHERRY_TURBO}
         from src.video_job_edit import _draft
         draft = _draft(config, {"components": components}, "h3")
         by_id = {c["id"]: c for c in components}

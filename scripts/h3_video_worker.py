@@ -195,6 +195,13 @@ def validate_job(manifest):
     config = dict(manifest["config"])
     hunter = config.get("recipe") == "seed_hunter"
     director = config.get("recipe") == "director"
+    h3md = config.get("recipe") == "h3md"
+    if h3md:
+        try:
+            from scripts import h3md_controls as md
+        except ModuleNotFoundError:
+            import h3md_controls as md
+        config["h3md"] = md.validate_options(config.get("h3md", {}))
     if director:
         try:
             from scripts import h3_director_controls as dc
@@ -212,7 +219,7 @@ def validate_job(manifest):
     if config.get("mode", "t2va") not in {"t2va", "fl2va", "ref2va"}:
         raise ValueError("Unknown MiniMax H3 mode")
     config.setdefault("mode", "t2va")
-    if not isinstance(config.get("prompt"), str) or not director and not config["prompt"].strip():
+    if not isinstance(config.get("prompt"), str) or not (director or h3md) and not config["prompt"].strip():
         raise ValueError("A prompt is required")
     if len(config["prompt"]) > 16000:
         raise ValueError("Prompt is too long")
@@ -227,7 +234,7 @@ def validate_job(manifest):
     config["gpu"] = devices[0]
     config["vae_gpu"] = devices[1] if len(devices) > 1 else ""
     min_edge, max_edge = (bounds["min_edge"], bounds["max_edge"]) if hunter else (32, 2048)
-    if director:
+    if director or h3md:
         min_edge, max_edge = 256, 4096
     for name, default, low, high in (("width", 960, min_edge, max_edge), ("height", 544, min_edge, max_edge),
                                    ("frames", 124, bounds["min_frames"] if hunter else 5, 362), ("steps", 20, 1, 100)):
@@ -236,7 +243,7 @@ def validate_job(manifest):
         if config[name] % 32:
             raise ValueError(f"{name} must be a multiple of 32")
     max_pixels = bounds["max_pixels"] if hunter else 768 * 1344
-    if director:
+    if director or h3md:
         max_pixels = 4_000_000
     if config["width"] * config["height"] > max_pixels:
         raise ValueError(f"MiniMax H3 canvas must not exceed {max_pixels:,} pixels")
@@ -289,10 +296,10 @@ def validate_job(manifest):
             from h3_reference_video import validate_ranges
         config["reference_video_ranges"] = validate_ranges(config["reference_video_ranges"], len(media["reference_videos"]))
     total = sum(len(media[name]) for name in ("reference_images", "reference_videos", "reference_audio"))
-    if total > (15 if director else 12):
-        raise ValueError(f"At most {15 if director else 12} references are supported")
+    if total > (15 if director or h3md else 12):
+        raise ValueError(f"At most {15 if director or h3md else 12} references are supported")
     if config["mode"] == "ref2va":
-        if not (hunter or director) and not vfx_edit and not media["reference_images"] and not media["reference_videos"]:
+        if not (hunter or director or h3md) and not vfx_edit and not media["reference_images"] and not media["reference_videos"]:
             raise ValueError("Reference mode needs at least one reference image or video; audio alone is unsupported")
         if not hunter and (media["first_frame"] or media["last_frame"]):
             raise ValueError("First/last frames belong to first/last-frame mode")
@@ -308,6 +315,13 @@ def validate_job(manifest):
         except ModuleNotFoundError:
             from h3_seed_hunter import validate_inputs
         validate_inputs(manifest, config, media, uploads)
+    if h3md:
+        md.validate(config, {key: len(value) if isinstance(value, list) else int(bool(value)) for key, value in media.items()})
+        path = Path(config.get("latent_upscaler", ""))
+        if not path.is_absolute() or not path.is_file() or path.suffix != ".safetensors":
+            raise ValueError("H3MD needs an installed latent upscaler")
+        if config["h3md"]["rerun_segments"] and not (Path(manifest["output_path"]).parent / "h3md-cache").is_dir():
+            raise ValueError("Redo segments from an existing H3MD run using Edit & rerun")
     if director:
         dc.validate_inputs(config, {key: len(value) if isinstance(value, list) else int(bool(value)) for key, value in media.items()})
         if config["director"]["stage"] == "refine":
@@ -536,7 +550,7 @@ def prepare_vfx_media(media, config):
             "source_audio": soundtrack, "output_frames": output_frames}
 
 
-def mux_mp4(output_path, frames, audio, fps=FPS):
+def mux_mp4(output_path, frames, audio, fps=FPS, *, crf=18):
     """Encode RGB frames and their selected audio into one atomic H.264/AAC MP4."""
     import av
     import numpy as np
@@ -571,7 +585,7 @@ def mux_mp4(output_path, frames, audio, fps=FPS):
             video = container.add_stream("libx264", rate=fps)
             video.width, video.height = int(frames[0].shape[1]), int(frames[0].shape[0])
             video.pix_fmt = "yuv420p"
-            video.options = {"crf": "18", "preset": "medium"}
+            video.options = {"crf": str(crf), "preset": "medium"}
             sound = container.add_stream("aac", rate=sample_rate)
             sound.layout = "stereo"
             sound.bit_rate = 192000
@@ -971,7 +985,8 @@ class H3Runtime:
         H3Runtime.log_gpu_memory(self, "after conditioning")
         H3Runtime.release_conditioning(self)
         H3Runtime.log_gpu_memory(self, "after conditioning cleanup")
-        model = self.h3.MiniMaxH3SigmaShift.execute(model, config["shift_video"], config["shift_audio"])[0]
+        if config.get("recipe") != "pinkcherry":
+            model = self.h3.MiniMaxH3SigmaShift.execute(model, config["shift_video"], config["shift_audio"])[0]
         latent_image = latent["samples"]
         noise = self.sample.prepare_noise(latent_image, config["seed"])
         def callback(step, x0, x, total_steps):
@@ -997,6 +1012,12 @@ class H3Runtime:
 def run_job(manifest, *, runtime_factory=H3Runtime, media_loader=prepare_media, muxer=mux_mp4):
     config, media = validate_job(manifest)
     os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(visible_gpu_ids(config))
+    if config.get("recipe") == "h3md":
+        try:
+            from scripts.h3md_worker import run
+        except ModuleNotFoundError:
+            from h3md_worker import run
+        return run(manifest, config, media, runtime_factory=runtime_factory)
     if config.get("recipe") == "director":
         try:
             from scripts.h3_director_worker import run
@@ -1036,7 +1057,7 @@ def run_job(manifest, *, runtime_factory=H3Runtime, media_loader=prepare_media, 
         else:
             frames, audio = runtime.decode(samples, vae, audio_vae, progress)
     progress("encoding_mp4")
-    muxer(manifest["output_path"], frames, audio)
+    muxer(manifest["output_path"], frames, audio, **({"crf": 9} if config.get("recipe") == "pinkcherry" else {}))
     if not Path(manifest["output_path"]).is_file() or Path(manifest["output_path"]).stat().st_size == 0:
         raise RuntimeError("Video encoder did not produce an MP4")
     progress("completed", config["steps"], frames=len(frames), fps=FPS, duration_seconds=len(frames) / FPS)

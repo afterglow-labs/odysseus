@@ -62,7 +62,7 @@ export function h3LoraIssue(stack, components = [], mode = 'ref2va', max = 8, ba
         : control.kind === 'custom' ? `${control.label} must be between ${control.min} and ${control.max}.` : 'Each LoRA strength must be between −4 and 4.';
     }
     const characterPair = variant==='ref2va' && (characterSwap || baseName==='PinkCherry_hybrid_v1.8_int8_minimax_h3_pruned.safetensors') && item.name==='minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors';
-    if (Number(strength) !== 0 && item.variant && item.variant !== 'shared' && item.variant !== variant && !characterPair) return `${item.name} requires ${item.variant.toUpperCase()} mode. Choose a compatible LoRA, set its strength to 0, or remove it.`;
+    if (Number(strength) !== 0 && item.variant && item.variant !== 'shared' && item.variant !== variant && !characterPair && !(variant==='ref2va' && baseName==='PinkCherry_hybrid_v1.8_int8_minimax_h3_pruned.safetensors' && item.name==='minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors')) return `${item.name} requires ${item.variant.toUpperCase()} mode. Choose a compatible LoRA, set its strength to 0, or remove it.`;
   }
   return '';
 }

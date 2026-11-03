@@ -120,7 +120,11 @@ def _patched(config, patch, inventory, family, inputs, *, resolved_paths=None):
         if not isinstance(changes, dict) or changes.keys() - roles:
             raise ValueError("Choose compatible BFS component roles")
         raw["components"] = {**raw["components"], **changes}
-    raw.update({key: value for key, value in patch.items() if key not in {"components", "seed_hunter", "director"}})
+    raw.update({key: value for key, value in patch.items() if key not in {"components", "seed_hunter", "director", "h3md"}})
+    if "h3md" in patch:
+        if not isinstance(patch["h3md"], dict):
+            raise ValueError("H3MD settings must be an object")
+        raw["h3md"] = {**raw.get("h3md", {}), **patch["h3md"]}
     if "director" in patch:
         if not isinstance(patch["director"], dict):
             raise ValueError("Director settings must be an object")
@@ -141,6 +145,8 @@ def _patched(config, patch, inventory, family, inputs, *, resolved_paths=None):
         guard_edit(config, updated)
         from src.h3_director import guard_edit as guard_director
         guard_director(config, updated)
+        from src.h3md import guard_edit as guard_h3md
+        guard_h3md(config, updated)
     return updated
 
 
@@ -299,6 +305,9 @@ def _stage_rerun(manager, owner, family, chosen, patch, key, receipt_path, recei
                     from src.h3_director import clone_snapshot as clone_director
                     uploads["director_input"] = clone_director(item["directory"], directory, item["manifest"]["director_input"])
                     uploads["director_source"] = item["manifest"].get("director_source", {})
+                if base_config is None and family == "h3" and item["config"].get("recipe") == "h3md" and item["config"]["h3md"]["resume_from_cache"]:
+                    from src.h3md import clone_cache
+                    clone_cache(item["directory"], directory)
                 if base_config is None and item['manifest'].get('result_edit'):
                     uploads['result_edit'] = deepcopy(item['manifest']['result_edit'])
                     uploads['job_group_parent'] = item['manifest'].get('job_group_parent')

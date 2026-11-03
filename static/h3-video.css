@@ -378,3 +378,8 @@
 @media (max-width:480px) {
   .video-job-pager > span { flex-basis:100%; order:-1; }
 }
+
+.h3md-controls .h3-video-field { overflow-wrap:anywhere; }
+.h3md-controls { grid-template-columns:minmax(0,1fr); overflow-wrap:anywhere; }
+.h3md-controls > * { min-width:0; }
+.h3md-controls textarea, .h3md-controls select { max-width:100%; box-sizing:border-box; }

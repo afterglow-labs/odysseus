@@ -17,6 +17,8 @@ export function showWorkflowPipeline({} = {}, anchor = document.activeElement) {
   const body = make('div','workflow-pipeline-recipes'); body.append(make('p','','Choose a workflow. Edit its real settings, attach media, and review results in the browser. Classic workflows remain available in Cookbook.'));
   const recipes = [
     ['MiniMax H3 Video','Generate from text, frames, or multiple references.','h3Video.js','showH3Video'],
+    ['PinkCherry','PinkCherry hybrid, its selected Turbo LoRA, and 12- or 4-step generation.','h3PinkCherry.js','showPinkCherry'],
+    ['H3MD Director','Two-pass latent upscaling, long shots and resumable segments.','h3MD.js','showH3MD'],
     ['H3 Director','Direct a timeline with Reference or First/Last Frame mode and optional seed hunting.','h3Director.js','showH3Director'],
     ['H3 Seed Hunter','Compare completed previews and refine a selected latent.','h3SeedHunter.js','showH3SeedHunter'],
     ['H3 Seed Scout','Compare partial previews, choose a seed, and continue it.','h3SeedHunter.js','showH3SeedScout'],
