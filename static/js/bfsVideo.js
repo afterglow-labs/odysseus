@@ -319,8 +319,13 @@ export function showBfsVideo({ preferred = null, layout = 'classic' } = {}, anch
       if ([...control.options].some(option => option.value === wanted)) control.value = wanted;
       if (slot.key === 'lora' || candidates.some(item => item.lora_help)) {
         const help = el('button', 'memory-toolbar-btn', 'About this LoRA'); help.type = 'button';
-        help.disabled = !control.value; control.parentElement.append(help);
-        control.addEventListener('change', () => { help.disabled = !control.value; });
+        const refreshHelp = () => {
+          const selected = candidates.find(item => optionId(item.id) === control.value);
+          help.hidden = slot.key !== 'lora' && !selected?.lora_help;
+          help.disabled = !selected;
+        };
+        refreshHelp(); control.parentElement.append(help);
+        control.addEventListener('change', refreshHelp);
         help.onclick = async event => {
           event.preventDefault();
           const component = candidates.find(item => optionId(item.id) === control.value);
