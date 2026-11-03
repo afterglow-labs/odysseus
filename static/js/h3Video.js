@@ -227,6 +227,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(storageKey)) || {}; } catch {}
   let appliedPresetRevision = saved._installedPresetRevision || '';
+  let directorLoraDefaultsApplied = saved._directorLoraDefaultsApplied === true;
   const fields = {}, uploads = {}, jobNodes = new Map(), pendingStops = new Set(), pendingDeletes = new Set(), deletedJobs = new Set(), gpuNodes = new Map();
   const overlay = el('div', 'cookbook-edit-overlay h3-video-overlay');
   overlay.style.zIndex = String(topPortalZ());
@@ -286,7 +287,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
   select(components, 'encoder', 'Text encoder');
   select(components, 'video_vae', 'Video VAE');
   select(components, 'audio_vae', 'Audio VAE');
-  const loraEditor = createH3LoraEditor({ onChange: () => { loraTouched = true; editRevision++; updateMode(true); save(); },
+  const loraEditor = createH3LoraEditor({ onChange: () => { loraTouched = true; if(director && !jobEditor?.active)directorLoraDefaultsApplied = true; editRevision++; updateMode(true); save(); },
     onManage: (selectedId, anchor) => {
       loraLibrary?.close();
       loraLibrary = showH3LoraLibrary({ components: inventory?.components || [], selectedId,
@@ -473,11 +474,25 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
   };
   function save() {
     if (jobEditor?.active) return;
-    try { localStorage.setItem(storageKey, JSON.stringify({ ...config(), prompt:prompt.value, _installedPresetRevision: appliedPresetRevision })); } catch {}
+    try { localStorage.setItem(storageKey, JSON.stringify({ ...config(), prompt:prompt.value, _installedPresetRevision: appliedPresetRevision, ...(director ? {_directorLoraDefaultsApplied:directorLoraDefaultsApplied} : {}) })); } catch {}
+  }
+  function restoreDirectorLoraSelection() {
+    if(!director || directorLoraDefaultsApplied || jobEditor?.active || jobEditor?.loading || config().director?.stage==='refine')return;
+    const rows=h3LoraStack(inventory?.director?.defaults || {});
+    if(!rows.length || !rows.every(row=>inventory.components.some(item=>item.role==='lora' && item.id===row.id)))return;
+    // Repair the omitted adapter in existing Director drafts once. Later
+    // removals and any already selected adapters remain the user's choice.
+    directorLoraDefaultsApplied=true;
+    if(!loraEditor.getValue().length){
+      loraEditor.setValue(rows);
+      presetStatus.textContent='Selected Director’s Turbo LoRA at strength 1.';
+    }
+    save();
   }
   function applyInstalledPreset({ automatic = false } = {}) {
     if(director){
       if(automatic || !inventory?.director?.ready || jobEditor?.active || jobEditor?.loading || queueControls?.busy || queueControls?.editing || batchQueue?.busy || transferBusy || enhancing || submitting)return false;
+      directorLoraDefaultsApplied=true;
       const values=inventory.director.preset.config, previous=config();
       for(const [key,value] of Object.entries(values))if(fields[key])fields[key].value=value;
       loraEditor.setValue(h3LoraStack(values));
@@ -907,6 +922,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
       }
       directorControls?.set(previous,data.components);
       updateMode(true);
+      restoreDirectorLoraSelection();
       if (firstInventory && applyInstalledPreset({ automatic: true })) updateMode(true);
       if (separateVaeGpu) save();
       const missing = ['model', 'encoder', 'video_vae', 'audio_vae', 'gpu'].filter(key => !fields[key].value);

@@ -40,7 +40,10 @@ keeping the draft's prompt, cuts and reference descriptions/files.
 wherever a workflow uses Qwen. Director therefore selects
 `qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors` instead of the JSON's ordinary
 Qwen NVFP4-AWQ encoder. This is a disclosed preference, not exact encoder parity.
-Saved drafts and jobs are not silently rewritten. Missing exact components are
+Existing Director drafts with no selected LoRA receive the omitted workflow
+adapter automatically once, at strength 1. Their prompts, cuts and other settings
+are retained. Existing adapter choices, later removals and saved jobs are preserved.
+Missing exact components are
 reported; the website setup does not fall back to another model or an empty
 adapter stack. Custom model/LoRA choices remain editable.
 
