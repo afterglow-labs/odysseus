@@ -78,7 +78,10 @@ container itself. Keep the Ollama listener private.
 - Overview: engine readiness, task and finding counts, pending interceptions,
   traffic, and recent records.
 - Tasks: create and select tasks, choose an existing model profile, read the
-  objective, and pause or resume running work.
+  objective, pause or resume work, and add, edit, or delete goals and task
+  constraints. Goal additions and edits wake the planner and can resume a task.
+  Constraints enter agent prompts as guidance; they do not enforce network or
+  tool limits.
 - Task chat: read the current main-agent conversation, send messages, stop a
   reply, or start a new conversation segment.
 - Findings: search and filter the paginated list, triage status and severity,

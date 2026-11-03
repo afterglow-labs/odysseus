@@ -196,6 +196,36 @@ def test_operations_use_typed_gateway_and_omit_asset_credentials(monkeypatch):
         assert browser.post("/api/cybersecurity/tasks", headers=headers, json={
             "description": "  ", "goal": "find issues",
         }).status_code == 422
+        assert browser.get("/api/cybersecurity/tasks/7/goals", headers=headers).status_code == 200
+        assert calls[-1][0] == "/api/tasks/7/goals"
+        assert browser.post("/api/cybersecurity/tasks/7/goals", headers=headers, json={
+            "text": " Check access control ", "vulnclass": " authorization ", "ignored": "value",
+        }).status_code == 200
+        assert calls[-1][1]["body"] == {"text": "Check access control", "vulnclass": "authorization"}
+        assert browser.patch("/api/cybersecurity/tasks/7/goals/2", headers=headers, json={
+            "text": "Check authentication", "vulnclass": "",
+        }).status_code == 200
+        assert calls[-1][0] == "/api/tasks/7/goals/2"
+        assert browser.post("/api/cybersecurity/tasks/7/goals", headers=headers, json={
+            "text": "   ",
+        }).status_code == 422
+        assert browser.delete("/api/cybersecurity/tasks/7/goals/2", headers=headers).status_code == 200
+        assert calls[-1][1]["method"] == "DELETE"
+        assert browser.get("/api/cybersecurity/tasks/7/constraints", headers=headers).status_code == 200
+        assert calls[-1][0] == "/api/tasks/7/constraints"
+        assert browser.post("/api/cybersecurity/tasks/7/constraints", headers=headers, json={
+            "kind": "deny", "text": " Do not contact production ", "ignored": "value",
+        }).status_code == 200
+        assert calls[-1][1]["body"] == {"kind": "deny", "text": "Do not contact production"}
+        assert browser.patch("/api/cybersecurity/tasks/7/constraints/3", headers=headers, json={
+            "kind": "allow", "text": "Use the lab only",
+        }).status_code == 200
+        assert calls[-1][0] == "/api/tasks/7/constraints/3"
+        assert browser.post("/api/cybersecurity/tasks/7/constraints", headers=headers, json={
+            "kind": "block", "text": "No production",
+        }).status_code == 422
+        assert browser.delete("/api/cybersecurity/tasks/7/constraints/3", headers=headers).status_code == 200
+        assert calls[-1][1]["method"] == "DELETE"
         assert browser.post("/api/cybersecurity/tasks/7/chat", headers=headers, json={"message": " hello "}).status_code == 200
         assert calls[-1] == ("/api/chat", {"method": "POST", "body": {"message": "hello"}, "params": {"task": 7}, "auth": True})
         assert browser.post("/api/cybersecurity/tasks/7/scope", headers=headers, json={

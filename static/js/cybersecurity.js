@@ -324,6 +324,114 @@ export function initCybersecurityMode() {
         button('View activity', () => selectTab('activity')));
       detail.append(actions);
       wrap.append(detail);
+
+      const [goalsData, constraintsData] = await Promise.all([
+        api(`/tasks/${selectedTask}/goals`), api(`/tasks/${selectedTask}/constraints`),
+      ]);
+      const goalsPanel = panel('Goals');
+      goalsPanel.append(element('p', 'cyber-detail',
+        'Adding or editing a goal wakes the planner and can resume a completed or paused task.'));
+      const goalForm = element('form', 'cyber-stack');
+      const goalText = textarea('Goal text', true); goalText.maxLength = 5000;
+      const goalClass = input('Vulnerability class (optional)'); goalClass.maxLength = 160;
+      const addGoal = element('button', 'primary', 'Add goal'); addGoal.type = 'submit';
+      goalForm.append(goalText, goalClass, addGoal);
+      goalForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        addGoal.disabled = true;
+        try {
+          await act(() => api(`/tasks/${selectedTask}/goals`, { method: 'POST', body: {
+            text: goalText.value.trim(), vulnclass: goalClass.value.trim(),
+          } }), 'Goal added');
+        } finally { addGoal.disabled = false; }
+      });
+      goalsPanel.append(goalForm);
+      const goalsList = element('div', 'cyber-list');
+      const goals = Array.isArray(goalsData.goals) ? goalsData.goals : [];
+      if (!goals.length) goalsList.append(empty('No goals recorded.'));
+      for (const goalItem of goals) {
+        const entry = panel('');
+        entry.dataset.goalId = String(goalItem.id);
+        entry.append(row(goalItem.text || `Goal #${goalItem.id}`,
+          goalItem.vulnclass || `#${goalItem.id}`, goalItem.state));
+        const controls = element('div', 'cyber-actions');
+        const edit = element('form', 'cyber-stack'); edit.hidden = true;
+        const textField = textarea('Goal text', true); textField.maxLength = 5000; textField.value = goalItem.text || '';
+        const classField = input('Vulnerability class (optional)'); classField.maxLength = 160;
+        classField.value = goalItem.vulnclass || '';
+        const save = element('button', 'primary', 'Save goal'); save.type = 'submit';
+        edit.append(textField, classField, save);
+        edit.addEventListener('submit', async (event) => {
+          event.preventDefault(); save.disabled = true;
+          try {
+            await act(() => api(`/tasks/${selectedTask}/goals/${goalItem.id}`, { method: 'PATCH', body: {
+              text: textField.value.trim(), vulnclass: classField.value.trim(),
+            } }), 'Goal updated');
+          } finally { save.disabled = false; }
+        });
+        controls.append(button('Edit', () => { edit.hidden = !edit.hidden; }),
+          button('Delete', () => {
+            if (window.confirm('Delete this goal permanently?')) {
+              act(() => api(`/tasks/${selectedTask}/goals/${goalItem.id}`, { method: 'DELETE' }), 'Goal deleted');
+            }
+          }));
+        entry.append(controls, edit);
+        goalsList.append(entry);
+      }
+      goalsPanel.append(goalsList);
+      wrap.append(goalsPanel);
+
+      const constraintsPanel = panel('Task constraints');
+      constraintsPanel.append(element('p', 'cyber-detail',
+        'These allow/deny instructions enter agent prompts. They are guidance, not enforced network or tool boundaries.'));
+      const constraintForm = element('form', 'cyber-form');
+      const constraintKind = selectOptions('Constraint type', [['allow', 'Allow'], ['deny', 'Deny']]);
+      const constraintText = input('Constraint text', true); constraintText.maxLength = 5000;
+      const addConstraint = element('button', 'primary', 'Add constraint'); addConstraint.type = 'submit';
+      constraintForm.append(constraintKind, constraintText, addConstraint);
+      constraintForm.addEventListener('submit', async (event) => {
+        event.preventDefault(); addConstraint.disabled = true;
+        try {
+          await act(() => api(`/tasks/${selectedTask}/constraints`, { method: 'POST', body: {
+            kind: constraintKind.value, text: constraintText.value.trim(),
+          } }), 'Constraint added');
+        } finally { addConstraint.disabled = false; }
+      });
+      constraintsPanel.append(constraintForm);
+      const constraintsList = element('div', 'cyber-list');
+      const constraints = Array.isArray(constraintsData.constraints) ? constraintsData.constraints : [];
+      if (!constraints.length) constraintsList.append(empty('No task constraints recorded.'));
+      for (const constraint of constraints) {
+        const entry = panel('');
+        entry.dataset.constraintId = String(constraint.id);
+        entry.append(row(constraint.text || `Constraint #${constraint.id}`,
+          `#${constraint.id} · ${constraint.origin || 'manual'}`, constraint.kind));
+        const controls = element('div', 'cyber-actions');
+        const edit = element('form', 'cyber-form'); edit.hidden = true;
+        const kindField = selectOptions('Constraint type', [['allow', 'Allow'], ['deny', 'Deny']]);
+        kindField.value = constraint.kind;
+        const textField = input('Constraint text', true); textField.maxLength = 5000; textField.value = constraint.text || '';
+        const save = element('button', 'primary', 'Save constraint'); save.type = 'submit';
+        edit.append(kindField, textField, save);
+        edit.addEventListener('submit', async (event) => {
+          event.preventDefault(); save.disabled = true;
+          try {
+            await act(() => api(`/tasks/${selectedTask}/constraints/${constraint.id}`, { method: 'PATCH', body: {
+              kind: kindField.value, text: textField.value.trim(),
+            } }), 'Constraint updated');
+          } finally { save.disabled = false; }
+        });
+        controls.append(button('Edit', () => { edit.hidden = !edit.hidden; }),
+          button('Delete', () => {
+            if (window.confirm('Delete this constraint?')) {
+              act(() => api(`/tasks/${selectedTask}/constraints/${constraint.id}`, { method: 'DELETE' }), 'Constraint deleted');
+            }
+          }));
+        entry.append(controls, edit);
+        constraintsList.append(entry);
+      }
+      constraintsPanel.append(constraintsList);
+      wrap.append(constraintsPanel);
     }
     return wrap;
   }

@@ -50,6 +50,31 @@ class TaskControl(BaseModel):
     action: Literal["pause", "resume"]
 
 
+class GoalInput(BaseModel):
+    text: str = Field(min_length=1, max_length=5000)
+    vulnclass: str = Field("", max_length=160)
+
+    @model_validator(mode="after")
+    def require_text(self):
+        self.text = self.text.strip()
+        self.vulnclass = self.vulnclass.strip()
+        if not self.text:
+            raise ValueError("Goal text is required")
+        return self
+
+
+class ConstraintInput(BaseModel):
+    kind: Literal["allow", "deny"]
+    text: str = Field(min_length=1, max_length=5000)
+
+    @model_validator(mode="after")
+    def require_text(self):
+        self.text = self.text.strip()
+        if not self.text:
+            raise ValueError("Constraint text is required")
+        return self
+
+
 class InterceptDecision(BaseModel):
     decision: Literal["allowed", "denied"]
 
@@ -247,6 +272,52 @@ async def task(task_id: int = Path(gt=0)):
 async def control_task(request: Request, body: TaskControl, task_id: int = Path(gt=0)):
     _require_browser_write(request)
     return await _forward(f"/api/tasks/{task_id}/control", method="POST", body=body.model_dump())
+
+
+@router.get("/tasks/{task_id}/goals")
+async def task_goals(task_id: int = Path(gt=0)):
+    return await _forward(f"/api/tasks/{task_id}/goals")
+
+
+@router.post("/tasks/{task_id}/goals")
+async def add_task_goal(request: Request, body: GoalInput, task_id: int = Path(gt=0)):
+    _require_browser_write(request)
+    return await _forward(f"/api/tasks/{task_id}/goals", method="POST", body=body.model_dump())
+
+
+@router.patch("/tasks/{task_id}/goals/{goal_id}")
+async def edit_task_goal(request: Request, body: GoalInput, task_id: int = Path(gt=0), goal_id: int = Path(gt=0)):
+    _require_browser_write(request)
+    return await _forward(f"/api/tasks/{task_id}/goals/{goal_id}", method="PATCH", body=body.model_dump())
+
+
+@router.delete("/tasks/{task_id}/goals/{goal_id}")
+async def delete_task_goal(request: Request, task_id: int = Path(gt=0), goal_id: int = Path(gt=0)):
+    _require_browser_write(request)
+    return await _forward(f"/api/tasks/{task_id}/goals/{goal_id}", method="DELETE")
+
+
+@router.get("/tasks/{task_id}/constraints")
+async def task_constraints(task_id: int = Path(gt=0)):
+    return await _forward(f"/api/tasks/{task_id}/constraints")
+
+
+@router.post("/tasks/{task_id}/constraints")
+async def add_task_constraint(request: Request, body: ConstraintInput, task_id: int = Path(gt=0)):
+    _require_browser_write(request)
+    return await _forward(f"/api/tasks/{task_id}/constraints", method="POST", body=body.model_dump())
+
+
+@router.patch("/tasks/{task_id}/constraints/{constraint_id}")
+async def edit_task_constraint(request: Request, body: ConstraintInput, task_id: int = Path(gt=0), constraint_id: int = Path(gt=0)):
+    _require_browser_write(request)
+    return await _forward(f"/api/tasks/{task_id}/constraints/{constraint_id}", method="PATCH", body=body.model_dump())
+
+
+@router.delete("/tasks/{task_id}/constraints/{constraint_id}")
+async def delete_task_constraint(request: Request, task_id: int = Path(gt=0), constraint_id: int = Path(gt=0)):
+    _require_browser_write(request)
+    return await _forward(f"/api/tasks/{task_id}/constraints/{constraint_id}", method="DELETE")
 
 
 @router.get("/tasks/{task_id}/chat/status")

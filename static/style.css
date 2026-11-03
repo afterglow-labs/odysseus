@@ -41684,6 +41684,7 @@ button.cyber-row.selected { border-color: var(--red); }
 .cyber-form select { min-width: 125px; }
 .cyber-form button { flex: 0 0 auto; }
 .cyber-stack { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; max-width: 860px; }
+.cyber-stack[hidden], .cyber-form[hidden] { display: none; }
 .cyber-stack > input:not([type="checkbox"]), .cyber-stack > textarea, .cyber-stack > select {
   width: 100%; max-width: 100%; box-sizing: border-box;
 }
