@@ -75,6 +75,17 @@ async def test_password_login_reuses_token_then_refreshes_expired_token():
 
 
 @pytest.mark.asyncio
+async def test_supplied_gateway_token_expires_with_actionable_error():
+    client = AfterglowClient(
+        origin="http://127.0.0.1:8787", token="expired-token",
+        transport=httpx.MockTransport(lambda request: httpx.Response(401, json={"error": "expired"})),
+    )
+    with pytest.raises(AfterglowError, match="AFTERGLOW_TOKEN is invalid or expired") as rejected:
+        await client.request("/api/tasks")
+    assert rejected.value.status_code == 503
+
+
+@pytest.mark.asyncio
 async def test_oversized_response_is_rejected():
     client = AfterglowClient(
         origin="http://127.0.0.1:8787", token="token",

@@ -20,13 +20,17 @@ environment and start Odysseus normally:
 ```dotenv
 AFTERGLOW_URL=http://127.0.0.1:8787
 AFTERGLOW_PUBLIC_URL=http://127.0.0.1:8787
-AFTERGLOW_PASSWORD=your-existing-afterglow-admin-password
+AFTERGLOW_TOKEN=your-afterglow-gateway-token
 ```
 
-An existing Afterglow JWT can be supplied as `AFTERGLOW_TOKEN` instead. The
-token takes precedence over the password and must be replaced when it expires.
-The password path logs in again when its cached JWT expires. Keep either
-credential server-side. The web client never receives it.
+On a combined Afterglow backend with the gateway-token endpoint, send
+`POST /api/auth/gateway-token` with an administrator JWT in the bearer header.
+Copy the returned token into `AFTERGLOW_TOKEN`; it expires after 30 days and
+must then be renewed. The token is limited to this workbench's backend routes.
+The existing `AFTERGLOW_PASSWORD` login path remains available for older
+backends, but gives Odysseus a full administrator credential. The token takes
+precedence when both are set. Keep the credential server-side; the web client
+never receives it.
 
 `AFTERGLOW_URL` must be an HTTPS origin or a loopback HTTP origin. The combined
 backend's Compose service is named `scopeweaver`. For two containers connected
@@ -127,10 +131,10 @@ The Afterglow service still decides how a task runs and how interception rules
 apply. There is no extra confirmation step in Odysseus after a user clicks a
 task control or interception decision.
 
-At this stage Afterglow authenticates the gateway with its full-admin JWT or
-password. Odysseus's ordinary agent can run local tools, so this credential
-must be treated as accessible to a compromised Odysseus process or unrestricted
-local shell. A scoped Afterglow service credential and stronger agent isolation
-are needed before treating the gateway as a security boundary against hostile
+The gateway token limits backend paths and methods, but still permits task
+control and interception decisions. Odysseus's ordinary agent can run local
+tools, so even a scoped token must be treated as accessible to a compromised
+Odysseus process or unrestricted local shell. Stronger agent isolation is
+needed before treating the gateway as a security boundary against hostile
 prompt content. Keep `AUTH_ENABLED=true` and `LOCALHOST_BYPASS=false` for any
 network-accessible Odysseus deployment.

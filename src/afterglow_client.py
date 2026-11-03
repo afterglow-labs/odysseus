@@ -97,7 +97,11 @@ class AfterglowClient:
                         detail = detail[:300]
                         code = response.status_code if response.status_code in (400, 403, 404, 409) else 502
                         if response.status_code == 401:
-                            code, detail = 503, "Afterglow authentication failed"
+                            code = 503
+                            detail = (
+                                "AFTERGLOW_TOKEN is invalid or expired" if self._supplied_token
+                                else "Afterglow authentication failed"
+                            )
                         raise AfterglowError(code, detail)
                     return data
         except (httpx.TimeoutException, httpx.TransportError) as exc:
