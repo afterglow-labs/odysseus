@@ -86,6 +86,10 @@ container itself. Keep the Ollama listener private.
   constraints. Goal additions and edits wake the planner and can resume a task.
   Constraints enter agent prompts as guidance; they do not enforce network or
   tool limits.
+- Learning: review task outcomes, evidence-backed lessons, the business map,
+  campaign branches, hunt coverage, and attack chains. Operators can extract
+  available lessons for a task; advanced board edits and chain verification
+  use the full Afterglow console.
 - Task chat: read the current main-agent conversation, send messages, stop a
   reply, or start a new conversation segment.
 - Findings: search and filter the paginated list, triage status and severity,
@@ -119,7 +123,10 @@ integration.
 
 The [desktop](screenshots/cybersecurity-mode-desktop.png) and
 [mobile](screenshots/cybersecurity-mode-mobile.png) previews show a disposable
-fixture with invented task and finding data.
+fixture with invented task and finding data. The
+[Learning desktop](screenshots/cybersecurity-learning-desktop.png) and
+[Learning mobile](screenshots/cybersecurity-learning-mobile.png) previews also
+use invented task data.
 
 ## Security boundary
 

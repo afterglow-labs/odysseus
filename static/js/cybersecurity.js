@@ -4,7 +4,7 @@
 
 const MODE_KEY = 'odysseus-product-mode';
 const TASK_KEY = 'odysseus-cyber-task';
-const TABS = new Set(['overview', 'tasks', 'chat', 'findings', 'scope', 'assets', 'activity', 'intercept', 'traffic', 'reports', 'models']);
+const TABS = new Set(['overview', 'tasks', 'learning', 'chat', 'findings', 'scope', 'assets', 'activity', 'intercept', 'traffic', 'reports', 'models']);
 const LOCAL_OLLAMA_ENDPOINTS = new Set(['http://127.0.0.1:11434', 'http://host.docker.internal:11434', 'http://ollama:11434']);
 const byId = (id) => document.getElementById(id);
 
@@ -433,6 +433,98 @@ export function initCybersecurityMode() {
       constraintsPanel.append(constraintsList);
       wrap.append(constraintsPanel);
     }
+    return wrap;
+  }
+
+  async function renderLearning() {
+    await loadTasks();
+    if (!selectedTask) return empty('Create or select a task to view its learning record.');
+    const taskId = selectedTask;
+    const [outcome, lessonData, mapData, campaignData, huntData, chainData] = await Promise.all([
+      api(`/tasks/${taskId}/outcome`), api(`/tasks/${taskId}/lessons`),
+      api(`/tasks/${taskId}/business-map`), api(`/tasks/${taskId}/campaign`),
+      api(`/tasks/${taskId}/hunt-classes`), api(`/tasks/${taskId}/attack-chains`),
+    ]);
+    const wrap = element('div');
+    wrap.append(taskPicker(refresh));
+
+    const metrics = element('div', 'cyber-grid');
+    metrics.append(
+      card('Confirmed findings', outcome.findings?.confirmed ?? 0),
+      card('Open findings', outcome.findings?.open ?? 0),
+      card('Tool calls', outcome.tool_calls ?? 0),
+      card('Skill gaps', outcome.skill_misses ?? 0),
+      card('Output tokens', outcome.tokens?.output_tokens ?? 0),
+    );
+    wrap.append(metrics);
+
+    function listSection(title, items, emptyText, renderItem) {
+      const section = panel(title);
+      const list = element('div', 'cyber-list');
+      if (!items.length) list.append(empty(emptyText));
+      for (const item of items) list.append(renderItem(item));
+      section.append(list);
+      wrap.append(section);
+      return section;
+    }
+
+    const lessons = Array.isArray(lessonData.lessons) ? lessonData.lessons : [];
+    const lessonPanel = listSection(`Lessons · ${lessonData.mode || 'off'}`, lessons,
+      'No evidence-backed lessons recorded for this task.', (lesson) => {
+        const entry = panel('');
+        entry.append(row(lesson.cue || `Lesson #${lesson.id}`,
+          `${lesson.action || ''} · ${lesson.support || 0} supporting records`, lesson.kind));
+        return entry;
+      });
+    const lessonActions = element('div', 'cyber-actions');
+    lessonActions.append(button('Extract lessons', () => act(
+      () => api(`/tasks/${taskId}/lessons/extract`, { method: 'POST', body: {} }),
+      'Lesson extraction complete')));
+    lessonPanel.append(lessonActions);
+
+    const businessMap = Array.isArray(mapData.business_map) ? mapData.business_map : [];
+    listSection('Business map', businessMap, 'No business model entries recorded.', (entry) => {
+      const item = panel('');
+      item.append(row(entry.name || `Entry #${entry.id}`, `Updated ${fmtDate(entry.updated_at)}`, entry.kind));
+      if (entry.detail && Object.keys(entry.detail).length) {
+        item.append(element('pre', 'cyber-detail', JSON.stringify(entry.detail, null, 2)));
+      }
+      return item;
+    });
+
+    const branches = Array.isArray(campaignData.branches) ? campaignData.branches : [];
+    listSection('Campaign branches', branches, 'No hypothesis branches planned yet.', (branch) => {
+      const item = panel('');
+      item.append(row(branch.hypothesis || branch.branch_id || `Branch #${branch.id}`,
+        `${branch.branch_id || ''} · ${branch.goal || ''}`, branch.status));
+      if (branch.probe_spec) item.append(element('p', 'cyber-detail', `Probe: ${branch.probe_spec}`));
+      if (branch.expected_signal) item.append(element('p', 'cyber-detail', `Expected: ${branch.expected_signal}`));
+      if (branch.reason) item.append(element('p', 'cyber-detail', `Result: ${branch.reason}`));
+      return item;
+    });
+
+    const huntClasses = Array.isArray(huntData.hunt_classes) ? huntData.hunt_classes : [];
+    listSection('Hunt coverage', huntClasses, 'No hunt-class board is enabled for this task.', (hunt) => {
+      const item = panel('');
+      item.append(row(hunt.class || `Class #${hunt.id}`,
+        hunt.reason || hunt.evidence || 'No outcome recorded', hunt.status));
+      return item;
+    });
+
+    const chains = Array.isArray(chainData.chains) ? chainData.chains : [];
+    listSection('Attack chains', chains, 'No attack chains proposed yet.', (chain) => {
+      const item = panel('');
+      item.append(row(chain.name || `Chain #${chain.id}`,
+        `${chain.impact || 'Impact unknown'} · ${chain.source_finding_ids?.length || 0} confirmed findings`, chain.status));
+      if (Array.isArray(chain.steps)) {
+        chain.steps.forEach((step, index) => item.append(element('p', 'cyber-detail',
+          `${index + 1}. ${step.step || ''}: ${step.description || ''}`)));
+      }
+      if (chain.reason) item.append(element('p', 'cyber-detail', `Result: ${chain.reason}`));
+      if (chain.spawned_task_id) item.append(element('p', 'cyber-detail',
+        `Verification task #${chain.spawned_task_id}`));
+      return item;
+    });
     return wrap;
   }
 
@@ -1088,6 +1180,7 @@ export function initCybersecurityMode() {
       let view;
       if (tab === 'overview') view = await renderOverview(status);
       else if (tab === 'tasks') view = await renderTasks();
+      else if (tab === 'learning') view = await renderLearning();
       else if (tab === 'chat') view = await renderChat();
       else if (tab === 'findings') view = await renderFindings();
       else if (tab === 'scope') view = await renderScope();

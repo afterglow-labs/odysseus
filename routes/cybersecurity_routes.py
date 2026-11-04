@@ -320,6 +320,42 @@ async def delete_task_constraint(request: Request, task_id: int = Path(gt=0), co
     return await _forward(f"/api/tasks/{task_id}/constraints/{constraint_id}", method="DELETE")
 
 
+@router.get("/tasks/{task_id}/outcome")
+async def task_outcome(task_id: int = Path(gt=0)):
+    return await _forward(f"/api/tasks/{task_id}/outcome")
+
+
+@router.get("/tasks/{task_id}/lessons")
+async def task_lessons(task_id: int = Path(gt=0)):
+    return await _forward(f"/api/tasks/{task_id}/lessons")
+
+
+@router.post("/tasks/{task_id}/lessons/extract")
+async def extract_task_lessons(request: Request, task_id: int = Path(gt=0)):
+    _require_browser_write(request)
+    return await _forward(f"/api/tasks/{task_id}/lessons/extract", method="POST", body={})
+
+
+@router.get("/tasks/{task_id}/business-map")
+async def task_business_map(task_id: int = Path(gt=0)):
+    return await _forward(f"/api/tasks/{task_id}/business-map")
+
+
+@router.get("/tasks/{task_id}/campaign")
+async def task_campaign(task_id: int = Path(gt=0)):
+    return await _forward(f"/api/tasks/{task_id}/campaign")
+
+
+@router.get("/tasks/{task_id}/hunt-classes")
+async def task_hunt_classes(task_id: int = Path(gt=0)):
+    return await _forward(f"/api/tasks/{task_id}/hunt-classes")
+
+
+@router.get("/tasks/{task_id}/attack-chains")
+async def task_attack_chains(task_id: int = Path(gt=0)):
+    return await _forward(f"/api/tasks/{task_id}/attack-chains")
+
+
 @router.get("/tasks/{task_id}/chat/status")
 async def chat_status(task_id: int = Path(gt=0)):
     return await _forward(f"/api/tasks/{task_id}/chat/status")

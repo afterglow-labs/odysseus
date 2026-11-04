@@ -237,6 +237,16 @@ def test_operations_use_typed_gateway_and_omit_asset_credentials(monkeypatch):
         }).status_code == 422
         assert browser.delete("/api/cybersecurity/tasks/7/constraints/3", headers=headers).status_code == 200
         assert calls[-1][1]["method"] == "DELETE"
+        for name in ("outcome", "lessons", "business-map", "campaign", "hunt-classes", "attack-chains"):
+            assert browser.get(f"/api/cybersecurity/tasks/7/{name}", headers=headers).status_code == 200
+            assert calls[-1] == (f"/api/tasks/7/{name}", {
+                "method": "GET", "body": None, "params": None, "auth": True,
+            })
+        assert browser.post("/api/cybersecurity/tasks/7/lessons/extract", headers={"X-Test-User": "admin"}).status_code == 403
+        assert browser.post("/api/cybersecurity/tasks/7/lessons/extract", headers=headers).status_code == 200
+        assert calls[-1] == ("/api/tasks/7/lessons/extract", {
+            "method": "POST", "body": {}, "params": None, "auth": True,
+        })
         assert browser.post("/api/cybersecurity/tasks/7/chat", headers=headers, json={"message": " hello "}).status_code == 200
         assert calls[-1] == ("/api/chat", {"method": "POST", "body": {"message": "hello"}, "params": {"task": 7}, "auth": True})
         assert browser.post("/api/cybersecurity/tasks/7/scope", headers=headers, json={
