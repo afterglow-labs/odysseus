@@ -1,10 +1,12 @@
 """Afterglow's server credential must not ride into agent child processes."""
 
 import os
+import subprocess
+import sys
 
 import pytest
 
-from src.agent_environment import agent_subprocess_env
+from src.agent_environment import agent_subprocess_env, protect_server_process_secrets
 from src.agent_tools import subprocess_tools
 from src import bg_jobs
 
@@ -21,6 +23,40 @@ def test_agent_environment_removes_only_afterglow_server_secrets():
         "SAFE_MARKER": "available",
     }
     assert source["AFTERGLOW_TOKEN"] == "token-sentinel"
+
+
+def test_process_protection_is_inactive_without_afterglow_credentials():
+    assert protect_server_process_secrets({"SAFE_MARKER": "available"}) is False
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux prctl and /proc are required")
+def test_linux_agent_cannot_read_credential_bearing_server_environment():
+    probe_code = (
+        "import sys\n"
+        "try:\n"
+        "    with open(f'/proc/{sys.argv[1]}/environ', 'rb') as handle:\n"
+        "        handle.read(1)\n"
+        "    print('readable')\n"
+        "except OSError:\n"
+        "    print('blocked')\n"
+    )
+    server_code = f"""
+import os
+import subprocess
+import sys
+from src.agent_environment import protect_server_process_secrets
+
+probe_code = {probe_code!r}
+assert protect_server_process_secrets()
+result = subprocess.run([sys.executable, '-c', probe_code, str(os.getpid())],
+                        capture_output=True, text=True, check=True)
+assert result.stdout.strip() == 'blocked', result.stdout
+print('protected')
+"""
+    environment = {**os.environ, "AFTERGLOW_TOKEN": "test-only-sentinel"}
+    result = subprocess.run([sys.executable, "-c", server_code], env=environment,
+                            capture_output=True, text=True, check=True)
+    assert result.stdout.strip() == "protected"
 
 
 @pytest.mark.asyncio

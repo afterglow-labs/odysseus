@@ -143,10 +143,13 @@ task control or interception decision.
 The gateway token limits backend paths and methods, but still permits task
 control and interception decisions. Odysseus removes its Afterglow token and
 password from the environments it passes to direct agent shell, Python,
-background job, ripgrep, and MCP subprocesses. Its ordinary agent can still
-run local tools, so a compromised Odysseus process or unrestricted same-user
-shell may reach server files or process state. Stronger agent isolation is
-needed before treating the gateway as a security boundary against hostile
-prompt content. Keep
+background job, ripgrep, and MCP subprocesses. On Linux, a server with either
+credential also disables process dumps, ptrace, and same-user reads of
+`/proc/<pid>/environ` during startup. Startup fails if that protection cannot
+be applied. Agent tools may still read files accessible to the same OS user,
+including a native `.env` file. A compromised Odysseus process can also use
+its in-memory credential.
+Separate agent filesystem and process identities are still needed for a hard
+boundary against hostile prompt content. Keep
 `AUTH_ENABLED=true` and `LOCALHOST_BYPASS=false` for any network-accessible
 Odysseus deployment.

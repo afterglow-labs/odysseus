@@ -51,6 +51,11 @@ from dotenv import load_dotenv
 # utf-8-sig reads plain UTF-8 (no BOM) identically, so this is safe everywhere.
 load_dotenv(encoding="utf-8-sig")
 
+# Protect credentials before importing subsystems that may launch workers.
+# The lifespan repeats this check if a test or embedding host sets them later.
+from src.agent_environment import protect_server_process_secrets
+protect_server_process_secrets()
+
 import asyncio
 import logging
 import secrets
@@ -1049,6 +1054,8 @@ async def runtime_info() -> Dict[str, object]:
 async def _lifespan(app):
     """Modern lifespan context manager replacing deprecated @app.on_event."""
     # ── STARTUP ──
+    if protect_server_process_secrets():
+        logger.info("Protected Afterglow server credentials from Linux process inspection")
     await _startup_event()
     yield
     # ── SHUTDOWN ──
