@@ -37,11 +37,25 @@ backend's Compose service is named `scopeweaver`. For two containers connected
 to a trusted private Docker network, set `AFTERGLOW_URL=http://scopeweaver:8787`
 and `AFTERGLOW_ALLOW_HTTP=true` in the Odysseus environment. Both containers
 must be attached to that network; their separate Compose projects do not share
-a network by default. Odysseus's `docker-compose.yml` passes these variables
-into its container. Keep the
-Afterglow port bound to loopback on the host and do not publish its private
-Docker network. If the servers communicate across an untrusted network, use
-HTTPS instead.
+a network by default. The optional `docker-compose.afterglow.yml` attaches
+Odysseus to an existing Afterglow Compose network. Set `AFTERGLOW_NETWORK` to
+that network's actual name and run Odysseus with both Compose files. For a new
+backend stack started with `docker compose -p afterglow up -d --build`, the
+network is `afterglow_default`:
+
+```sh
+# Run from the Odysseus checkout after setting AFTERGLOW_TOKEN.
+AFTERGLOW_NETWORK=afterglow_default \
+AFTERGLOW_URL=http://scopeweaver:8787 \
+AFTERGLOW_ALLOW_HTTP=true \
+docker compose -f docker-compose.yml -f docker-compose.afterglow.yml up -d --build
+```
+
+For an existing backend stack, inspect its network name with `docker network ls`
+and use that name instead. Odysseus's base Compose file passes the gateway
+variables into its container. Keep the Afterglow host port bound to loopback
+and do not publish its private Docker network. If the servers communicate
+across an untrusted network, use HTTPS instead.
 
 `AFTERGLOW_PUBLIC_URL` is the address that the user's browser can open. When
 set, the Cybersecurity header offers a link to the full Afterglow console for
@@ -75,7 +89,16 @@ SCOPEWEAVER_LLM_CONTEXT_WINDOW_K=32
 Use **Find installed models** in the Models tab to confirm that Afterglow can
 reach Ollama. If Afterglow runs in a container, its Ollama endpoint must be
 reachable from that container; `127.0.0.1` inside the container refers to the
-container itself. Keep the Ollama listener private.
+container itself. A host Ollama bound to `127.0.0.1` is therefore unreachable
+through `host.docker.internal` on Linux. The combined backend's optional
+`docker-compose.host-model.yml` starts a private Ollama container using the
+host's existing model directory read-only; set `OLLAMA_MODELS_DIR` to the
+verified absolute directory containing `blobs/` and `manifests/`, then use
+`http://ollama:11434` as the Afterglow model endpoint. The model is not copied
+or downloaded again. If `SCOPEWEAVER_LOCAL_LLM_ONLY=true`, also add the Ollama
+container's actual `/32` address to
+`SCOPEWEAVER_LOCAL_LLM_ALLOWED_CIDRS`; see the backend's local model network
+policy for the lookup command. Keep the Ollama listener private.
 
 ## Current workbench
 

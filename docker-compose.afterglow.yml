@@ -1,0 +1,11 @@
+# Join the private network of the separate Afterglow Compose project.
+services:
+  odysseus:
+    networks:
+      - default
+      - afterglow
+
+networks:
+  afterglow:
+    external: true
+    name: ${AFTERGLOW_NETWORK:?Set AFTERGLOW_NETWORK to the running backend Compose network}
