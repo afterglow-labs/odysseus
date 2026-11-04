@@ -41,7 +41,7 @@ def capabilities(project, runtime, components, gpus=()):
                      "scout_upscale": (extras / "latent-upscaler/nodes/minimax_h3_latent_upscaler_3d.py").is_file()
                      and any(c.get("role") == "latent_upscaler" for c in components),
                      "guides": True, "force_audio": True, "continuation": True, "dialogue": True,
-                     "separate_final_length": True, "refinement_prompt_edit": True, "auto_refine": True,
+                     "separate_final_length": True, "full_length_steps": True, "refinement_prompt_edit": True, "auto_refine": True,
                      "seed_scout": (runtime.parent / "seed-scout/nodes.py").is_file(),
                      "attention_backend": True, "sparse_attention": True,
                      "refmods": (extras / "refmods/core.py").is_file(),
@@ -192,6 +192,9 @@ def detail(manager, job_id, owner):
                       "error": "Could not read the source duration. Choose the final output length manually."}
         result.update(final_length=length, refinement_defaults={
             **final_defaults(config, inventory["components"]), "frames": length["frames"] or config["frames"]})
+        result["refinement_defaults"]["seed_hunter"] = {
+            **result["refinement_defaults"].get("seed_hunter", {}),
+            "full_length_steps": config["seed_hunter"].get("full_length_steps") or config["steps"]}
     return result
 
 
@@ -214,7 +217,7 @@ def clone_snapshot(source_directory, destination, snapshot):
 
 FINAL_EDIT_SETTINGS = {"prompt", "width", "height", "frames", "steps", "seed", "sampler", "scheduler", "gpu", "vae_gpu",
                        "loras", "lora", "lora_scale", "latent_upscaler", "seed_hunter", "shift_video", "shift_audio"}
-FINAL_OPTIONS = {"denoise", "output_fps", "final_frames", "upscaler_chunking", "upscaler_force_unload", "shift_enabled",
+FINAL_OPTIONS = {"denoise", "output_fps", "final_frames", "full_length_steps", "upscaler_chunking", "upscaler_force_unload", "shift_enabled",
                  "preset", "sampling_schedule", "refinement_method",
                  "attention_backend", "sparse_method", "sparse_keep_percent", "sparse_start", "sparse_end",
                  "sparse_min_tokens", "sparse_extra_tokens", "sparse_sink_conditioning",
@@ -334,6 +337,9 @@ def prepare_final(manager, source_id, owner, body, directory, submission_id):
         raw["seed_hunter"] = options
         inputs = _inputs(source, manifest, UPLOAD_EXTENSIONS)
         resolved = validate_config(raw, inventory["components"], inventory["gpus"], inputs)
+        generation_steps = resolved["seed_hunter"].get("full_length_steps") or config["steps"]
+        if config["seed_hunter"].get("sampling_schedule") == "pika" and generation_steps != 6:
+            raise ValueError("This preview uses Pika's fixed schedule; full-length generation requires 6 steps")
         guard_refinement_dimensions(artifact(source, candidate, "metadata"), resolved)
         preflight(resolved, current, inputs)
         saved, names = {}, {}

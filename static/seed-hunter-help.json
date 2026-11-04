@@ -33,7 +33,7 @@
     },
     "encoder": {
       "title": "Text encoder",
-      "body": "Converts the prompt and supported reference context into conditioning for H3. This is separate from the optional chat model used by Enhance prompt. NVFP4 encoder weights need a compatible Blackwell GPU."
+      "body": "The Qwen encoder reads your prompt and visual references and converts them into numerical conditioning for H3. It does not write a second, hidden text prompt. For example, “a red ball rolls left” becomes embeddings, not a new sentence. Enhance prompt is a separate chat-model action: its rewritten text appears in the prompt box for review before you queue. NVFP4 encoder weights require a compatible Blackwell GPU."
     },
     "video_vae": {
       "title": "Video VAE",
@@ -327,19 +327,19 @@
     },
     "ff_chunk_size": {
       "title": "Feed-forward chunks",
-      "body": "Number of feed-forward chunks: 4 splits a large token sequence into 4 calls. 0 enables automatic bounded memory protection for INT8 layers; other weight formats keep their normal path. An explicit count overrides that protection. Splitting lowers peak activation memory with possible overhead; it does not split the video into jobs."
+      "body": "Manual feed-forward splitting. Leave 0 for automatic memory protection for INT8 and ordinary BF16/FP16 layers. For example, 4 explicitly divides the token work into four calls instead. This changes temporary memory use, not video duration, step count or reference order. Other quantization layouts keep their own supported path; an explicit count is a troubleshooting override, not a requirement."
     },
     "ff_chunk_threshold": {
       "title": "Feed-forward chunk threshold",
-      "body": "With an explicit chunk count above 1, split feed-forward work only when the packed token count exceeds this value. Automatic INT8 protection uses its own memory bound. This is a token count, not pixels or frames."
+      "body": "Only relevant to an explicit feed-forward chunk count. For example, 2048 starts splitting once the packed sequence exceeds 2048 tokens. Tokens are not frames or pixels. Leave the chunk count at 0 to use the automatic memory bound."
     },
     "low_vram_chunks": {
       "title": "Attention chunks",
-      "body": "Split attention heads into this many groups to reduce peak temporary GPU memory. 0 disables the patch. More groups add overhead; this is separate from sparse attention and does not intentionally discard attention links."
+      "body": "Manual attention-head splitting. Leave 0 to disable this optional override; the automatic memory guard remains active for dense Comfy Kitchen attention. For example, 3 requests at least three groups there; the guard may use smaller groups if needed. This is not 3 GB, three video pieces or a quality setting. Other attention backends use the selected fixed count. More groups can add overhead and cannot guarantee that every resolution fits VRAM."
     },
     "denoise": {
       "title": "Refinement denoise",
-      "body": "How far back into noise the saved, upscaled preview starts before refinement. Lower values preserve more of the existing latent; higher values allow larger changes. 0 skips denoising; 1 uses the full noise range. This is not LoRA strength."
+      "body": "How far back into noise the saved, upscaled preview starts before refinement. Lower values preserve more of the existing latent; higher values allow larger changes. 0 skips denoising; 1 uses the full noise range. This is not LoRA strength. For example, 0.2 makes a gentler refinement than 0.6; neither guarantees exact preservation. A two-step refinement still performs two updates over its chosen noise range."
     },
     "upscaler_chunking": {
       "title": "Temporal chunking for latent upscale",
@@ -447,7 +447,7 @@
     },
     "final_steps": {
       "title": "Refinement steps",
-      "body": "Denoising updates at the enlarged resolution. 2 steps still processes the whole high-resolution video twice; it does not mean two frames. Use a step count appropriate to the model and LoRAs."
+      "body": "Sampling updates after the chosen latent is enlarged to the final resolution. Example: 2 runs exactly 2 high-resolution updates. A short preview may first need a separate full-length generation pass; that count is controlled by Full-length generation steps, not this field. A full-length preview with the same model goes directly to upscaling and these refinement steps. Step count changes work and quality, but lowering it does not necessarily lower peak VRAM per update."
     },
     "final_seed": {
       "title": "Refinement seed",
@@ -459,7 +459,7 @@
     },
     "final_denoise": {
       "title": "Refinement denoise",
-      "body": "How far back into noise the saved, upscaled preview starts before refinement. Lower values preserve more of the existing latent; higher values allow larger changes. 0 skips denoising; 1 uses the full noise range. This is not LoRA strength."
+      "body": "How far back into noise the saved, upscaled preview starts before refinement. Lower values preserve more of the existing latent; higher values allow larger changes. 0 skips denoising; 1 uses the full noise range. This is not LoRA strength. For example, 0.2 makes a gentler refinement than 0.6; neither guarantees exact preservation. A two-step refinement still performs two updates over its chosen noise range."
     },
     "final_sampler": {
       "title": "Sampler",
@@ -520,6 +520,38 @@
     "scout_refine_steps": {
       "title": "Upscale refinement steps",
       "body": "Additional sampling updates after learned latent upscaling. These are separate from the full Scout schedule. Refinement uses the selected sampler, scheduler and denoise. Denoise 0 keeps only the learned upscale."
+    },
+    "full_length_steps": {
+      "title": "Full-length generation steps",
+      "body": "Used only when Seed Hunter must generate a longer video (or use a different base model) before upscaling. Example: 8-step, 4-second preview → 15-second final with generation 6 and refinement 2 means 6 low-resolution full-length steps, then 2 high-resolution refinement steps. This does not change the saved preview. Leave blank to inherit each preview’s step count. If length and model already match, this pass is skipped. Fewer steps may change quality; a Turbo LoRA is not automatically added."
+    },
+    "final_full_length_steps": {
+      "title": "Full-length generation steps",
+      "body": "Used only when Seed Hunter must generate a longer video (or use a different base model) before upscaling. Example: 8-step, 4-second preview → 15-second final with generation 6 and refinement 2 means 6 low-resolution full-length steps, then 2 high-resolution refinement steps. This does not change the saved preview. Leave blank to inherit each preview’s step count. If length and model already match, this pass is skipped. Fewer steps may change quality; a Turbo LoRA is not automatically added."
+    },
+    "preset": {
+      "title": "Workflow preset",
+      "body": "Applies a named recipe with its documented models and sampling controls. Review the resulting values before queueing. Choose Custom to manage the schedule yourself; changing a preset does not edit existing jobs."
+    },
+    "sampling_schedule": {
+      "title": "Sampling schedule",
+      "body": "Standard uses the selected sampler, scheduler and step count. Pika uses its required six-update sigma schedule; it cannot accept an arbitrary full-length generation count."
+    },
+    "refinement_method": {
+      "title": "Refinement method",
+      "body": "Latent refinement enlarges the saved compressed result with the latent upscaler before further denoising. Pixel refinement uses the Director image-based path. These are different algorithms, not display options."
+    },
+    "director_music": {
+      "title": "Director music",
+      "body": "Optional background-music description for the Director structured prompt. For example: quiet acoustic guitar, or no music."
+    },
+    "director_soundscape": {
+      "title": "Director soundscape",
+      "body": "Describe scene sounds for the Director prompt. For example: footsteps, wind in leaves and quiet street ambience."
+    },
+    "director_shots": {
+      "title": "Director shots",
+      "body": "Describe ordered shots for the Director prompt, including action, timing and camera. For example: first a wide view of a garden, then a close view of a flower."
     }
   },
   "sources": [

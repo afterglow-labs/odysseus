@@ -149,3 +149,18 @@ def test_explicit_dense_override_and_reconfiguration(native):
 def test_invalid_budget(native):
     with pytest.raises(ValueError, match="positive"):
         configure_bounded_attention(native.core, native.backend, max_temporary_bytes=0)
+
+
+@pytest.mark.parametrize("budget,groups", [(1024**3, [2, 2, 1]), (1, [1, 1, 1, 1, 1])])
+def test_manual_groups_cannot_disable_automatic_memory_budget(native, budget, groups):
+    block = native.make()
+    x = torch.randn(19, 40)
+    t = torch.zeros(1, 240)
+    with torch.inference_mode():
+        expected = block(x.clone(), t, [(0, 19, 0)], None)
+    configure_bounded_attention(native.core, native.backend, max_temporary_bytes=budget)
+    native.calls.clear()
+    with torch.inference_mode():
+        actual = block(x.clone(), t, [(0, 19, 0)], None, transformer_options={"minimax_head_chunks": 3})
+    assert [heads for heads, _, _, _ in native.calls] == groups
+    torch.testing.assert_close(actual, expected)

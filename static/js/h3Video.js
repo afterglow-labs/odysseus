@@ -1,3 +1,4 @@
+import { bindModelGuide } from './h3LoraPromptExample.js';
 import { createVideoJobSources } from './videoJobSources.js';
 import { createPinkCherryControls } from './h3PinkCherry.js';
 import { createH3MDControls, h3mdQueueFields } from './h3MD.js';
@@ -1169,6 +1170,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
     } catch (e) { if (!closed) { if (editing) jobEditor.failed(e); else setError(e.message); } }
     finally { submitting = false; if (!closed) updateReady(); }
   });
+  bindModelGuide(fields.model, () => inventory?.components || []);
   fields.model.addEventListener('change', () => { updateMode(true); if (applyInstalledPreset({ automatic: true })) updateMode(true); });
   fields.mode.addEventListener('change', () => { updateMode(); if (applyInstalledPreset({ automatic: true })) updateMode(); });
   useInstalledPreset.onclick = () => { if (applyInstalledPreset()) { updateMode(); updateReady(); } };

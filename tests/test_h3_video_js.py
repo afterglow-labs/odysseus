@@ -58,6 +58,7 @@ globalThis.setInterval=()=>1;globalThis.clearInterval=()=>{};
 const stored=new Map();globalThis.localStorage={getItem:key=>stored.get(key)||null,setItem:(key,value)=>stored.set(key,value),removeItem:key=>stored.delete(key)};
 const topPortalZ=()=>1,bindMenuDismiss=(node,close)=>close,dismissOrRemove=()=>{},dismissTopMenu=()=>{};
 const videoWorkflow={};
+const bindModelGuide=()=>{}; // Read-only guide has real browser coverage.
 // Prompt history's real DOM/events are exercised by its browser tests. This
 // stripped-import harness isolates H3 draft, media and submission behavior.
 const bindWorkflowPromptHistory=()=>({destroy(){}});

@@ -1,4 +1,6 @@
+import { bindModelGuide } from './h3LoraPromptExample.js';
 import { createPreviewActions } from './videoPreviewActions.js';
+import { applyVideoMemoryReset } from './videoMemoryReset.js';
 import { createResultEditor } from './videoResultEdit.js';
 import { createAutoRefineSettings, autoRefineParent, allPreviewJobs, checkedJobSearchResponse } from './h3AutoRefine.js';
 import { bindWorkflowPromptHistory } from './workflowPromptHistory.js';
@@ -29,7 +31,7 @@ const API = '/api/video/h3', STORAGE = 'odysseus-h3-seed-hunter-v1';
 const ACTIVE = new Set(['queued', 'running']), TERMINAL = new Set(['completed', 'failed', 'stopped']);
 const OUTER = ['mode', 'model', 'encoder', 'video_vae', 'audio_vae', 'latent_upscaler', 'gpu', 'vae_gpu', 'width', 'height', 'frames', 'steps', 'seed', 'sampler', 'scheduler', 'shift_video', 'shift_audio', 'reference_size'];
 const FINAL_FIELDS = new Set(['prompt','width','height','steps','seed','sampler','scheduler','gpu','vae_gpu','latent_upscaler','shift_video','shift_audio']);
-const FINAL_OPTIONS = new Set(['denoise','output_fps','upscaler_chunking','upscaler_force_unload','shift_enabled','attention_backend','sparse_method','sparse_keep_percent','sparse_start','sparse_end','sparse_min_tokens','sparse_extra_tokens','sparse_sink_conditioning','ff_chunk_size','ff_chunk_threshold','low_vram_chunks']);
+const FINAL_OPTIONS = new Set(['full_length_steps','denoise','output_fps','upscaler_chunking','upscaler_force_unload','shift_enabled','attention_backend','sparse_method','sparse_keep_percent','sparse_start','sparse_end','sparse_min_tokens','sparse_extra_tokens','sparse_sink_conditioning','ff_chunk_size','ff_chunk_threshold','low_vram_chunks']);
 const NUMERIC = new Set(['width', 'height', 'frames', 'steps', 'seed', 'shift_video', 'shift_audio']);
 const NESTED = ['stage', 'preview_count', 'denoise', 'shift_enabled', 'first_frame_guide', 'last_frame_guide', 'force_audio', 'continuation_overlap', 'output_fps', 'attention_backend', 'sparse_method', 'upscaler_chunking', 'upscaler_force_unload', 'source_start_seconds', 'source_end_seconds', 'audio_start_seconds', 'audio_end_seconds'];
 const BASE = { mode: 'ref2va', width: 480, height: 864, frames: 73, steps: 20, seed: 42, sampler: 'er_sde', scheduler: 'beta', shift_video: 12, shift_audio: 6, reference_size: 'max', vae_gpu: '', loras: [] };
@@ -183,6 +185,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic', initialDra
     onInsertTrigger: component => { if(stage.value==='final'){fail('Refinement keeps the saved preview prompt.');return;} const profile = component.lora_profile; fields.prompt.value = insertH3LoraTrigger(fields.prompt.value, profile.trigger_words, profile.trigger_position, fields.prompt.selectionStart); changed(); fields.prompt.focus(); },
     onApplyRecommended: component => { for (const [key, value] of Object.entries(component.lora_profile?.recommended_settings || {})) if (fields[key] && (stage.value!=='final'||FINAL_FIELDS.has(key))) fields[key].value = value; changed(); },
   }); form.append(loras.node);
+  bindModelGuide(fields.model, () => inventory?.components || []);
   const prompt = field(form, 'prompt', 'Prompt', make('textarea')); prompt.dataset.workflowPrompt = ''; prompt.rows = 5; prompt.maxLength = 16000; prompt.required = true;
   const enhancerBar = make('div', 'h3-video-actions'), enhance = button('Enhance prompt'), restorePrompt = button('Restore original prompt'), enhancerSelect = make('select', 'cookbook-field-input'), checkModels = button('Check models'); enhancerSelect.setAttribute('aria-label', 'Enhancement model');
   enhance.dataset.seedHunterHelpAction = 'prompt_enhancement';
@@ -264,8 +267,9 @@ export function showH3SeedHunter({ scout = false, layout = 'classic', initialDra
   number(advanced, 'sparse_start', 'Sparse attention start', .2, 0, 1, .05, options); number(advanced, 'sparse_end', 'Sparse attention end', 1, 0, 1, .05, options);
   number(advanced, 'sparse_min_tokens', 'Sparse minimum tokens', 12288, 0, 1000000, 1, options); number(advanced, 'sparse_extra_tokens', 'Sparse extra tokens', 256, 0, 8192, 1, options);
   select(advanced, 'sparse_sink_conditioning', 'Sparse reference preservation', [['exact_kv_and_rows','Preserve reference keys and rows'],['none','Off']], options);
-  number(advanced, 'ff_chunk_size', 'Feed-forward chunks (0 = auto for INT8)', 0, 0, 64, 1, options); number(advanced, 'ff_chunk_threshold', 'Feed-forward chunk threshold', 2048, 1, 1000000, 1, options);
+  number(advanced, 'ff_chunk_size', 'Feed-forward chunks (0 = auto)', 0, 0, 64, 1, options); number(advanced, 'ff_chunk_threshold', 'Feed-forward chunk threshold', 2048, 1, 1000000, 1, options);
   number(advanced, 'low_vram_chunks', 'Attention chunks (0 = off)', 0, 0, 64, 1, options);
+  if (!scout) number(advanced, 'full_length_steps', 'Full-length generation steps (blank = preview steps)', '', 1, 100, 1, options);
   if (!scout) number(advanced, 'denoise', 'Default refinement denoise', .4, 0, 1, .05, options);
   check(advanced, 'upscaler_chunking', 'Temporal chunking for latent upscale', true); check(advanced, 'upscaler_force_unload', 'Unload latent upscaler after use');
   const continuationPanel = group(form, 'Continuation source and timing', true);
@@ -302,7 +306,11 @@ export function showH3SeedHunter({ scout = false, layout = 'classic', initialDra
   select(finalGrid, 'latent_upscaler', 'Latent upscaler', [], finalFields); number(finalGrid, 'width', 'Final width', 1088, 64, 4096, 32, finalFields); number(finalGrid, 'height', 'Final height', 1952, 64, 4096, 32, finalFields);
   select(finalGrid,'frames','Final output length',Array.from({length:18},(_,index)=>73+17*index).filter(frames=>frames<=362).map(frames=>[String(frames),`${(frames/24).toFixed(2)} seconds · ${frames} frames`]),finalFields);
   finalFields.frames.prepend(new Option('Choose final output length',''));finalFields.frames.required=true;
+  number(finalGrid, 'full_length_steps', 'Full-length generation steps', '', 1, 100, 1, finalFields);
+  finalFields.full_length_steps.setAttribute('aria-label', 'Full-length generation steps');
+  finalFields.full_length_steps.placeholder = 'Use each preview’s steps';
   number(finalGrid, 'steps', 'Refinement steps', 2, 1, 100, 1, finalFields); number(finalGrid, 'seed', 'Refinement seed', 42, 0, Number.MAX_SAFE_INTEGER, 1, finalFields); number(finalGrid, 'denoise', 'Denoise', .4, 0, 1, .05, finalFields);
+  finalFields.steps.setAttribute('aria-label', 'Refinement steps');
   select(finalGrid, 'sampler', 'Refinement sampler', [['er_sde','ER-SDE'],['euler','Euler'],['res_multistep','RES multistep']], finalFields); select(finalGrid, 'scheduler', 'Refinement scheduler', [['linear_quadratic','Linear quadratic'],['beta','Beta'],['simple','Simple'],['normal','Normal']], finalFields);
   select(finalGrid, 'output_fps', 'Final output FPS / RIFE', fpsChoices, finalFields).setAttribute('aria-label', 'Final output FPS / RIFE');
   const finalRifeStatus = make('p', 'h3-video-muted'); finalForm.append(finalRifeStatus);
@@ -378,6 +386,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic', initialDra
   function readOptions() {
     const value={...optionSnapshot, refmod_strengths:uploads.reference_mods?[...uploads.reference_mods.retained,...uploads.reference_mods.files].map((_,i)=>uploads.reference_mods.strengths[i]??1):[], ...Object.fromEntries(Object.keys(options).map(key => { const n = options[key]; return [key, n.type === 'checkbox' ? n.checked : n.type === 'number' || ['preview_count','continuation_overlap','output_fps','scout_timeout'].includes(key) ? (n.value === '' ? null : Number(n.value)) : n.value]; }))};
     delete value.auto_refine;
+    if (inventory?.seed_hunter?.features?.full_length_steps !== true || scout) delete value.full_length_steps;
     if(inventory?.seed_hunter?.features?.scout_upscale!==true)for(const key of ['scout_upscale','scout_final_width','scout_final_height','scout_refine_steps'])delete value[key];
     return value;
   }
@@ -389,14 +398,14 @@ export function showH3SeedHunter({ scout = false, layout = 'classic', initialDra
     return { ...value, reference_video_ranges: referenceVideoRanges(uploads.reference_videos) };
   }
   function currentUploads() { return Object.fromEntries(Object.entries(uploads).filter(([key]) => (key !== 'source_video' || stage.value === 'continuation') && (key !== 'first_frame' || options.first_frame_guide.checked) && (key !== 'last_frame' || options.last_frame_guide.checked)).map(([key, state]) => [key, [...state.files]])); }
-  function finalConfig() { return { ...Object.fromEntries(Object.entries(finalFields).filter(([key])=>key!=='output_fps'&&(key!=='frames'||inventory?.seed_hunter?.features?.separate_final_length===true)).map(([key, n]) => [key, n.type === 'number'||key==='frames' ? Number(n.value) : n.value])), loras: finalLoras.getValue(), seed_hunter: { ...finalOptionSnapshot, output_fps: Number(finalFields.output_fps.value) } }; }
+  function finalConfig() { return { ...Object.fromEntries(Object.entries(finalFields).filter(([key])=>!['output_fps','full_length_steps'].includes(key)&&(key!=='frames'||inventory?.seed_hunter?.features?.separate_final_length===true)).map(([key, n]) => [key, n.type === 'number'||key==='frames' ? Number(n.value) : n.value])), loras: finalLoras.getValue(), seed_hunter: { ...finalOptionSnapshot, output_fps: Number(finalFields.output_fps.value), ...(inventory?.seed_hunter?.features?.full_length_steps && !scout ? {full_length_steps: finalFields.full_length_steps.value === '' ? null : Number(finalFields.full_length_steps.value)} : {}) } }; }
   function describeRefinement() {
-    if(!selection)return; if(selection.automatic){finalDescription.textContent='Shared refinement settings apply once to every selected candidate. Each job retains its own seed, saved latent, prompt, files and selected media sections.';return;}
+    if(!selection)return; if(selection.automatic){finalDescription.textContent='Shared refinement settings apply once to every selected candidate. Each keeps its own seed, prompt and files. Full-length generation runs only when its preview length differs; leave its steps blank to use each preview’s count. Matching lengths go straight to refinement.';return;}
     const preview=selection.frames,frames=inventory?.seed_hunter?.features?.separate_final_length?Number(finalFields.frames.value)||preview:preview;
     if(inventory?.seed_hunter?.features?.separate_final_length&&!finalFields.frames.value){finalDescription.textContent='Choose a final output length before rendering. '+(selection.final_length?.error||'The source video duration could not be determined.');return;}
     finalDescription.textContent=frames!==preview
-      ? `Preview: ${(preview/24).toFixed(2)} seconds. Final output: ${(frames/24).toFixed(2)} seconds. The selected seed is rendered at the final length before upscaling and refinement, using the saved prompt and references.`
-      : `Preview and final output: ${(preview/24).toFixed(2)} seconds. Reuses the selected preview’s latent and saved inputs.`;
+      ? `Preview: ${(preview/24).toFixed(2)} seconds. Final output: ${(frames/24).toFixed(2)} seconds. First generates the full video at preview resolution in ${finalFields.full_length_steps.value || selection.steps} steps, then upscales and runs ${finalFields.steps.value} refinement steps. The selected seed, saved prompt and references are retained.`
+      : `Preview and final: ${(preview/24).toFixed(2)} seconds. Reuses the saved preview latent, upscales, then runs ${finalFields.steps.value} refinement steps. No extra full-length generation pass.`;
   }
   function save() { if (jobEditor?.active) return; try { localStorage.setItem(storageKey, JSON.stringify({ config: config(), sizing: { aspect: aspect.value, megapixels: megapixels.value }, dialogue_text: dialogueText.value, dialogue_tone: dialogueTone.value, dialogue_template: dialogueTemplate.value, enhancer: enhancer[Number(enhancerSelect.value)] ? {model:enhancer[Number(enhancerSelect.value)].model,endpoint_id:enhancer[Number(enhancerSelect.value)].endpoint_id} : null, auto_request: bulkPending, auto_requests: [...archivedBulk.values()], selected: selection && !selection.automatic && { job_id: selection.job_id, index: selection.index }, final_config: finalConfig(), final_request: finalRequest })); } catch {} }
   function changed() { revision++; error.hidden = true; update(); save(); }
@@ -510,6 +519,9 @@ export function showH3SeedHunter({ scout = false, layout = 'classic', initialDra
     autoSettings.node.hidden=!bulkMode; autoSettings.setDisabled(finalBusy || pendingBulk);
     if(pendingBulk){ for(const n of Object.values(finalFields))n.disabled=true; finalLoras.setDisabled(true); finalSubmit.disabled=finalBusy; }
     finalFields.seed.parentElement.hidden=finalReroll.hidden=bulkMode; finalFields.seed.disabled ||= bulkMode;
+    finalFields.full_length_steps.parentElement.hidden = scout || features.full_length_steps !== true;
+    finalFields.full_length_steps.disabled ||= scout || features.full_length_steps !== true;
+    if (options.full_length_steps) { options.full_length_steps.parentElement.hidden = features.full_length_steps !== true; options.full_length_steps.disabled ||= features.full_length_steps !== true; }
     if(bulkMode){finalFields.frames.disabled ||= autoSettings.inherit.checked; finalFields.frames.parentElement.hidden ||= scout;}
     finalSubmit.textContent = pendingBulk ? 'Retry bulk refinement submission' : bulkMode ? selection.jobs?.length ? 'Queue bulk refinements' : 'Save automatic refinement settings' : 'Render selected preview';
     if (jobNodes.size) renderJobs();
@@ -519,6 +531,12 @@ export function showH3SeedHunter({ scout = false, layout = 'classic', initialDra
     if (closed) return; loading = true; update();
     try {
       const data = await request('/inventory'); if (closed) return;
+      if (!inventory && !initialDraft) {
+        try {
+          const response = await fetch('/api/prefs/video-memory-reset', {credentials: 'same-origin'});
+          if (response.ok) applyVideoMemoryReset(saved, (await response.json()).value, storageKey);
+        } catch { /* A preference service failure must not block the editor. */ }
+      }
       const first = !inventory, serverDefaults = (scout ? data.seed_hunter?.scout_defaults : data.seed_hunter?.defaults) || {}, before = first ? { ...base, ...serverDefaults, steps:20, loras:[], ...(saved.config || {}), seed_hunter: { ...defaults, ...(serverDefaults.seed_hunter || {}), ...(scout ? SEED_SCOUT_OPTIONS : {}), ...(saved.config?.seed_hunter || {}) } } : config(); inventory = data;
       if(scout&&first&&before.seed_hunter.scout_upscale===undefined)before.seed_hunter.scout_upscale=data.seed_hunter?.features?.scout_upscale===true;
       optionSnapshot = clone(before.seed_hunter || {});
@@ -570,10 +588,11 @@ export function showH3SeedHunter({ scout = false, layout = 'classic', initialDra
       const size = seedHunterResolution(data.refinement_defaults?.megapixels || inventory.seed_hunter?.final_defaults?.megapixels || 2, source.width, source.height);
       const values = seedHunterRefinementDefaults(source, { ...size, steps:2, seed:source.seed, denoise:.4, sampler:'er_sde', scheduler:'linear_quadratic', ...(inventory.seed_hunter?.final_defaults || {}), ...(data.refinement_defaults || {}), latent_upscaler:source.latent_upscaler || finalFields.latent_upscaler.value, frames:data.refinement_defaults?.frames ?? source.seed_hunter?.final_frames ?? source.frames }, settings.refinement || {});
       finalOptionSnapshot = clone(values.seed_hunter || {});
-      selection = {automatic:true, jobs:selectedJobs.map(j=>j.id), width:source.width, height:source.height}; finalRequest=null;
+      selection = {automatic:true, jobs:selectedJobs.map(j=>j.id), width:source.width, height:source.height, steps:source.steps}; finalRequest=null;
       const count = Math.max(scout ? source.seed_hunter?.scout_count || 3 : source.seed_hunter?.preview_count || 3, ...selectedJobs.map(j=>j.scout?.seeds?.length || j.seed_hunter?.candidates?.length || 1));
       autoSettings.setValue({...settings, project:settings.project || selectedJobs[0]?.source_name?.replace(/[/\\:*?"<>|]/g,'_').slice(0,80) || 'Refinements'}, count, scout);
       for(const [key,n] of Object.entries(finalFields)) if(values[key] !== undefined)n.value=values[key];
+      finalFields.full_length_steps.value = settings.refinement?.seed_hunter?.full_length_steps ?? '';
       finalFields.output_fps.value = String(settings.refinement?.seed_hunter?.output_fps ?? source.seed_hunter?.output_fps ?? 24);
       finalComponents=h3LoraComponents(inventory.components,data.lora_components);finalLoras.setInventory(finalComponents);finalLoras.setValue(values.loras ?? h3LoraStack(source));
       finalTitle.textContent=selectedJobs.length ? `Refine candidates from ${selectedJobs.length} jobs` : 'Automatic refinement for new jobs';
@@ -602,10 +621,11 @@ export function showH3SeedHunter({ scout = false, layout = 'classic', initialDra
     try {
       status.textContent = 'Loading saved preview settings…'; const data = await request(`/jobs/${encodeURIComponent(job.id)}/seed-hunter`); if (closed || token !== selecting) return;
       const source = data.config, size = seedHunterResolution(data.refinement_defaults?.megapixels || inventory.seed_hunter?.final_defaults?.megapixels || 2, source.width, source.height);
-      selection = { job_id: job.id, index: candidate.index, seed: candidate.seed, width:source.width, height:source.height,frames:source.frames,final_length:data.final_length }; finalRequest = remembered ? saved.final_request || null : null;
+      selection = { job_id: job.id, index: candidate.index, seed: candidate.seed, width:source.width, height:source.height,frames:source.frames,steps:source.steps,final_length:data.final_length }; finalRequest = remembered ? saved.final_request || null : null;
       const defaults = seedHunterRefinementDefaults(source, { ...size, latent_upscaler:source.latent_upscaler||finalFields.latent_upscaler.value, steps: 2, seed: candidate.seed, sampler: 'er_sde', scheduler: 'linear_quadratic', denoise: .4, ...(inventory.seed_hunter?.final_defaults || {}),...(data.refinement_defaults||{}),frames:data.refinement_defaults?.frames??source.seed_hunter?.final_frames??source.frames }, remembered ? saved.final_config || {} : {});
       for (const [key, n] of Object.entries(finalFields)) if (defaults[key] !== undefined) n.value = defaults[key];
       finalOptionSnapshot=clone(defaults.seed_hunter||{});
+      finalFields.full_length_steps.value = defaults.seed_hunter?.full_length_steps ?? source.steps;
       finalFields.output_fps.value = String((remembered ? saved.final_config?.seed_hunter?.output_fps : undefined) ?? source.seed_hunter?.output_fps ?? 24);
       if(data.final_length?.requires_manual&&!remembered)finalFields.frames.value='';
       finalComponents = h3LoraComponents(inventory.components, data.lora_components); finalLoras.setInventory(finalComponents); finalLoras.setValue(remembered && saved.final_config?.loras ? saved.final_config.loras : defaults.loras ?? h3LoraStack(source));

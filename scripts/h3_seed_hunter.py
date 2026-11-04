@@ -173,12 +173,16 @@ def load_snapshot(spec, config, *, nested_factory=None, allow_prompt_change=Fals
 
 
 def full_length_candidate_config(document, config):
-    """Recreate one selected seed using its original short-preview recipe."""
+    """Recreate the selected seed, with an independently editable generation count."""
     original = document["config"]
     seed = document.get("seed")
     if type(seed) is not int or not 0 <= seed <= 2**53 - 1:
         raise ValueError("The saved preview has no valid selected seed")
+    steps = config["seed_hunter"].get("full_length_steps") or original["steps"]
+    if original["seed_hunter"].get("sampling_schedule") == "pika" and steps != 6:
+        raise ValueError("This preview uses Pika's fixed schedule; full-length generation requires 6 steps")
     return {**original, "model": config["model"], "frames": config["frames"], "seed": seed,
+            "steps": steps,
             "gpu": config["gpu"], "vae_gpu": config.get("vae_gpu"),
             "seed_hunter": {**original["seed_hunter"], "stage": "preview", "preview_count": 1}}
 
@@ -226,13 +230,15 @@ def _load_module(path, name):
 def patch_model(runtime, config, model, runtime_path=None):
     from comfy_extras.nodes_model_advanced import ModelAttentionBackend
     options = config["seed_hunter"]
+    adaptive_attention = (options["attention_backend"] == "comfy kitchen attention"
+                          and options["sparse_method"] == "none")
     if options["ff_chunk_size"]:
         # A positive count is an explicit user choice, including 1 (no
         # splitting). KJ's object patch below owns that behavior; keep the
         # shared automatic INT8 guard from changing it underneath the patch.
         for block in model.get_model_object("diffusion_model").blocks:
             block.mlp._odysseus_manual_ff_chunks = options["ff_chunk_size"]
-    if options["ff_chunk_size"] or options["low_vram_chunks"]:
+    if options["ff_chunk_size"] or options["low_vram_chunks"] and not adaptive_attention:
         import types
         path = Path(runtime_path).parent / "seed-hunter/kjnodes/nodes/minimax_nodes.py"
         # Optional KJ progress reporting imports PromptServer; headless workers
@@ -249,8 +255,15 @@ def patch_model(runtime, config, model, runtime_path=None):
                 sys.modules.pop("server", None)
         if options["ff_chunk_size"]:
             model = optimizations.MiniMaxChunkFeedForward.execute(model, options["ff_chunk_size"], options["ff_chunk_threshold"])[0]
-        if options["low_vram_chunks"]:
+        if options["low_vram_chunks"] and not adaptive_attention:
             model = optimizations.MiniMaxLowVRAMAttention.execute(model, options["low_vram_chunks"])[0]
+    if options["low_vram_chunks"] and adaptive_attention:
+        # KJ's fixed-count forward replaces our adaptive guard. Keep the native
+        # guard for dense kitchen attention, honoring the count as a minimum.
+        model = model.clone()
+        model.model_options.setdefault("transformer_options", {})["minimax_head_chunks"] = options["low_vram_chunks"]
+        logging.info("Low-VRAM attention: at least %d head groups; automatic memory budget remains enabled",
+                     options["low_vram_chunks"])
     backend = options["attention_backend"]
     model = ModelAttentionBackend.execute(model, "pytorch attention" if backend == "pytorch" else backend)[0]
     if options["shift_enabled"]:
@@ -407,9 +420,13 @@ def run(manifest, config, media, *, runtime_factory, media_loader, muxer):
         regenerate = model_changed or document["config"]["frames"] != config["frames"]
         prompt_changed = document["config"]["prompt"] != config["prompt"]
         conditioning_config = full_length_candidate_config(document, config)
+        generation_steps = conditioning_config["steps"] if regenerate else 0
         progress.details.update(preview_frames=document["config"]["frames"], final_frames=config["frames"],
                                 regeneration_required=regenerate, prompt_changed=prompt_changed,
-                                model_changed=model_changed)
+                                model_changed=model_changed, generation_steps=generation_steps,
+                                refinement_steps=config["steps"])
+        logging.info("Refinement sampling plan: %d full-length generation steps, then %d refinement steps; preview %d frames, final %d frames",
+                     generation_steps, config["steps"], document["config"]["frames"], config["frames"])
         if model_changed:
             logging.info("Base model replaced: %s -> %s; regenerating selected seed %s before refinement",
                          Path(document["config"]["model"]).name, Path(config["model"]).name, document.get("seed"))

@@ -28,7 +28,7 @@ def test_preview_seconds_apply_immediately_and_final_length_is_independent(tmp_p
     inventory = dict(runtime_ready=True, components=components, gpus=[{'id': 'GPU-5090', 'name': 'RTX 5090'}],
                      batch_jobs=True, batch_auto_video_length=True, server_video_files=True,
                      seed_hunter={'defaults': defaults, 'features': {'latent_upscaler': True, 'rife': True,
-                         'separate_final_length': separate_final}})
+                         'separate_final_length': separate_final, 'full_length_steps': separate_final}})
     candidates = [{'index': index, 'seed': 42 + 1000 * (index - 1), 'can_refine': True, 'status': 'completed'}
                   for index in range(1, 4)]
     job = {'id': 'saved-previews', 'status': 'completed', 'prompt': 'Neutral saved preview.',
@@ -52,7 +52,7 @@ def test_preview_seconds_apply_immediately_and_final_length_is_independent(tmp_p
                 url = urlparse(request.url)
                 path, query = url.path, parse_qs(url.query)
                 if path == '/':
-                    await handler.fulfill(content_type='text/html', body='<html><head><title>Preview duration QA</title><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/h3-video.css"></head><body></body></html>')
+                    await handler.fulfill(content_type='text/html', body='<html><head><meta charset="utf-8"><title>Preview duration QA</title><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/h3-video.css"></head><body></body></html>')
                 elif path.startswith('/static/'):
                     file = ROOT / path.lstrip('/')
                     await handler.fulfill(body=file.read_bytes(), content_type='text/javascript' if file.suffix == '.js' else mimetypes.guess_type(file.name)[0])
@@ -167,14 +167,20 @@ def test_preview_seconds_apply_immediately_and_final_length_is_independent(tmp_p
                 if separate_final:
                     assert await final_frames.input_value() == '311'
                     assert 'Preview: 4.46 seconds. Final output: 12.96 seconds.' in await final.inner_text()
-                    assert 'selected seed is rendered at the final length' in await final.inner_text()
+                    assert 'First generates the full video' in await final.inner_text()
+                    await final.get_by_role('spinbutton', name='Full-length generation steps', exact=True).fill('3')
+                    await final.get_by_role('spinbutton', name='Refinement steps', exact=True).fill('2')
                     await final.get_by_role('combobox', name='Final output FPS / RIFE', exact=True).select_option('48')
                     await final_frames.select_option('243')
                     assert await frames.input_value() == '107'
+                    await final.locator('h3').first.scroll_into_view_if_needed()
+                    await page.screenshot(path=str(tmp_path / 'hunter-independent-steps-desktop.png'))
                     await final.get_by_role('button', name='Render selected preview', exact=True).click()
                     await page.wait_for_function("()=>document.querySelector('.h3-seed-hunter-final button[type=submit]').disabled===false")
                     assert len(finals) == 1, await final.locator('form').evaluate('(form)=>[...form.elements].filter(n=>n.validity&&!n.validity.valid).map(n=>({id:n.id,value:n.value,message:n.validationMessage}))')
                     assert finals[0]['config']['seed_hunter']['output_fps'] == 48
+                    assert finals[0]['config']['seed_hunter']['full_length_steps'] == 3
+                    assert finals[0]['config']['steps'] == 2
                     assert finals[0]['candidate'] == 2
                     assert finals[0]['config']['frames'] == 243
                     assert finals[0]['config']['seed'] == candidates[1]['seed']
@@ -189,7 +195,7 @@ def test_preview_seconds_apply_immediately_and_final_length_is_independent(tmp_p
                     assert await final.get_by_role('button', name='Render selected preview', exact=True).is_disabled()
                     await final_frames.select_option('107')
                     assert await final.get_by_role('button', name='Render selected preview', exact=True).is_enabled()
-                    assert 'Reuses the selected preview’s latent' in await final.inner_text()
+                    assert 'Reuses the saved preview latent' in await final.inner_text()
                     await page.set_viewport_size({'width': 390, 'height': 844})
                     await final_frames.scroll_into_view_if_needed()
                     await page.screenshot(path=str(tmp_path / 'hunter-final-duration-mobile.png'))

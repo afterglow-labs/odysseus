@@ -73,7 +73,7 @@ assert.equal(resolveVideoWorkflow(legacy,{family:'h3',inventory:{components}}).c
 ''')
 
 
-def test_profile_actions_are_explicit_and_custom_strengths_survive_stacks():
+def test_triggers_insert_on_selection_but_settings_apply_only_explicitly():
     run_js(r'''
 inventory.lora_library=true;
 const turbo=components.find(item=>item.id==='turbo');
@@ -82,7 +82,7 @@ turbo.strength_control={kind:'custom',label:'Effect',min:-10,max:10,step:0.2,def
 turbo.lora_profile={display_name:'coolthor Turbo',trigger_words:'special_effect:',trigger_position:'prefix',notes:'Use a reference video.',recommended_settings:{steps:4,sampler:'res_multistep',shift_video:8},strength_control:turbo.strength_control};
 components.find(item=>item.id==='ref').display_name='coolthor H3';
 showH3Video();await flush();await change('prompt','Keep this scene.');await change('steps','23');await change('lora','turbo');
-assert.equal(byId('prompt').value,'Keep this scene.');assert.equal(byId('steps').value,'23');
+assert.equal(byId('prompt').value,'special_effect:\nKeep this scene.');assert.equal(byId('steps').value,'23');
 assert.equal(byId('lora_scale').value,'0.4');assert.equal(byId('lora_age').min,-10);
 assert.equal(byId('lora').options.find(item=>item.value==='turbo').textContent,'coolthor Turbo');
 assert.equal(byId('model').options.find(item=>item.value==='ref').textContent,'coolthor H3');

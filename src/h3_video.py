@@ -261,6 +261,7 @@ def discover_components(roots):
                         display_name = label.strip()
                 except (OSError, ValueError):
                     pass
+                from scripts.h3_model_help import model_documentation
                 components.append({"id": identity, **({"aliases": aliases} if aliases else {}),
                                    "name": name, "path": str(path.absolute()), "role": role,
                                    "variant": variant, "nvfp4": "nvfp4" in lower,
@@ -268,6 +269,7 @@ def discover_components(roots):
                                    **({"strength_control": control} if role == "lora" and control else {}),
                                    **({"lora_profile": profile, "display_name": profile["display_name"] or name} if profile else {}),
                                    **({"lora_help": lora_documentation(name)} if role == "lora" else {}),
+                                   **({"model_help": model_documentation(name)} if role == "model" else {}),
                                    **({"recipe": "vfx_edit"} if vfx_edit else {})})
     # A verified library migration or explicit checkpoint replacement can retain
     # the old file for existing renders. Resolve aliases after the whole scan:

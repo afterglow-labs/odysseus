@@ -38,7 +38,11 @@ def configure_bounded_attention(core, attention_backend, *, max_temporary_bytes=
         # H3's head dimension is 128; keep padding accounted for on other sizes.
         width = 64 if module.head_dim <= 64 else 128 if module.head_dim <= 128 else 256
         per_head = x.shape[0] * width * (3 + 2 * x.element_size())
-        return min(module.heads, max(1, max_temporary_bytes // max(1, per_head)))
+        # A manual count requests at least this many groups. It must not
+        # replace the automatic budget with larger, unsafe kernel allocations.
+        requested = max(1, int(options.get("minimax_head_chunks", 1)))
+        requested_width = max(1, (module.heads + requested - 1) // requested)
+        return min(requested_width, max(1, max_temporary_bytes // max(1, per_head)))
 
     def bounded_attention(module, x, rope_freqs=None, transformer_options=None):
         options = {} if transformer_options is None else transformer_options

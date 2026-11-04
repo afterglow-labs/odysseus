@@ -51,12 +51,14 @@ export function loraHelpSourceURL(value) {
 
 export function showLoraHelp(component, anchor) {
   if (!component) return;
-  const help = component.lora_help || {
+  const model = component.role === 'model';
+  const help = component.model_help || component.lora_help || {
     title: component.display_name || component.name,
-    summary: 'An installed LoRA adapter. Publisher documentation has not been identified for this file yet.',
+    summary: model ? 'A publisher guide has not been identified for this model yet.' : 'An installed LoRA adapter. Publisher documentation has not been identified for this file yet.',
     trigger: 'Unknown. An empty trigger field does not mean no trigger is needed. Check the publisher’s README or your saved profile.',
   };
-  const { dialog, header, close, dismiss } = loraReadOnlyDialog('LoRA help', 'LoRA help', anchor);
+  const heading = model ? 'Model guide' : 'LoRA help';
+  const { dialog, header, close, dismiss } = loraReadOnlyDialog(heading, heading, anchor);
   const scroll = document.createElement('div'); scroll.className = 'h3-video-scroll h3-lora-help-content';
   function section(title, paragraphs = []) {
     if (!paragraphs.length) return null;
@@ -64,9 +66,9 @@ export function showLoraHelp(component, anchor) {
     for (const text of paragraphs) { const p = document.createElement('p'); p.textContent = text; node.append(p); }
     scroll.append(node); return node;
   }
-  section('What it does', [help.title || component.name, help.summary, component.name].filter(Boolean));
-  const trigger = section('How to trigger it', [help.trigger || 'No trigger information has been documented.']);
-  if (help.trigger_words) {
+  section('What it does', [...new Set([help.title || component.name, help.summary, component.name].filter(Boolean))]);
+  const trigger = section('How to trigger it', model ? [] : [help.trigger || 'No trigger information has been documented.']);
+  if (trigger && help.trigger_words) {
     const words = document.createElement('textarea'); words.readOnly = true; words.value = help.trigger_words; words.rows = 2;
     words.setAttribute('aria-label', 'LoRA trigger text');
     const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'memory-toolbar-btn'; copy.textContent = 'Copy trigger';
@@ -78,6 +80,16 @@ export function showLoraHelp(component, anchor) {
     trigger.append(words, copy, status);
   }
   section('How to use it', help.usage); section('Settings', help.settings); section('Documentation notes', help.caveats);
+  section('Combining LoRAs', help.stacking);
+  const exampleText = component.lora_profile?.prompt_example || help.prompt_example;
+  if (exampleText) {
+    const example = section('Example prompt', ['An editable starting point. Attach the references named in the example before using it.']);
+    const text = document.createElement('textarea'); text.readOnly = true; text.rows = 8; text.value = exampleText;
+    text.setAttribute('aria-label', 'Example prompt text');
+    const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'memory-toolbar-btn'; copy.textContent = 'Copy example';
+    copy.onclick = async () => { try { await navigator.clipboard.writeText(exampleText); copy.textContent = 'Copied'; } catch { text.focus(); text.select(); } };
+    example.append(text, copy);
+  }
   const links = section('README and sources', [help.sources?.length ? 'Publisher documentation:' : 'No verified publisher link is available for this file yet.']);
   for (const source of help.sources || []) {
     const url = loraHelpSourceURL(source.url); if (!url) continue;
@@ -90,4 +102,11 @@ export function showLoraHelp(component, anchor) {
   dialog.append(header, scroll);
   document.body.append(dialog); dialog.showModal(); close.focus();
   return { close: dismiss };
+}
+
+export function bindModelGuide(select, components) {
+  const button = document.createElement('button'); button.type = 'button'; button.className = 'memory-toolbar-btn'; button.textContent = 'Model guide';
+  select.insertAdjacentElement('afterend', button);
+  button.onclick = () => { const component = components().find(c => c.id === select.value); if (component) showLoraHelp(component, button); };
+  return button;
 }

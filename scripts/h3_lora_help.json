@@ -18,7 +18,11 @@
       }
     ],
     "coverage": "documented",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "prompt_example": "LumiReal\nUse <Picture 1> as the character reference. An adult traveler walks through a sunlit garden, with realistic fabric and natural motion. Preserve the reference costume and colors. Gentle tracking camera.",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "H3-Person-Remover-V1.safetensors": {
     "title": "Person Remover V1",
@@ -45,7 +49,11 @@
       }
     ],
     "coverage": "documented",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "prompt_example": "Remove the person standing at the far left of <Video 1>. Fill that area with the existing background. Keep the remaining people, camera motion, timing, lighting and audio unchanged.",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "H3_Combat_V2.safetensors": {
     "title": "Combat Base V2",
@@ -66,7 +74,10 @@
       }
     ],
     "coverage": "documented",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "HMNSFW-AIO-V2.5.safetensors": {
     "title": "HMNSFW AIO V2.5",
@@ -87,7 +98,10 @@
       }
     ],
     "coverage": "documented",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "HMPenis_v2_e35.safetensors": {
     "title": "HMPenis · anatomy",
@@ -108,7 +122,10 @@
       }
     ],
     "coverage": "documented",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "HMBreastsV2.safetensors": {
     "title": "HMBreasts V2 · anatomy",
@@ -129,7 +146,10 @@
       }
     ],
     "coverage": "documented",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "HMSquirtV0.1.safetensors": {
     "title": "HMSquirt V0.1",
@@ -150,7 +170,10 @@
       }
     ],
     "coverage": "documented",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "Vagina_minimax-h3_epoch20.safetensors": {
     "title": "HMPussy V1 · anatomy",
@@ -171,7 +194,10 @@
       }
     ],
     "coverage": "documented",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "MM-H3 - Ref2VA - Age Slider v2 - EXPERIMENTAL.safetensors": {
     "title": "Age Slider v2 · Ref2VA",
@@ -192,7 +218,10 @@
       }
     ],
     "coverage": "partial",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "Minimax-h3_Third_person_view.safetensors": {
     "title": "Third-person View",
@@ -213,7 +242,10 @@
       }
     ],
     "coverage": "documented",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "h3-realism-people-t2v-i2v-r2v.safetensors": {
     "title": "Realism People",
@@ -234,7 +266,11 @@
       }
     ],
     "coverage": "documented",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "prompt_example": "r34l1sm\nAn adult potter shapes a clay bowl at a wooden bench in soft window light. The camera stays still. Natural hand movements, quiet room ambience, no music.",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "h3_character_swap_v1.5.safetensors": {
     "title": "Character Swap V1.5",
@@ -255,7 +291,10 @@
       }
     ],
     "coverage": "documented",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "minimax-h3-rough-2d-cartoon-illustration-1200.safetensors": {
     "title": "Rough 2D Cartoon · checkpoint 1200",
@@ -276,7 +315,10 @@
       }
     ],
     "coverage": "documented",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors": {
     "title": "DMAD 4-step · rank-reduced conversion",
@@ -301,7 +343,10 @@
       }
     ],
     "coverage": "partial",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "minimax_h3_open_regenerate_2k_refiner_rank_384_bf16.safetensors": {
     "title": "Open Regenerate 2K · refiner only",
@@ -322,7 +367,10 @@
       }
     ],
     "coverage": "partial",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16.safetensors": {
     "title": "LightX2V FL2VA Turbo · 4-step v1.3 768p",
@@ -347,7 +395,10 @@
       }
     ],
     "coverage": "partial",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors": {
     "title": "LightX2V FL2VA Turbo · 8-step v1.0 768p",
@@ -370,7 +421,10 @@
       }
     ],
     "coverage": "documented",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors": {
     "title": "LightX2V FL2VA Turbo · 8-step v1.0 544p",
@@ -395,7 +449,10 @@
       }
     ],
     "coverage": "documented",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors": {
     "title": "LightX2V Ref2VA Turbo · 4-step v0.1",
@@ -418,7 +475,10 @@
       }
     ],
     "coverage": "documented",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "minimax_h3_ref2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors": {
     "title": "LightX2V Ref2VA Turbo · 4-step v1.0 768p",
@@ -443,7 +503,10 @@
       }
     ],
     "coverage": "partial",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "minimax_h3_ref2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors": {
     "title": "LightX2V Ref2VA Turbo · 8-step v1.0 768p",
@@ -468,7 +531,10 @@
       }
     ],
     "coverage": "partial",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "minimax_h3_ref2v_turbo_8step_v1.1_768p_comfyui_bf16.safetensors": {
     "title": "LightX2V Ref2VA Turbo · 8-step v1.1 768p",
@@ -493,7 +559,10 @@
       }
     ],
     "coverage": "partial",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "minimax_h3_turbo_4step_ema_ckpt500_pruned_comfyui.safetensors": {
     "title": "Turbo EMA checkpoint 500 · pruned ComfyUI",
@@ -518,7 +587,10 @@
       }
     ],
     "coverage": "partial",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "minimax_h3_turbo_v4_step600_ema.safetensors": {
     "title": "Turbo v4 · step-600 EMA",
@@ -539,7 +611,10 @@
       }
     ],
     "coverage": "documented",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "minimax_h3_turbo_v4_step600_ema_DasiwaREF2VAHybridV1_0_curveproj1025_compat_v001.safetensors": {
     "title": "Turbo v4 · Dasiwa compatibility conversion",
@@ -562,7 +637,10 @@
       }
     ],
     "coverage": "partial",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "minimax_h3_turbo_4step_10ErosMax_test4_pruned_curveproj1025_exp_v001-T8.safetensors": {
     "title": "Turbo 4-step · 10ErosMax compatibility",
@@ -583,7 +661,10 @@
       }
     ],
     "coverage": "documented",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "minimax_h3_head_swap_v1.0_r32.safetensors": {
     "title": "Head Swap v1.0",
@@ -608,7 +689,10 @@
       }
     ],
     "coverage": "documented",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "minimax_h3_lms_v1.0_r64.safetensors": {
     "title": "LMS v1.0 · sharpness",
@@ -631,7 +715,10 @@
       }
     ],
     "coverage": "documented",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "minimax_h3_vfx_edit_v1.0_r128.safetensors": {
     "title": "VFX Edit v1.0",
@@ -654,7 +741,11 @@
       }
     ],
     "coverage": "documented",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "prompt_example": "vfx_edit: Change the jacket on the person in the source video to purple. Preserve their face, movement, the camera, background, timing and source audio. Make no other requested changes.",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   },
   "pika_h3_flex_ref2va_v1_bf16.safetensors": {
     "title": "Pika H3 Flex · Ref2VA",
@@ -679,6 +770,9 @@
       }
     ],
     "coverage": "documented",
-    "verified_on": "2026-11-03"
+    "verified_on": "2026-11-03",
+    "stacking": [
+      "No universal stacking order is specified for this file. Keep a working base configuration, add one compatible adapter at a time, and compare the same seed. Strengths are separate for each LoRA; stacking several can compete. Follow any specific pairing documented above."
+    ]
   }
 }

@@ -178,7 +178,11 @@ export function createH3LoraEditor({ components = [], value = [], max = 8, onCha
     wrap.append(label, strengthLabel, remove, ageControl, profilePanel); list.appendChild(wrap);
     const row = { wrap, select, strength, strengthText, ageControl, slider, marks, ageHelp, remove, label: text, profilePanel, triggerText, notes, recommendedText, editProfile, insertTrigger, applyRecommended, example };
     rows.push(row); options(row, item.id); renumber();
-    select.addEventListener('change', () => { updateStrengthControl(row, true); updateProfile(row); refreshDisabled(); onChange(getValue()); });
+    select.addEventListener('change', () => {
+      updateStrengthControl(row, true); updateProfile(row); refreshDisabled(); onChange(getValue());
+      const component = components.find(item => item.id === select.value), profile = component?.lora_profile;
+      if (profile?.trigger_words && ['prefix', 'suffix'].includes(profile.trigger_position)) onInsertTrigger?.(component);
+    });
     const strengthChanged = () => { updateStrengthControl(row); onChange(getValue()); };
     strength.addEventListener('input', strengthChanged);
     strength.addEventListener('change', strengthChanged);
