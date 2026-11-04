@@ -166,6 +166,9 @@ def test_operations_use_typed_gateway_and_omit_asset_credentials(monkeypatch):
             calls.append((path, kwargs))
             if path == "/api/assets" and kwargs["method"] == "GET":
                 return {"assets": [{"id": 3, "domain": "example.test", "auth": [{"token": "secret"}]}]}
+            if path == "/api/tasks/7/c2-handoffs/summary":
+                return {"handoffs": [{"id": "2", "vector": "webshell_upload", "target_host": "lab.test",
+                    "target_path": "/test", "status": "requested", "shell_url": "https://secret.test/token"}]}
             if path == "/api/report":
                 return "# Report"
             return {"id": "7", "ok": True}
@@ -237,11 +240,16 @@ def test_operations_use_typed_gateway_and_omit_asset_credentials(monkeypatch):
         }).status_code == 422
         assert browser.delete("/api/cybersecurity/tasks/7/constraints/3", headers=headers).status_code == 200
         assert calls[-1][1]["method"] == "DELETE"
-        for name in ("outcome", "lessons", "business-map", "campaign", "hunt-classes", "attack-chains"):
+        for name in ("outcome", "lessons", "waves", "artifacts", "business-map", "campaign", "hunt-classes", "attack-chains"):
             assert browser.get(f"/api/cybersecurity/tasks/7/{name}", headers=headers).status_code == 200
             assert calls[-1] == (f"/api/tasks/7/{name}", {
                 "method": "GET", "body": None, "params": None, "auth": True,
             })
+        handoffs = browser.get("/api/cybersecurity/tasks/7/c2-handoffs", headers=headers)
+        assert handoffs.status_code == 200
+        assert handoffs.json() == {"handoffs": [{"id": "2", "vector": "webshell_upload",
+            "target_host": "lab.test", "target_path": "/test", "status": "requested"}]}
+        assert calls[-1][0] == "/api/tasks/7/c2-handoffs/summary"
         assert browser.post("/api/cybersecurity/tasks/7/lessons/extract", headers={"X-Test-User": "admin"}).status_code == 403
         assert browser.post("/api/cybersecurity/tasks/7/lessons/extract", headers=headers).status_code == 200
         assert calls[-1] == ("/api/tasks/7/lessons/extract", {

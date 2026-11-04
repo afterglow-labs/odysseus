@@ -336,6 +336,26 @@ async def extract_task_lessons(request: Request, task_id: int = Path(gt=0)):
     return await _forward(f"/api/tasks/{task_id}/lessons/extract", method="POST", body={})
 
 
+@router.get("/tasks/{task_id}/waves")
+async def task_waves(task_id: int = Path(gt=0)):
+    return await _forward(f"/api/tasks/{task_id}/waves")
+
+
+@router.get("/tasks/{task_id}/artifacts")
+async def task_artifacts(task_id: int = Path(gt=0)):
+    return await _forward(f"/api/tasks/{task_id}/artifacts")
+
+
+@router.get("/tasks/{task_id}/c2-handoffs")
+async def task_c2_handoffs(task_id: int = Path(gt=0)):
+    result = await _forward(f"/api/tasks/{task_id}/c2-handoffs/summary")
+    rows = result.get("handoffs") if isinstance(result, dict) else None
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise HTTPException(status_code=502, detail="Invalid handoff response from Afterglow")
+    fields = ("id", "vector", "target_host", "target_path", "binary_arch", "binary_sha256", "status", "created_at")
+    return {"handoffs": [{key: row[key] for key in fields if key in row} for row in rows]}
+
+
 @router.get("/tasks/{task_id}/business-map")
 async def task_business_map(task_id: int = Path(gt=0)):
     return await _forward(f"/api/tasks/{task_id}/business-map")

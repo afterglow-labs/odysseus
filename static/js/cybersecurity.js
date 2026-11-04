@@ -440,8 +440,10 @@ export function initCybersecurityMode() {
     await loadTasks();
     if (!selectedTask) return empty('Create or select a task to view its learning record.');
     const taskId = selectedTask;
-    const [outcome, lessonData, mapData, campaignData, huntData, chainData] = await Promise.all([
+    const [outcome, lessonData, waveData, artifactData, handoffData, mapData, campaignData, huntData, chainData] = await Promise.all([
       api(`/tasks/${taskId}/outcome`), api(`/tasks/${taskId}/lessons`),
+      api(`/tasks/${taskId}/waves`), api(`/tasks/${taskId}/artifacts`),
+      api(`/tasks/${taskId}/c2-handoffs`),
       api(`/tasks/${taskId}/business-map`), api(`/tasks/${taskId}/campaign`),
       api(`/tasks/${taskId}/hunt-classes`), api(`/tasks/${taskId}/attack-chains`),
     ]);
@@ -455,6 +457,7 @@ export function initCybersecurityMode() {
       card('Tool calls', outcome.tool_calls ?? 0),
       card('Skill gaps', outcome.skill_misses ?? 0),
       card('Output tokens', outcome.tokens?.output_tokens ?? 0),
+      card('Wall time · seconds', outcome.wall_seconds ?? 0),
     );
     wrap.append(metrics);
 
@@ -481,6 +484,26 @@ export function initCybersecurityMode() {
       () => api(`/tasks/${taskId}/lessons/extract`, { method: 'POST', body: {} }),
       'Lesson extraction complete')));
     lessonPanel.append(lessonActions);
+
+    const waves = Array.isArray(waveData.waves) ? waveData.waves : [];
+    listSection('Follow-up waves', waves, 'No follow-up waves recorded for this task.', (wave) => {
+      const item = panel('');
+      item.append(row(`Wave #${wave.wave_number || wave.id}`,
+        `${wave.reason || 'Follow-up'} · scheduled ${fmtDate(wave.scheduled_at)}`, wave.status));
+      if (wave.detail) item.append(element('p', 'cyber-detail', wave.detail));
+      if (wave.spawned_task_id) item.append(element('p', 'cyber-detail',
+        `Follow-up task #${wave.spawned_task_id}`));
+      return item;
+    });
+
+    const artifacts = Array.isArray(artifactData.artifacts) ? artifactData.artifacts : [];
+    listSection('Evidence artifacts', artifacts, 'No evidence files indexed for this task.', (artifact) => {
+      const item = panel('');
+      item.append(row(artifact.path || `Artifact #${artifact.id}`,
+        `${Math.ceil(Number(artifact.size_bytes || 0) / 1024)} KiB · SHA-256 ${artifact.sha256 || 'unavailable'}`,
+        artifact.type));
+      return item;
+    });
 
     const businessMap = Array.isArray(mapData.business_map) ? mapData.business_map : [];
     listSection('Business map', businessMap, 'No business model entries recorded.', (entry) => {
@@ -523,6 +546,15 @@ export function initCybersecurityMode() {
       if (chain.reason) item.append(element('p', 'cyber-detail', `Result: ${chain.reason}`));
       if (chain.spawned_task_id) item.append(element('p', 'cyber-detail',
         `Verification task #${chain.spawned_task_id}`));
+      return item;
+    });
+    const handoffs = Array.isArray(handoffData.handoffs) ? handoffData.handoffs : [];
+    listSection('C2 handoffs', handoffs, 'No C2 handoffs recorded for this task.', (handoff) => {
+      const item = panel('');
+      item.append(row(handoff.vector || `Handoff #${handoff.id}`,
+        `${handoff.target_host || ''}${handoff.target_path || ''}`, handoff.status));
+      if (handoff.binary_sha256) item.append(element('p', 'cyber-detail',
+        `${handoff.binary_arch || 'Binary'} · SHA-256 ${handoff.binary_sha256}`));
       return item;
     });
     return wrap;

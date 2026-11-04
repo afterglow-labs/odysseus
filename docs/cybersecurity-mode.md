@@ -86,10 +86,12 @@ container itself. Keep the Ollama listener private.
   constraints. Goal additions and edits wake the planner and can resume a task.
   Constraints enter agent prompts as guidance; they do not enforce network or
   tool limits.
-- Learning: review task outcomes, evidence-backed lessons, the business map,
-  campaign branches, hunt coverage, and attack chains. Operators can extract
-  available lessons for a task; advanced board edits and chain verification
-  use the full Afterglow console.
+- Learning: review task outcomes, evidence-backed lessons, follow-up waves,
+  indexed evidence files, the business map, campaign branches, hunt coverage,
+  attack chains, and C2 handoff status. Operators can extract available
+  lessons for a task. The backend summary omits C2 shell URLs; handoff
+  decisions, advanced board edits, and chain verification use the full
+  Afterglow console.
 - Task chat: read the current main-agent conversation, send messages, stop a
   reply, or start a new conversation segment.
 - Findings: search and filter the paginated list, triage status and severity,
