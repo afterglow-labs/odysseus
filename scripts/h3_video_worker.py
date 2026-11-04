@@ -707,10 +707,11 @@ def configure_bounded_lora(bypass_hook_type, lora_type, *, max_residual_bytes=12
                  max_residual_bytes // 1024**2)
 
 
-def configure_bounded_int8_feedforward(mlp_type, *, max_intermediate_bytes=1024**3):
-    """Bound H3 INT8 MLP activation temporaries without changing quantization.
+def configure_bounded_feedforward(mlp_type, *, max_intermediate_bytes=1024**3):
+    """Bound row-independent H3 MLP temporaries, including unquantized layers.
 
-    Both INT8 projections quantize activations per row, including ConvRot.
+    Mixed INT8 checkpoints can keep some projections in BF16. These plain
+    projections and INT8 projections (including ConvRot) are independent per row.
     NVFP4 and other layouts can use a scale across rows and must retain their
     original full forward. Explicit Seed Hunter chunk controls take precedence.
     The final output still occupies its full size; only temporary tensors are
@@ -718,30 +719,41 @@ def configure_bounded_int8_feedforward(mlp_type, *, max_intermediate_bytes=1024*
     """
     import torch
     if max_intermediate_bytes <= 0:
-        raise ValueError("INT8 feedforward temporary memory limit must be positive")
-    original = getattr(mlp_type, "_odysseus_original_int8_forward", mlp_type.forward)
-    mlp_type._odysseus_original_int8_forward = original
+        raise ValueError("Feedforward temporary memory limit must be positive")
+    original = getattr(mlp_type, "_odysseus_original_feedforward", mlp_type.forward)
+    mlp_type._odysseus_original_feedforward = original
     reported_shapes = set()
+
+    def row_independent(layer):
+        weight = layer.weight
+        layout = getattr(weight, "_layout_cls", None)
+        quant = getattr(layer, "quant_format", None)
+        if quant == "int8_tensorwise" and layout == "TensorWiseINT8Layout":
+            return True
+        # Do not mistake an unknown quantized layout or tensor subclass for a
+        # plain linear. NVFP4 and FP8 may calculate scales across all rows.
+        return (quant is None and layout is None and getattr(layer, "layout_type", None) is None
+                and type(weight) in (torch.Tensor, torch.nn.Parameter)
+                and weight.is_floating_point())
 
     def bounded_forward(module, x, *args, **kwargs):
         projections = (module.fc1, module.fc2)
         if (torch.is_grad_enabled() or x.ndim != 2 or args or kwargs
                 or getattr(module, "_odysseus_manual_ff_chunks", 0)
-                or any(getattr(layer, "quant_format", None) != "int8_tensorwise"
-                       or getattr(layer.weight, "_layout_cls", None) != "TensorWiseINT8Layout"
-                       for layer in projections)):
+                or not all(row_independent(layer) for layer in projections)):
             return original(module, x, *args, **kwargs)
         fc1, fc2 = projections
-        # The fused SwiGLU halves fc1's row width. Include its live output,
-        # fc2's INT8 activation and output, plus the row scale, in the budget.
-        row_bytes = (fc1.weight.shape[0] + fc2.weight.shape[0]) * x.element_size()
+        # Include fc1's output plus both half-width eager SwiGLU temporaries,
+        # fc2's output, and an INT8 activation/row scale. This also covers plain
+        # BF16 and cast/LoRA paths where the fused activation is unavailable.
+        row_bytes = (2 * fc1.weight.shape[0] + fc2.weight.shape[0]) * x.element_size()
         row_bytes += fc2.weight.shape[1] + 4
         chunk_rows = max(1, max_intermediate_bytes // row_bytes)
         if x.shape[0] <= chunk_rows:
             return original(module, x, *args, **kwargs)
         signature = (x.shape[0], chunk_rows)
         if signature not in reported_shapes:
-            logging.info("INT8 feedforward temporary memory protection: %d rows in chunks of %d (budget %d MiB)",
+            logging.info("H3 feedforward temporary memory protection: %d rows in chunks of %d (budget %d MiB)",
                          x.shape[0], chunk_rows, max_intermediate_bytes // 1024**2)
             reported_shapes.add(signature)
         output = torch.empty((x.shape[0], fc2.weight.shape[0]), dtype=x.dtype, device=x.device)
@@ -751,7 +763,7 @@ def configure_bounded_int8_feedforward(mlp_type, *, max_intermediate_bytes=1024*
         return output
 
     mlp_type.forward = bounded_forward
-    logging.info("Automatic H3 INT8 feedforward temporary memory budget: %d MiB; other quantization layouts unchanged",
+    logging.info("Automatic H3 INT8/BF16 feedforward temporary memory budget: %d MiB; global-scale quantization layouts unchanged",
                  max_intermediate_bytes // 1024**2)
 
 
@@ -809,7 +821,7 @@ class H3Runtime:
             from .h3_attention_memory import configure_bounded_attention
         else:
             from h3_attention_memory import configure_bounded_attention
-        configure_bounded_int8_feedforward(minimax_model.MLP)
+        configure_bounded_feedforward(minimax_model.MLP)
         configure_bounded_attention(minimax_model, attention_backend)
         self.sd, self.sample, self.utils = comfy.sd, comfy.sample, comfy.utils
         self.nodes, self.audio, self.h3 = nodes, nodes_audio, nodes_minimax_h3
