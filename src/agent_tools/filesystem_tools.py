@@ -9,6 +9,7 @@ import time
 from typing import Optional, Dict, Any, Tuple, List
 
 from src.constants import MAX_READ_CHARS, MAX_DIFF_LINES, MAX_OUTPUT_CHARS
+from src.agent_environment import agent_subprocess_env
 
 _CODENAV_SKIP_DIRS = frozenset({
     ".git", ".hg", ".svn", "node_modules", "venv", ".venv", "__pycache__",
@@ -910,6 +911,7 @@ class GrepTool:
                     process = subprocess.Popen(
                         cmd,
                         cwd=base,
+                        env=agent_subprocess_env(),
                         stdin=subprocess.DEVNULL,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,

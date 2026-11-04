@@ -7,6 +7,7 @@ import time
 import collections
 from typing import Optional, Callable, Awaitable, Tuple, Dict
 from core.platform_compat import IS_WINDOWS, find_bash
+from src.agent_environment import agent_subprocess_env
 from src.constants import MAX_OUTPUT_CHARS
 
 DEFAULT_BASH_TIMEOUT = 60 * 60     # 1 hour
@@ -46,6 +47,7 @@ def _tmux_session_name(session_id: Optional[str]) -> str:
 async def _run_exec(*args: str, timeout: float = 10) -> Tuple[str, str, int]:
     proc = await asyncio.create_subprocess_exec(
         *args,
+        env=agent_subprocess_env(),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -87,12 +89,14 @@ async def _ensure_tmux_session(name: str, cwd: str, env: Optional[dict]) -> None
     if await _tmux_has_session(name):
         await _run_exec("tmux", "send-keys", "-t", name, "stty -echo", "C-m", timeout=5)
         return
+    child_env = agent_subprocess_env(env)
+    child_env.setdefault("TERM", "xterm-256color")
+    child_env.setdefault("COLUMNS", "120")
+    child_env.setdefault("LINES", "40")
     await _run_exec(
         "tmux", "new-session", "-d", "-s", name, "-c", cwd,
-        "env",
-        f"TERM={env.get('TERM', 'xterm-256color') if env else 'xterm-256color'}",
-        f"COLUMNS={env.get('COLUMNS', '120') if env else '120'}",
-        f"LINES={env.get('LINES', '40') if env else '40'}",
+        "env", "-i",
+        *(f"{key}={value}" for key, value in child_env.items()),
         "/bin/bash",
         "--noprofile",
         "--norc",
@@ -300,7 +304,7 @@ class BashTool:
         if isinstance(content, dict):
             content = str(content.get("command") or content.get("cmd") or content.get("code") or "")
         progress_cb = ctx.get("progress_cb")
-        _subproc_env = ctx.get("subproc_env")
+        _subproc_env = agent_subprocess_env(ctx.get("subproc_env"))
         session_id = ctx.get("session_id")
         # tmux is a POSIX persistence path. A stray MSYS/Cygwin tmux.exe on
         # native Windows must not bypass the Git Bash launcher below: the tmux
@@ -360,7 +364,7 @@ class PythonTool:
     async def execute(self, content: str, ctx: dict) -> dict:
         from src.tool_execution import agent_cwd, _truncate
         progress_cb = ctx.get("progress_cb")
-        _subproc_env = ctx.get("subproc_env")
+        _subproc_env = agent_subprocess_env(ctx.get("subproc_env"))
         proc = await asyncio.create_subprocess_exec(
             (sys.executable or "python"), "-I", "-c", content,
             stdout=asyncio.subprocess.PIPE,
