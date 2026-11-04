@@ -113,7 +113,7 @@ def test_proxy_timeout_closes_source_releases_slot_and_removes_partial(source, m
     monkeypatch.setattr(proxy, '_playback_ffmpeg', lambda: imageio_ffmpeg.get_ffmpeg_exe())
     handles = []
     original = proxy.open_server_video_preview
-    def record(selection):
+    def record(selection, **kwargs):
         upload = original(selection)
         handles.append(upload.file)
         return upload

@@ -1,4 +1,5 @@
 import { createVideoJobMedia, releaseVideoJobMedia } from './videoJobMedia.js';
+import { openOriginalVideoDraft } from './videoJobReuse.js';
 
 const make = (tag, className, text) => {
   const node = document.createElement(tag); node.className = className;
@@ -32,8 +33,19 @@ export function createVideoJobSources() {
         const card = make('article', 'h3-video-original'), heading = make('h5', ''), name = make('p', 'h3-video-original-name'), context = make('p', 'h3-video-muted');
         const player = createVideoJobMedia(item.url, { label: item.playback === 'selected_section' ? 'Play selected source section' : 'Play original video' });
         card.dataset.inputVideoId = id; card.append(heading, name, context, player.node);
-        entry = { card, heading, name, context, version }; entries.set(id, entry);
+        const reuse = make('button', 'memory-toolbar-btn', 'Use original video in new job'); reuse.type = 'button';
+        const error = make('p', 'h3-video-error'); error.hidden = true; error.setAttribute('role','alert');
+        reuse.onclick = async () => {
+          if (reuse.disabled) return;
+          reuse.disabled = true; reuse.textContent = 'Opening new draft…'; error.hidden = true;
+          try { await openOriginalVideoDraft(entry.input, reuse); }
+          catch (reason) { error.textContent = reason.message; error.hidden = false; }
+          finally { reuse.disabled = false; reuse.textContent = 'Use original video in new job'; }
+        };
+        card.append(reuse,error);
+        entry = { card, heading, name, context, version, reuse }; entries.set(id, entry);
       }
+      entry.input = item; entry.reuse.hidden = !item.reuse_url;
       const section = item.playback === 'selected_section';
       entry.heading.textContent = section ? 'Selected source section' : item.field === 'source_video' ? 'Original source video' : 'Original video';
       entry.name.textContent = item.name || 'Source video';

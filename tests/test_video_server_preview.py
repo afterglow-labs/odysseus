@@ -70,7 +70,7 @@ def test_invalid_range_does_not_stream_entire_file(preview, header):
 def test_full_get_and_head_close_validated_handle(preview, monkeypatch):
     handles = []
     original = routes.open_server_video_preview
-    def record(selection):
+    def record(selection, **kwargs):
         upload = original(selection)
         handles.append(upload.file)
         return upload
@@ -99,7 +99,7 @@ def test_preview_uses_current_file_but_rejects_escaped_path(preview):
 def test_open_handle_cannot_be_redirected_after_validation(preview, monkeypatch):
     original = routes.open_server_video_preview
     expected = preview[1].read_bytes()[:32]
-    def replace_path(selection):
+    def replace_path(selection, **kwargs):
         upload = original(selection)
         root = preview[1].parent
         root.rename(root.with_name('previous-directory'))
@@ -114,7 +114,7 @@ def test_open_handle_cannot_be_redirected_after_validation(preview, monkeypatch)
 def test_preview_rechecks_after_open_before_headers_and_closes(preview, monkeypatch):
     handles = []
     original = routes.open_server_video_preview
-    def mutate_after_open(selection):
+    def mutate_after_open(selection, **kwargs):
         upload = original(selection)
         handles.append(upload.file)
         preview[1].write_bytes(b'changed after its descriptor was checked')

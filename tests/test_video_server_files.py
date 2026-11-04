@@ -143,7 +143,7 @@ def test_browser_and_submission_reject_symlink_ancestors(drive, tmp_path):
     assert error.value.status_code == 400
 
 
-@pytest.mark.parametrize('root', ['e', 'f'])
+@pytest.mark.parametrize('root', ['e', 'f', 'c'])
 def test_unmounted_drive_is_not_an_empty_linux_folder(monkeypatch, root):
     monkeypatch.delenv('ODYSSEUS_VIDEO_BROWSE_ROOTS', raising=False)
     monkeypatch.setattr(media.os.path, 'ismount', lambda _path: False)
@@ -152,27 +152,28 @@ def test_unmounted_drive_is_not_an_empty_linux_folder(monkeypatch, root):
     assert error.value.status_code == 503 and f'{root.upper()}: is unavailable' in error.value.detail
 
 
-def test_default_roots_advertise_both_windows_drives(monkeypatch):
+def test_default_roots_advertise_c_without_changing_the_default_drive(monkeypatch):
     monkeypatch.delenv('ODYSSEUS_VIDEO_BROWSE_ROOTS', raising=False)
     roots = media.media_roots()
-    assert [(root.id, root.name) for root in roots] == [('e', 'E:'), ('f', 'F:')]
-    assert [str(root.path) for root in roots] == (['E:\\', 'F:\\'] if os.name == 'nt' else ['/mnt/e', '/mnt/f'])
+    assert [(root.id, root.name) for root in roots] == [('e', 'E:'), ('f', 'F:'), ('c', 'C:')]
+    assert [str(root.path) for root in roots] == (['E:\\', 'F:\\', 'C:\\'] if os.name == 'nt' else ['/mnt/e', '/mnt/f', '/mnt/c'])
 
 
-def test_f_drive_selection_copies_from_f_not_the_same_path_on_e(tmp_path, monkeypatch):
-    drives = {identity: tmp_path / identity for identity in ('e', 'f')}
+@pytest.mark.parametrize('root', ['f', 'c'])
+def test_drive_selection_copies_from_selected_drive_not_the_same_path_on_e(tmp_path, monkeypatch, root):
+    drives = {identity: tmp_path / identity for identity in ('e', root)}
     for identity, drive in drives.items():
         make_file(drive, 'TV Shows/Cuts/clip.mp4', f'{identity} video'.encode())
     monkeypatch.setenv('ODYSSEUS_VIDEO_BROWSE_ROOTS', json.dumps({key: str(value) for key, value in drives.items()}))
-    listing = media.list_server_videos(root='f', path='TV Shows/Cuts')
+    listing = media.list_server_videos(root=root, path='TV Shows/Cuts')
     assert listing['roots'] == [{'id': 'e', 'name': 'E:', 'available': True},
-                                {'id': 'f', 'name': 'F:', 'available': True}]
-    assert listing['root'] == 'f' and listing['parent_path'] == 'TV Shows'
+                                {'id': root, 'name': root.upper() + ':', 'available': True}]
+    assert listing['root'] == root and listing['parent_path'] == 'TV Shows'
     selected = dict(listing['entries'][0]['selection'], index=0)
-    assert selected['root'] == 'f' and selected['path'] == 'TV Shows/Cuts/clip.mp4'
+    assert selected['root'] == root and selected['path'] == 'TV Shows/Cuts/clip.mp4'
     async def run():
         async with media.server_video_inputs(inputs({'source_video': [selected]}), {}, VIDEO_FIELDS) as uploads:
-            assert await uploads['source_video'][0].read() == b'f video'
+            assert await uploads['source_video'][0].read() == f'{root} video'.encode()
     asyncio.run(run())
 
 
@@ -398,8 +399,8 @@ def test_cancelled_acquisition_closes_late_handles(drive, monkeypatch):
     source = make_file(drive)
     started, proceed = threading.Event(), threading.Event()
     original, opened = media._acquire_inputs, []
-    def delayed(*args):
-        result = original(*args)
+    def delayed(*args, **kwargs):
+        result = original(*args, **kwargs)
         opened.extend(result[1])
         started.set()
         assert proceed.wait(3)

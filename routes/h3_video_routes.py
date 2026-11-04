@@ -228,7 +228,7 @@ def setup_h3_video_routes(manager=None):
                     uploads = {key: form.getlist(key) for key in UPLOAD_EXTENSIONS if key in form}
                     if any(not isinstance(value, UploadFile) for values in uploads.values() for value in values):
                         raise HTTPException(400, "Attachments must be uploaded files")
-                    async with server_video_inputs(form, uploads, UPLOAD_EXTENSIONS) as uploads:
+                    async with server_video_inputs(form, uploads, UPLOAD_EXTENSIONS, manager=manager, owner=owner) as uploads:
                         current = await asyncio.to_thread(manager.submission_inventory)
                         config = validate_config(raw_config, current["components"], current["gpus"], uploads)
                         from src.h3_seed_hunter import preflight
@@ -296,7 +296,7 @@ def setup_h3_video_routes(manager=None):
     from routes.video_workflow_routes import add_workflow_routes
     add_workflow_routes(router, manager, family='h3')
     from routes.video_server_file_routes import add_server_video_file_routes
-    add_server_video_file_routes(router, owner_callback=_owner)
+    add_server_video_file_routes(router, owner_callback=_owner, manager=manager)
     from routes.video_job_edit_routes import add_job_edit_routes
     add_job_edit_routes(router, manager, 'h3', UPLOAD_EXTENSIONS, _store_uploads)
     from routes.video_queue_routes import add_queue_routes

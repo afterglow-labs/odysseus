@@ -71,6 +71,34 @@ def test_bfs_combines_server_target_with_phone_identity(backend, server_media):
     assert job["source_name"] == "target.mov"
 
 
+@pytest.mark.parametrize('family,field', [('h3', 'reference_videos'), ('bfs', 'source_video')])
+def test_reuse_saved_original_creates_independent_job_without_media_upload(backend, server_media, family, field):
+    source, selection = server_media.put('original-full-video.mp4', b'whole original file, not a cut')
+    files = [('identity_image', ('head.png', image(), 'image/png'))] if family == 'bfs' else []
+    first = create(backend, family, {field: [selection]}, files=files)
+    original_dir, original = manifest(backend, first, family)
+    calls = len(backend.calls)
+    source.unlink()  # The saved job owns the original even after its drive copy is gone.
+    response = backend.client().get(f'/api/video/{family}/jobs/{original_dir.name}/input-videos/{field}/0/reuse?revision=0', headers={'x-user': 'corey'})
+    assert response.status_code == 200, response.text
+    draft = response.json()
+    assert len(backend.calls) == calls, 'Opening the draft must not launch anything'
+    assert h3._read(original_dir / 'manifest.json') == original
+    assert draft['family'] == family and draft['uploads'][field][0]['root'] == 'job-input'
+    if family == 'h3':
+        draft['config']['reference_video_ranges'] = [{'start_seconds': 40, 'duration_seconds': 15}]
+    selections = {key: [{**item, 'index': i} for i, item in enumerate(items)]
+                  for key, items in draft['uploads'].items()}
+    second = create(backend, family, selections, files=files, config=draft['config'])
+    new_dir, new = manifest(backend, second, family)
+    path = new[field][0] if family == 'h3' else new[field]
+    assert new_dir != original_dir and Path(path).parent == new_dir
+    assert Path(path).read_bytes() == b'whole original file, not a cut'
+    assert h3._read(original_dir / 'manifest.json') == original
+    if family == 'h3':
+        assert new['config']['reference_video_ranges'][0]['start_seconds'] == 40
+
+
 def test_accepted_retry_does_not_reopen_missing_server_source(backend, server_media):
     source, descriptor = server_media.put("source.mp4", b"saved original")
     key = uuid.uuid4().hex

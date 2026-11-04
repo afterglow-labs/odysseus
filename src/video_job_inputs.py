@@ -70,7 +70,7 @@ def _section(manifest, field, index):
     return start, duration
 
 
-def input_videos(job_id, manifest):
+def input_videos(job_id, manifest, family='h3'):
     """Manifest-only descriptors: history polling never opens or probes media."""
     result = []
     names = manifest.get("input_names", {})
@@ -88,14 +88,20 @@ def input_videos(job_id, manifest):
             name = str(label).replace("\\", "/").rsplit("/", 1)[-1]
             name = "".join(char for char in name if char.isprintable())[:255] or "Input video"
             result.append({"id": f"{field}:{index}", "field": field, "index": index, "name": name,
-                "url": f"/api/video/h3/jobs/{job_id}/input-videos/{field}/{index}/preview?revision={version}",
+                "url": f"/api/video/{family}/jobs/{job_id}/input-videos/{field}/{index}/preview?revision={version}",
+                "reuse_url": f"/api/video/{family}/jobs/{job_id}/input-videos/{field}/{index}/reuse?revision={version}",
                 "playback": "selected_section" if start or duration is not None else "original",
                 "start_seconds": start, "duration_seconds": duration, "revision": version})
     return result
 
 
 def _owned_manifest(manager, job_id, owner, expected_revision=None):
-    directory = manager.directory(job_id)
+    try:
+        directory = manager.directory(job_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "Video job not found") from exc
+    if directory.is_symlink():
+        raise HTTPException(404, "Video job not found")
     state = _read(directory / "state.json")
     if not state or state.get("owner") != owner:
         raise HTTPException(404, "Video job not found")

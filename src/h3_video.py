@@ -908,14 +908,14 @@ class H3JobManager:
                       url=f"/api/video/h3/jobs/{job_id}/video" if state["status"] == "completed" else None)
         if result.get("error"):
             result["error"] = _redact(result["error"])
+        from src.video_job_inputs import input_videos
+        result["input_videos"] = input_videos(job_id, manifest)
         if isinstance(config, dict) and config.get("recipe") == "seed_hunter":
             from src.video_auto_refine import summary as auto_summary
             automatic = auto_summary(directory, manifest, state)
             if automatic:
                 result["auto_refine"] = automatic
             from src.h3_seed_hunter import summary
-            from src.video_job_inputs import input_videos
-            result["input_videos"] = input_videos(job_id, manifest)
             result.update(recipe="seed_hunter", seed_hunter=summary(directory, config, state))
             if config.get("seed_hunter", {}).get("stage") == "scout":
                 from src.h3_seed_scout import summary as scout_summary

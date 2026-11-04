@@ -29,6 +29,8 @@ def test_server_picker_navigation_selection_and_mobile(tmp_path):
         ('e', 'Films/Season 01'): [video('e', 'Films/Season 01/episode.mp4')],
         ('f', ''): [{'kind': 'directory', 'name': 'Clips', 'path': 'Clips'}, video('f', 'root-f.mp4')],
         ('f', 'Clips'): [video('f', 'Clips/mobile.mp4')],
+        ('c', ''): [{'kind': 'directory', 'name': 'Users', 'path': 'Users'}],
+        ('c', 'Users'): [video('c', 'Users/original.mkv')],
     }
 
     async def run():
@@ -47,7 +49,7 @@ def test_server_picker_navigation_selection_and_mobile(tmp_path):
                     source = ROOT / path.lstrip('/')
                     await handler.fulfill(body=source.read_bytes(), content_type='text/javascript' if source.suffix == '.js' else mimetypes.guess_type(source.name)[0])
                 elif path.endswith('/server-file-roots'):
-                    await handler.fulfill(json={'roots': [{'id': root, 'name': root.upper()+':', 'available': True} for root in ('e', 'f')]})
+                    await handler.fulfill(json={'roots': [{'id': root, 'name': root.upper()+':', 'available': True} for root in ('e', 'f', 'c')]})
                 elif path.endswith('/server-files'):
                     query = parse_qs(urlparse(req.url).query)
                     root, folder = query['root'][0], query.get('path', [''])[0]
@@ -128,6 +130,14 @@ def test_server_picker_navigation_selection_and_mobile(tmp_path):
                 await panel.screenshot(path=str(tmp_path/'server-files-mobile.png'))
                 await panel.get_by_role('button', name='Use 2 videos', exact=True).click()
                 assert {f['name'] for f in await page.evaluate('window.chosen')} == {'scene-02.mp4','mobile.mp4'}
+                # C: is supplied by the server and works on the mobile picker too.
+                await open_picker(False)
+                await panel.get_by_role('combobox', name='Drive', exact=True).select_option('c')
+                await panel.get_by_role('button', name='Open folder Users', exact=True).click()
+                await panel.get_by_role('radio', name='original.mkv', exact=False).check()
+                await panel.screenshot(path=str(tmp_path/'server-files-c-mobile.png'))
+                await panel.get_by_role('button', name='Use video', exact=True).click()
+                assert await page.evaluate('window.chosen[0].serverFile.root') == 'c'
                 # Single input still returns exactly one descriptor across drives.
                 await open_picker(False)
                 await panel.get_by_role('radio', name='root-e.mp4', exact=False).check()

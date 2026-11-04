@@ -1,3 +1,4 @@
+import { createVideoJobSources } from './videoJobSources.js';
 import { createPinkCherryControls } from './h3PinkCherry.js';
 import { createH3MDControls, h3mdQueueFields } from './h3MD.js';
 import { createDirectorControls, directorQueueFields, renderDirectorCandidates } from './h3Director.js';
@@ -206,8 +207,8 @@ function h3WorkflowHelp(label, ...content) {
   const details = el('details', 'h3-workflow-help'); details.append(el('summary', '', label), ...content); return details;
 }
 
-export function showH3Video({ preferredModel = null, layout = 'classic', recipe = '' } = {}, anchor = document.activeElement) {
-  document.querySelectorAll('.h3-video-overlay').forEach(dismissOrRemove);
+export function showH3Video({ preferredModel = null, layout = 'classic', recipe = '', initialDraft = null } = {}, anchor = document.activeElement) {
+  if (!initialDraft) document.querySelectorAll('.h3-video-overlay').forEach(dismissOrRemove);
   if (!document.getElementById('h3-video-styles')) {
     const style = el('link');
     style.id = 'h3-video-styles'; style.rel = 'stylesheet'; style.href = '/static/h3-video.css';
@@ -227,7 +228,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
   let editingLoraComponents = null;
   const loraComponents = () => h3LoraComponents(inventory?.components || [], editingLoraComponents);
   let saved = {};
-  try { saved = JSON.parse(localStorage.getItem(storageKey)) || {}; } catch {}
+  if (!initialDraft) try { saved = JSON.parse(localStorage.getItem(storageKey)) || {}; } catch {}
   let appliedPresetRevision = saved._installedPresetRevision || '';
   let directorLoraDefaultsApplied = saved._directorLoraDefaultsApplied === true;
   const fields = {}, uploads = {}, jobNodes = new Map(), pendingStops = new Set(), pendingDeletes = new Set(), deletedJobs = new Set(), gpuNodes = new Map();
@@ -943,6 +944,12 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
       const missing = ['model', 'encoder', 'video_vae', 'audio_vae', 'gpu'].filter(key => !fields[key].value);
       inventoryStatus.textContent = !data.runtime_ready ? `Runtime unavailable: ${data.runtime_error || 'H3 runtime is not installed.'}` : missing.length ? `Missing: ${missing.map(key => key.replaceAll('_', ' ')).join(', ')}. Download the H3 components, then refresh.` : 'Components ready on this Odysseus server.';
       inventoryStatus.classList.toggle('h3-video-error', !data.runtime_ready || !!missing.length);
+      if (initialDraft) {
+        editingLoraComponents = initialDraft.lora_components || null;
+        applyEditorDraft(initialDraft.config, initialDraft.uploads);
+        transferStatus.hidden = false; transferStatus.textContent = initialDraft.notice;
+        pipeline?.select('inputs'); initialDraft = null;
+      }
     } catch (e) {
       if (!closed) { loadFailed = true; inventoryStatus.textContent = e.message; inventoryStatus.classList.add('h3-video-error'); }
     } finally { inventoryLoading = false; if (!closed) updateReady(); }
@@ -983,6 +990,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
           } finally { if (!closed) copyPrompt.disabled = false; }
         });
         const output = el('div', 'h3-video-output');
+        const originals = createVideoJobSources();
         const rerunStatus = el('p', 'h3-video-muted'); rerunStatus.hidden = true; rerunStatus.setAttribute('role', 'status');
         const rerunError = el('p', 'h3-video-error'); rerunError.hidden = true; rerunError.setAttribute('role', 'alert');
         const deletion = el('div', 'h3-video-delete-confirmation'); deletion.hidden = true;
@@ -990,8 +998,8 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
         const deleteActions = el('div', 'h3-video-job-actions'); const keep = button('Keep job'), confirmDelete = button('Delete permanently');
         confirmDelete.classList.add('h3-video-delete-button'); deleteActions.append(keep, confirmDelete); deletion.appendChild(deleteActions);
         const deleteError = el('p', 'h3-video-error'); deleteError.hidden = true; deleteError.setAttribute('role', 'alert'); deletion.appendChild(deleteError);
-        card.append(row, description, rerunStatus, rerunError, deletion, progress, jobError, output, promptDetails, details); jobList.appendChild(card);
-        nodes = { card, heading, edit, rerun, baseRerun, editRerun, rerunStatus, rerunError, stop, remove, deletion, keep, confirmDelete, deleteError, description, progress, jobError, log, output, promptText, copyPrompt, copyStatus }; jobNodes.set(job.id, nodes);
+        card.append(row, description, rerunStatus, rerunError, deletion, progress, jobError, originals.node, output, promptDetails, details); jobList.appendChild(card);
+        nodes = { card, heading, edit, rerun, baseRerun, editRerun, rerunStatus, rerunError, stop, remove, deletion, keep, confirmDelete, deleteError, description, progress, jobError, log, output, promptText, copyPrompt, copyStatus }; nodes.originals = originals; jobNodes.set(job.id, nodes);
         edit.onclick = () => jobEditor.open(job.id);
         baseRerun.title = BASE_RERUN_HELP; baseRerun.onclick = () => reruns.runBase(jobs.find(item => item.id === job.id) || job);
         editRerun.title = 'Edit this job’s saved settings before queuing a new copy. Changes apply only to that copy.';
@@ -1058,6 +1066,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
       }
     }
     updateReady();
+    for (const job of jobs) jobNodes.get(job.id)?.originals.update(job.input_videos);
     jobPager.finish(jobNodes);
   }
   function loadJobs(options = {}) { return jobPager.load(options); }
@@ -1230,7 +1239,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
     restoreDraft: value => { editingLoraComponents = null; originalPrompt = value.originalPrompt; applyEditorDraft(value.config, value.uploads); },
     onChange: updateReady, onError: setError,
   });
-  batchQueue = createVideoBatchQueue({
+  batchQueue = createVideoBatchQueue({isolated: !!initialDraft,
     family: 'h3', recipe, sessionKey:(recipe||'h3')+(layout==='pipeline'?':pipeline':''), container: batchContainer, getSnapshot: batchSnapshot,
     onJob: () => { if (!closed) loadJobs({ reset: true }); },
     onChange: () => { if (!closed) { editRevision++; updateReady(); } },

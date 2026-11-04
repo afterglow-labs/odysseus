@@ -1,3 +1,4 @@
+import { createVideoJobSources } from './videoJobSources.js';
 import { bindWorkflowPromptHistory } from './workflowPromptHistory.js';
 import { createVideoJobPager, observePagedVideoJobEditor } from './videoJobPage.js';
 import { createVideoJobMedia, releaseVideoJobMedia } from './videoJobMedia.js';
@@ -42,8 +43,8 @@ async function request(path, options = {}) {
   return data;
 }
 
-export function showBfsVideo({ preferred = null, layout = 'classic' } = {}, anchor = document.activeElement) {
-  document.querySelectorAll('.bfs-video-overlay').forEach(dismissOrRemove);
+export function showBfsVideo({ preferred = null, layout = 'classic', initialDraft = null } = {}, anchor = document.activeElement) {
+  if (!initialDraft) document.querySelectorAll('.bfs-video-overlay').forEach(dismissOrRemove);
   for (const [id, href] of [['h3-video-styles', '/static/h3-video.css'], ['bfs-video-styles', '/static/bfs-video.css']]) {
     if (!document.getElementById(id)) {
       const link = el('link'); link.id = id; link.rel = 'stylesheet'; link.href = href; document.head.appendChild(link);
@@ -56,7 +57,7 @@ export function showBfsVideo({ preferred = null, layout = 'classic' } = {}, anch
   let transferBusy = false, editRevision = 0, batchQueue = null, jobEditor = null, queueControls = null;
   let serverPicker = null;
   const controls = new Map(), slots = new Map(), files = new Map(), drafts = new Map(), jobNodes = new Map(), stopping = new Set(), deleting = new Set(), deletedJobs = new Set();
-  try { saved = JSON.parse(localStorage.getItem(storageKey)) || {}; } catch {}
+  if (!initialDraft) try { saved = JSON.parse(localStorage.getItem(storageKey)) || {}; } catch {}
   const overlay = el('div', 'cookbook-edit-overlay bfs-video-overlay'); overlay.style.zIndex = String(topPortalZ());
   const dialog = el('section', 'cookbook-edit-modal h3-video-dialog bfs-video-dialog');
   dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true'); dialog.setAttribute('aria-labelledby', 'bfs-video-title');
@@ -400,6 +401,11 @@ export function showBfsVideo({ preferred = null, layout = 'classic' } = {}, anch
         : data.workflows?.length ? 'Choose a workflow; readiness is checked for its required files.' : 'No supported BFS workflows were found.';
       availability.classList.toggle('h3-video-error', !data.runtime_ready);
       selectWorkflow(chosen, false);
+      if (initialDraft) {
+        applyEditorDraft(initialDraft.config, Object.fromEntries(Object.entries(initialDraft.uploads).map(([key, files]) => [key, files[0]])));
+        transferStatus.hidden = false; transferStatus.textContent = initialDraft.notice;
+        pipeline?.select('inputs'); initialDraft = null;
+      }
     } catch (e) { if (!closed) { refreshFailed = true; availability.textContent = e.message; availability.classList.add('h3-video-error'); } }
     finally { if (!closed) { loading = false; refresh.disabled = false; updateReady(); } }
   }
@@ -418,6 +424,7 @@ export function showBfsVideo({ preferred = null, layout = 'classic' } = {}, anch
         const progress = el('progress'); progress.setAttribute('aria-label', 'BFS video progress');
         const failure = el('p', 'h3-video-error'); failure.setAttribute('role', 'alert');
         const output = el('div', 'h3-video-output');
+        const originals = createVideoJobSources();
         const promptDetails = el('details', 'h3-video-job-prompt'); promptDetails.appendChild(el('summary', '', 'Prompt used'));
         const usedPrompt = el('pre', 'h3-video-prompt-used'), copy = button('Copy prompt'), copied = el('p', 'h3-video-muted'); copied.setAttribute('role', 'status');
         promptDetails.append(usedPrompt, copy, copied);
@@ -434,8 +441,8 @@ export function showBfsVideo({ preferred = null, layout = 'classic' } = {}, anch
         const deleteActions = el('div', 'h3-video-job-actions'), keep = button('Keep job'), confirmDelete = button('Delete permanently');
         confirmDelete.classList.add('h3-video-delete-button'); deleteActions.append(keep, confirmDelete); deletion.appendChild(deleteActions);
         const deleteError = el('p', 'h3-video-error'); deleteError.hidden = true; deleteError.setAttribute('role', 'alert'); deletion.appendChild(deleteError);
-        card.append(row, status, rerunStatus, rerunError, deletion, progress, failure, output, promptDetails, details); jobList.appendChild(card);
-        nodes = { card, heading, edit, rerun, baseRerun, editRerun, rerunStatus, rerunError, stop, remove, deletion, keep, confirmDelete, deleteError, status, progress, failure, output, usedPrompt, copy, log }; jobNodes.set(job.id, nodes);
+        card.append(row, status, rerunStatus, rerunError, deletion, progress, failure, originals.node, output, promptDetails, details); jobList.appendChild(card);
+        nodes = { card, heading, edit, rerun, baseRerun, editRerun, rerunStatus, rerunError, stop, remove, deletion, keep, confirmDelete, deleteError, status, progress, failure, output, usedPrompt, copy, log }; nodes.originals = originals; jobNodes.set(job.id, nodes);
         edit.onclick = () => jobEditor.open(job.id);
         baseRerun.title = BASE_RERUN_HELP; baseRerun.onclick = () => reruns.runBase(jobs.find(item => item.id === job.id) || job);
         editRerun.title = 'Edit this job’s saved settings before queuing a new copy. Changes apply only to that copy.';
@@ -494,6 +501,7 @@ export function showBfsVideo({ preferred = null, layout = 'classic' } = {}, anch
       }
     }
     updateReady();
+    for (const job of jobs) jobNodes.get(job.id)?.originals.update(job.input_videos);
     jobPager.finish(jobNodes);
   }
   function loadJobs(options = {}) { return jobPager.load(options); }
@@ -638,7 +646,7 @@ export function showBfsVideo({ preferred = null, layout = 'classic' } = {}, anch
     restoreDraft: value => applyEditorDraft(value.config, value.uploads),
     onChange: updateReady, onError: setError,
   });
-  batchQueue = createVideoBatchQueue({
+  batchQueue = createVideoBatchQueue({isolated: !!initialDraft,
     family: 'bfs', sessionKey:layout==='pipeline'?'bfs:pipeline':'bfs', container: batchContainer, getSnapshot: batchSnapshot,
     onJob: () => { if (!closed) loadJobs({ reset: true }); },
     onChange: () => { if (!closed) { editRevision++; updateReady(); } },

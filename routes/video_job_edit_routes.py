@@ -63,7 +63,7 @@ def add_job_edit_routes(router, manager, family, extensions, store_uploads):
                 uploads = {field: form.getlist(field) for field in extensions}
                 if any(not isinstance(upload, UploadFile) for values in uploads.values() for upload in values):
                     raise ValueError('Video media must be uploaded files')
-                async with server_video_inputs(form, uploads, extensions) as uploads:
+                async with server_video_inputs(form, uploads, extensions, manager=manager, owner=owner) as uploads:
                     inventory = await asyncio.to_thread(manager.inventory)
                     before = await asyncio.to_thread(snapshot, manager, job_id, owner, family,
                                                       expected=expected, retain=retain, inventory=inventory)

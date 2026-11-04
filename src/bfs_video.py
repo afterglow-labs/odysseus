@@ -283,7 +283,10 @@ class BFSJobManager(H3JobManager):
 
     def view(self, job_id, owner, **kwargs):
         result = super().view(job_id, owner, **kwargs)
-        config = _read(self.directory(job_id) / 'manifest.json').get('config', {})
+        manifest = _read(self.directory(job_id) / 'manifest.json')
+        config = manifest.get('config', {})
+        from src.video_job_inputs import input_videos
+        result['input_videos'] = input_videos(job_id, manifest, 'bfs')
         result.update(workflow_id=config.get('workflow_id'), workflow_label=config.get('workflow_label'),
                       url=f'/api/video/bfs/jobs/{job_id}/video' if result['status'] == 'completed' else None)
         return result

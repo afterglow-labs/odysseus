@@ -112,15 +112,15 @@ async function request(path, options = {}) {
 
 export function showH3SeedScout(options = {}, anchor = document.activeElement) { return showH3SeedHunter({ ...options, scout: true }, anchor); }
 
-export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anchor = document.activeElement) {
+export function showH3SeedHunter({ scout = false, layout = 'classic', initialDraft = null } = {}, anchor = document.activeElement) {
   const storageKey = (scout ? 'odysseus-h3-seed-scout-v1' : STORAGE) + (layout === 'pipeline' ? ':pipeline' : ''), title = scout ? 'H3 Seed Scout' : 'H3 Seed Hunter';
   const defaults = { ...OPTIONS, ...(scout ? SEED_SCOUT_OPTIONS : {}) }, base = { ...BASE, ...(scout ? { steps: 20, sampler:'euler', scheduler:'simple', shift_audio:3 } : {}) };
   if (scout && !document.getElementById('h3-scout-styles')) { const css = make('link'); css.id = 'h3-scout-styles'; css.rel = 'stylesheet'; css.href = '/static/h3-seed-scout.css'; document.head.append(css); }
-  document.querySelectorAll('.h3-seed-hunter-overlay').forEach(dismissOrRemove);
-  const retained = scout ? seedScoutDraft(undefined,layout) : null;
+  if (!initialDraft) document.querySelectorAll('.h3-seed-hunter-overlay').forEach(dismissOrRemove);
+  const retained = scout && !initialDraft ? seedScoutDraft(undefined,layout) : null;
   let pipeline = null, promptHistory = null;
   if (!document.getElementById('h3-video-styles')) { const css = make('link'); css.id = 'h3-video-styles'; css.rel = 'stylesheet'; css.href = '/static/h3-video.css'; document.head.append(css); }
-  let saved = {}; try { saved = JSON.parse(localStorage.getItem(storageKey) || '{}'); } catch {}
+  let saved = {}; if (!initialDraft) try { saved = JSON.parse(localStorage.getItem(storageKey) || '{}'); } catch {}
   if (retained) saved = { ...saved, config: retained.config };
   const bulkSelected = new Map(); let bulkPending = saved.auto_request || null, bulkPartialResult = false;
   const archivedBulk = new Map((saved.auto_requests || []).map(value => [value.request_id, value]));
@@ -280,7 +280,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
     const list = make('ul', 'h3-video-file-list'), server = accept === '.safetensors' ? null : button('Server files');
     const state = { files: [], retained: [], strengths:[], rangeEditors:[], wrap, input, server, limit, render: () => {
       state.rangeEditors.forEach(editor=>editor.destroy());state.rangeEditors=[];
-      list.replaceChildren(); for (const [i, file] of [...state.retained, ...state.files].entries()) { const row = make('li'), remove = button('Remove'); remove.setAttribute('aria-label', `Remove ${file.name}`); remove.onclick = () => { state.strengths.splice(i,1); if (i < state.retained.length) state.retained.splice(i, 1); else state.files.splice(i - state.retained.length, 1); state.render(); changed(); }; row.append(make('span', '', `${file.name}${i < state.retained.length ? ' · saved on server' : file.serverFile ? ` · ${file.serverFile.root.toUpperCase()}:` : ''}`), remove); if(key==='reference_mods'){const strength=make('input','cookbook-field-input');strength.type='number';strength.min=0;strength.max=1;strength.step=.05;strength.value=state.strengths[i]??1;strength.setAttribute('aria-label',`Strength for ${file.name}`);strength.oninput=()=>{state.strengths[i]=Number(strength.value);changed();};row.append(strength);} if(key==='reference_videos'){row.classList.add('h3-reference-video-row');const editor=createReferenceVideoRangeEditor(file,changed);state.rangeEditors.push(editor);row.append(editor.node);} list.append(row); }
+      list.replaceChildren(); for (const [i, file] of [...state.retained, ...state.files].entries()) { const row = make('li'), remove = button('Remove'); remove.setAttribute('aria-label', `Remove ${file.name}`); remove.onclick = () => { state.strengths.splice(i,1); if (i < state.retained.length) state.retained.splice(i, 1); else state.files.splice(i - state.retained.length, 1); state.render(); changed(); }; row.append(make('span', '', `${file.name}${i < state.retained.length ? ' · saved on server' : file.serverFile ? (file.serverFile.root === 'job-input' ? ' · saved on server' : ` · ${file.serverFile.root.toUpperCase()}:`) : ''}`), remove); if(key==='reference_mods'){const strength=make('input','cookbook-field-input');strength.type='number';strength.min=0;strength.max=1;strength.step=.05;strength.value=state.strengths[i]??1;strength.setAttribute('aria-label',`Strength for ${file.name}`);strength.oninput=()=>{state.strengths[i]=Number(strength.value);changed();};row.append(strength);} if(key==='reference_videos'){row.classList.add('h3-reference-video-row');const editor=createReferenceVideoRangeEditor(file,changed);state.rangeEditors.push(editor);row.append(editor.node);} list.append(row); }
     } }; uploads[key] = state;
     const add = files => { if(input.disabled) throw new Error('This input is unavailable for the current job or runtime.'); const next = multiple ? [...state.files, ...files] : files.slice(0, 1); if (next.length + (multiple ? state.retained.length : 0) > limit) throw new Error(`Choose at most ${limit} ${label.toLowerCase()}.`); if (!multiple) state.retained = []; state.files = next; state.render(); changed(); };
     input.onchange = () => { try { add([...input.files]); } catch (e) { fail(e); } input.value = ''; };
@@ -533,6 +533,11 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
       if (first) syncSizeControls(saved.sizing);
       if (first && retained) { restore(retained.config, retained.uploads); syncSizeControls(saved.sizing); }
       status.textContent = !data.seed_hunter ? `${title} needs the updated Odysseus server.` : scout && !data.seed_hunter.features?.seed_scout ? 'Seed Scout is not installed in this runtime.' : !data.runtime_ready ? data.runtime_error || 'H3 runtime unavailable.' : `${title} is ready.`;
+      if (initialDraft) {
+        editingComponents = initialDraft.lora_components || null;
+        restore(initialDraft.config, initialDraft.uploads); status.textContent = initialDraft.notice;
+        pipeline?.select('inputs'); initialDraft = null;
+      }
     } catch (e) { fail(e); } finally { loading = false; if (!closed) update(); }
   }
   form.addEventListener('input', changed); form.addEventListener('change', changed);
@@ -773,7 +778,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic' } = {}, anc
   function loadJobs(options = {}) { return jobPager.load(options); }
   refresh.onclick=loadInventory;refreshJobs.onclick=()=>loadJobs({reset:true});
   jobEditor=createVideoJobEditor({form,request,isClosed:()=>closed,isBusy:()=>busy||loading||finalBusy||!!batchQueue?.busy,getDraft:()=>({config:config(),uploads:Object.fromEntries(Object.entries(uploads).map(([key,s])=>[key,[...s.files]]))}),applyEdit:value=>{editingComponents=value.lora_components||null;restore(value.config,{},value.inputs);pipeline?.select('prepare');},restoreDraft:value=>{editingComponents=null;restore(value.config,value.uploads);},onChange:update,onError:fail});
-  batchQueue=createVideoBatchQueue({family:'h3',recipe:'seed_hunter',sessionKey:(scout?'h3:seed_scout':'h3:seed_hunter')+(layout==='pipeline'?':pipeline':''),container:batchContainer,getSnapshot:batchSnapshot,onJob:()=>{if(!closed)loadJobs({reset:true});},onChange:()=>{if(!closed){revision++;update();}}});
+  batchQueue=createVideoBatchQueue({isolated: !!initialDraft,family:'h3',recipe:'seed_hunter',sessionKey:(scout?'h3:seed_scout':'h3:seed_hunter')+(layout==='pipeline'?':pipeline':''),container:batchContainer,getSnapshot:batchSnapshot,onJob:()=>{if(!closed)loadJobs({reset:true});},onChange:()=>{if(!closed){revision++;update();}}});
   function nestedEditor(onChange, savedConfig) {
     const node=make('div','h3-video-grid'), rows=[];
     const allowed=savedConfig?.seed_hunter?.stage==='final'||!savedConfig&&!scout ? FINAL_OPTIONS : new Set(Object.keys(options).filter(k=>k!=='stage'&&options[k].type!=='hidden'&&(!scout||k!=='preview_count')));

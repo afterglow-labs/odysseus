@@ -1,4 +1,5 @@
 """Saved source playback is lazy, owned, seekable, and never silently shortened."""
+import asyncio
 import io
 import json
 import os
@@ -42,6 +43,8 @@ def saved(tmp_path, monkeypatch):
             raise HTTPException(401, 'Sign in')
         return value
     add_job_input_routes(router, manager, owner)
+    from routes.video_server_file_routes import add_server_video_file_routes
+    add_server_video_file_routes(router, owner, manager=manager)
     app = FastAPI()
     app.include_router(router)
     with TestClient(app) as client:
@@ -116,6 +119,84 @@ def test_full_original_is_not_truncated_at_preview_or_thirty_second_limit(saved)
     with av.open(io.BytesIO(reply.content)) as video:
         assert video.duration / av.time_base == pytest.approx(34, abs=.1)
         assert len(list(video.decode(video=0))) == 816
+
+
+def reuse(saved, monkeypatch, user='corey', version=0):
+    manager, directory, client = saved
+    monkeypatch.setattr(manager, 'submission_inventory', lambda: {'components': [], 'gpus': []})
+    return client.get(f'/api/video/h3/jobs/{directory.name}/input-videos/reference_videos/0/reuse',
+                      params={'revision': version}, headers={'x-user': user})
+
+
+def test_reuse_opens_full_original_and_queues_it_without_uploading_again(saved, monkeypatch):
+    from routes.h3_video_routes import _store_uploads
+    from src.video_server_files import server_video_inputs
+    from src.h3_video import UPLOAD_EXTENSIONS
+    from starlette.datastructures import FormData
+    manager, directory, client = saved
+    make_video(directory / 'source.mkv', 34)
+    manifest = _read(directory / 'manifest.json')
+    manifest['config']['reference_video_ranges'] = [{'start_seconds': 1, 'duration_seconds': 15}]
+    _write(directory / 'manifest.json', manifest)
+    before = (directory / 'manifest.json').read_bytes()
+    result = reuse(saved, monkeypatch)
+    assert result.status_code == 200, result.text
+    draft = result.json()
+    assert draft['config']['seed_hunter']['stage'] == 'preview'
+    assert 'reference_video_ranges' not in draft['config']
+    selected = draft['uploads']['reference_videos'][0]
+    assert selected['root'] == 'job-input' and selected['path'].endswith('/original scene.mkv')
+    metadata = client.get('/api/video/h3/server-files/metadata', params=selected, headers={'x-user': 'corey'})
+    assert metadata.status_code == 200, metadata.text
+    assert metadata.json()['duration_seconds'] == pytest.approx(34, abs=.1)
+    later = client.get('/api/video/h3/server-files/preview',
+                       params={**selected, 'start_seconds': 31, 'duration_seconds': 2}, headers={'x-user': 'corey'})
+    assert later.status_code == 200, later.text[:100] if later.status_code != 200 else ''
+    with av.open(io.BytesIO(later.content)) as video:
+        assert video.duration / av.time_base == pytest.approx(2, abs=.1)
+    target = manager.stage()
+    async def copy():
+        form = FormData({'server_inputs': json.dumps({'reference_videos': [{**selected, 'index': 0}]})})
+        async with server_video_inputs(form, {}, UPLOAD_EXTENSIONS, manager=manager, owner='corey') as uploads:
+            assert uploads['reference_videos'][0].filename == 'original scene.mkv'
+            return await _store_uploads(target, uploads, None)
+    copied = asyncio.run(copy())
+    assert Path(copied['reference_videos'][0]).read_bytes() == (directory / 'source.mkv').read_bytes()
+    assert (directory / 'manifest.json').read_bytes() == before
+    assert not (target / 'state.json').exists(), 'Opening a draft must not enqueue work'
+
+
+def test_reused_input_is_owned_revision_checked_and_never_a_client_path(saved, monkeypatch):
+    manager, directory, client = saved
+    result = reuse(saved, monkeypatch).json()
+    selection = result['uploads']['reference_videos'][0]
+    assert reuse(saved, monkeypatch, user='other').status_code == 404
+    assert reuse(saved, monkeypatch, user='').status_code == 401
+    assert client.get('/api/video/h3/server-files/video', params=selection, headers={'x-user': 'other'}).status_code == 404
+    malformed = {**selection, 'path': '../source.mkv'}
+    assert client.get('/api/video/h3/server-files/video', params=malformed, headers={'x-user': 'corey'}).status_code == 400
+    manifest = _read(directory / 'manifest.json'); manifest['revision'] = 1
+    _write(directory / 'manifest.json', manifest)
+    assert reuse(saved, monkeypatch).status_code == 409
+    assert client.get('/api/video/h3/server-files/video', params=selection, headers={'x-user': 'corey'}).status_code == 409
+
+
+def test_reusing_final_restores_preview_stage_without_resuming_or_auto_refining(saved, monkeypatch):
+    _, directory, _ = saved
+    manifest = _read(directory / 'manifest.json')
+    config = manifest['config']
+    config['seed_hunter'].update(stage='final', auto_refine={'candidates': [1, 2, 3]})
+    config['frames'] = 362
+    manifest['seed_hunter_source'] = {'preview_frames': 107}
+    _write(directory / 'manifest.json', manifest)
+    response = reuse(saved, monkeypatch)
+    assert response.status_code == 200, response.text
+    draft = response.json()['config']
+    assert draft['frames'] == 107
+    assert draft['seed_hunter']['stage'] == 'preview'
+    assert draft['seed_hunter']['final_frames'] == 362
+    assert 'auto_refine' not in draft['seed_hunter']
+    assert _read(directory / 'manifest.json')['config']['seed_hunter']['stage'] == 'final'
 
 
 def test_explicit_selected_section_is_labelled_and_only_that_section_is_encoded(saved):
