@@ -12,7 +12,8 @@ On a native Odysseus installation, use `odysseus-cyber-start`. It starts Docker
 if needed, builds and starts the separate Afterglow API, PostgreSQL, and
 private Ollama services, verifies the mounted local model directory, updates
 the model network allowlist, installs or renews Odysseus's scoped gateway
-token, and starts Odysseus if it is not already running. An existing Odysseus
+token, and starts Odysseus if it is not already running. Running Docker services
+are reused without rebuilding their image. An existing Odysseus
 server and its sessions stay running; gateway settings are picked up without a
 restart. Open the client with `odysseus` and press the
 **Cybersecurity** mode button. Use `odysseus-cyber-stop` to stop this stack

@@ -4,6 +4,8 @@ import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 SCRIPT = Path(__file__).resolve().parents[1] / "script" / "odysseus_cyber_stack.py"
 assert SCRIPT.is_file()
@@ -117,7 +119,8 @@ def test_docker_socket_activation_pauses_only_configured_auto_started_project(mo
     assert not any(command[:4] == ["sudo", "-n", "systemctl", "start"] for command in calls)
 
 
-def test_start_keeps_existing_odysseus_process_running(tmp_path, monkeypatch):
+@pytest.mark.parametrize("native_running,backend_running", [(True, True), (False, False)])
+def test_start_keeps_existing_odysseus_process_running(tmp_path, monkeypatch, native_running, backend_running):
     backend = tmp_path / "backend"
     backend.mkdir()
     (backend / ".env").write_text("ARTEX_PORT=8787\n")
@@ -131,10 +134,15 @@ def test_start_keeps_existing_odysseus_process_running(tmp_path, monkeypatch):
     page = tmp_path / "static" / "index.html"
     page.parent.mkdir()
     page.write_text("product-mode-cybersecurity")
+    if native_running:
+        logs = tmp_path / "logs"
+        logs.mkdir()
+        (logs / "odysseus-server.json").write_text('{"pid":123,"start":"marker","url":"http://127.0.0.1:7860"}')
     monkeypatch.setattr(stack, "ROOT", tmp_path)
     monkeypatch.setattr(stack, "backend_root", lambda settings: backend)
     monkeypatch.setattr(stack, "prepare_backend", lambda backend, settings: {"SCOPEWEAVER_LLM_MODEL": "qwen3:32b"})
     monkeypatch.setattr(stack, "ensure_docker", lambda settings: None)
+    monkeypatch.setattr(stack, "all_backend_services_running", lambda backend: backend_running)
     monkeypatch.setattr(stack, "compose_command", lambda backend, *args: ["docker", "compose", *args])
     monkeypatch.setattr(stack, "model_directory", lambda *args: tmp_path / "models")
     monkeypatch.setattr(stack, "ollama_ip_and_mount", lambda *args: "172.20.0.2")
@@ -142,13 +150,16 @@ def test_start_keeps_existing_odysseus_process_running(tmp_path, monkeypatch):
     monkeypatch.setattr(stack, "update_local_allowlist", lambda *args: False)
     monkeypatch.setattr(stack, "wait_for_backend", lambda base: None)
     monkeypatch.setattr(stack, "ensure_gateway_token", lambda *args: True)
+    monkeypatch.setattr(stack, "verified_native_pid", lambda state, prefix="": 123 if native_running and not prefix else None)
+    monkeypatch.setattr(stack, "request", lambda base, method, path: (200, {"status": "healthy"}))
     monkeypatch.setattr(stack, "stop_native", lambda launcher: (_ for _ in ()).throw(AssertionError("server was stopped")))
     calls = []
     monkeypatch.setattr(stack.subprocess, "run", lambda command, **kwargs: calls.append(command) or SimpleNamespace(returncode=0))
 
     stack.start()
 
-    assert calls == [
-        ["docker", "compose", "up", "-d", "--build", "postgres", "ollama", "scopeweaver"],
-        [str(launcher), "--start"],
-    ]
+    expected = [["docker", "compose", "up", "-d", "--no-build" if backend_running else "--build",
+                 "postgres", "ollama", "scopeweaver"]]
+    if not native_running:
+        expected.append([str(launcher), "--start"])
+    assert calls == expected

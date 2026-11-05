@@ -202,6 +202,12 @@ def compose_command(backend: Path, *args: str) -> list[str]:
             "-f", str(backend / "docker-compose.host-model.yml"), "--profile", PROFILE, *args]
 
 
+def all_backend_services_running(backend: Path) -> bool:
+    result = subprocess.run(compose_command(backend, "ps", "--status", "running", "--services"),
+                            cwd=backend, check=True, text=True, capture_output=True)
+    return {"postgres", "ollama", "scopeweaver"}.issubset(result.stdout.split())
+
+
 def wait_for_local_model(backend: Path, model: str) -> None:
     if not re.fullmatch(r"[A-Za-z0-9_.][A-Za-z0-9_.:/-]*", model):
         raise ValueError("SCOPEWEAVER_LLM_MODEL must name one local Ollama model")
@@ -428,8 +434,11 @@ def start() -> None:
 
     backend_settings = prepare_backend(backend, settings)
     ensure_docker(settings)
-    print("Starting private Afterglow, PostgreSQL, and Ollama services...", flush=True)
-    subprocess.run(compose_command(backend, "up", "-d", "--build", "postgres", "ollama", "scopeweaver"),
+    running = all_backend_services_running(backend)
+    print("Checking running Afterglow, PostgreSQL, and Ollama services..." if running
+          else "Starting private Afterglow, PostgreSQL, and Ollama services...", flush=True)
+    subprocess.run(compose_command(backend, "up", "-d", "--no-build" if running else "--build",
+                                   "postgres", "ollama", "scopeweaver"),
                    cwd=backend, check=True)
     address = ollama_ip_and_mount(backend, model_directory(backend, backend_settings, settings))
     wait_for_local_model(backend, backend_settings["SCOPEWEAVER_LLM_MODEL"])
@@ -445,9 +454,26 @@ def start() -> None:
     if config_url and config_url not in (base, base.replace("127.0.0.1", "localhost")):
         raise ValueError("AFTERGLOW_URL points outside this local Afterglow stack")
     ensure_gateway_token(base, odysseus_env)
-    # The native launcher leaves its verified server running on a second
-    # --start. Cybersecurity routes read renewed gateway settings from .env.
-    subprocess.run([str(launcher), "--start"], cwd=ROOT, check=True)
+    # The native launcher can misidentify a live server when /proc hides its
+    # working directory. Check its recorded PID and health directly first.
+    try:
+        state = json.loads((ROOT / "logs" / "odysseus-server.json").read_text())
+    except (OSError, ValueError):
+        state = {}
+    pid = verified_native_pid(state) if isinstance(state, dict) else None
+    if pid is not None:
+        url = state.get("url")
+        if not isinstance(url, str) or not url:
+            raise ValueError("running Odysseus server has no recorded URL")
+        try:
+            status, health = request(url.rstrip("/"), "GET", "/api/health")
+        except OSError as exc:
+            raise ValueError("running Odysseus server did not answer its health check") from exc
+        if status != 200 or health.get("status") != "healthy":
+            raise ValueError("running Odysseus server is not healthy")
+        print(f"Odysseus server already running (PID {pid}); leaving it untouched.", flush=True)
+    else:
+        subprocess.run([str(launcher), "--start"], cwd=ROOT, check=True)
     print(f"Cybersecurity stack ready. Open the client with odysseus; Afterglow: {base}", flush=True)
 
 
