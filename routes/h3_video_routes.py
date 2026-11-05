@@ -127,6 +127,14 @@ def setup_h3_video_routes(manager=None):
     from routes.video_local_preview_routes import add_local_video_preview_routes
     add_local_video_preview_routes(router, _owner, manager.root.parent / ".local_previews")
 
+    @router.get('/jobs/{job_id}/extend')
+    async def extend_video(request: Request, job_id: str):
+        from fastapi.responses import JSONResponse
+        from src.video_job_reuse import extend_video_draft
+        owner = _owner(request)
+        result = await asyncio.to_thread(extend_video_draft, manager, owner, job_id)
+        return JSONResponse(result, headers={'Cache-Control': 'private, no-store'})
+
     @router.get("/gpus")
     async def gpus(request: Request):
         _owner(request)

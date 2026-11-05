@@ -319,6 +319,9 @@ def _open_selection(value, roots, extensions=VIDEO_EXTENSIONS):
 
 
 def _open_media_selection(selection, roots, extensions, *, manager=None, owner=None):
+    if selection.get('root') == 'job-output':
+        from src.video_job_reuse import open_reused_output
+        return open_reused_output(selection, manager=manager, owner=owner, extensions=extensions)
     if selection.get('root') == 'job-input':
         from src.video_job_reuse import open_reused_input
         return open_reused_input(selection, manager=manager, owner=owner, extensions=extensions)

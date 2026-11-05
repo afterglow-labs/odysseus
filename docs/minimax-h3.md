@@ -197,6 +197,11 @@ makes an independent server-side input copy without uploading the video again.
 Keep the old job until the new submission finishes, since deleting the old job
 before submission also removes its saved input.
 
+Completed H3 outputs offer **Extend this video**. This prepares a separate
+**H3 Seed Hunter → Continue a video** draft with the full result already
+attached. Review its prompt and extension length before submitting; no video
+upload is needed. It does not change the original job or the saved base draft.
+
 Reference mode supports up to nine images, three videos and three audio files,
 with at most twelve uploaded references overall. A reference video can be longer
 than 15 seconds: use its **Start at** and **Length (seconds)** controls

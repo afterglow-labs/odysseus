@@ -33,7 +33,7 @@ def _cache_key(selection, info, start_seconds, duration_seconds):
 
 
 def _job_prefix(selection):
-    if isinstance(selection, dict) and selection.get('root') == 'job-input':
+    if isinstance(selection, dict) and selection.get('root') in {'job-input', 'job-output'}:
         job_id = str(selection.get('path', '')).split('/')[0]
         if re.fullmatch(r'[0-9a-f]{32}', job_id):
             return job_id + '-'

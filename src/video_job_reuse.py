@@ -4,13 +4,86 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
-from src.h3_video import _locked, _read
+from src.h3_video import DEFAULTS, _locked, _read
 from src.video_job_edit import _draft, _inputs, revision
 from src.video_job_inputs import VIDEO_FIELDS, _owned_manifest
 from src.video_server_files import MediaRoot, _open_selection, _selection
 from src.video_workflow import specification
 
 JOB_INPUT_ROOT = 'job-input'
+JOB_OUTPUT_ROOT = 'job-output'
+
+
+def _completed_output(manager, owner, job_id, version=None):
+    directory, manifest = _owned_manifest(manager, job_id, owner, version)
+    state = _read(directory / 'state.json')
+    if state.get('status') != 'completed':
+        raise HTTPException(409, 'Choose a completed video to extend')
+    path = Path(manifest.get('output_path', ''))
+    if path.is_symlink() or path.parent != directory.resolve() or not path.is_file():
+        raise HTTPException(404, 'The completed video is unavailable')
+    return directory, manifest, path
+
+
+def open_reused_output(selection, *, manager, owner, extensions):
+    parts = _selection(selection, extensions)
+    if manager is None or not owner or len(parts) != 3:
+        raise HTTPException(404, 'Saved video output is unavailable')
+    job_id, version, name = parts
+    if not version.isdecimal() or len(version) > 16:
+        raise HTTPException(400, 'Invalid saved video output')
+    directory, _ = _owned_manifest(manager, job_id, owner, int(version))
+    with _locked(directory / 'job.lock'):
+        directory, _, path = _completed_output(manager, owner, job_id, int(version))
+        if path.name != name:
+            raise HTTPException(409, 'The completed video changed. Select it again.')
+        return _open_selection({**selection, 'root': 'saved', 'path': name},
+                               [MediaRoot('saved', 'Saved video output', directory)], extensions)
+
+
+def extend_video_draft(manager, owner, job_id):
+    """Prepare continuation without creating a job or transferring media to the client."""
+    directory, _ = _owned_manifest(manager, job_id, owner)
+    inventory = manager.submission_inventory()
+    with _locked(directory / 'job.lock'):
+        directory, manifest, output = _completed_output(manager, owner, job_id)
+        source = manifest['config']
+        if source.get('workflow_id'):
+            raise HTTPException(400, 'Open this video in the H3 workflow to continue it')
+        raw = _draft(source, inventory, 'h3')
+        # A two-step refinement schedule is not a generation schedule. Restore
+        # the source candidate's generation count when extending a refinement.
+        if source.get('seed_hunter', {}).get('stage') == 'final':
+            metadata = manifest.get('seed_hunter_input', {}).get('metadata')
+            path = Path(metadata) if isinstance(metadata, str) else None
+            original = (_read(path).get('config', {}) if path and not path.is_symlink()
+                        and path.parent == directory.resolve() and path.suffix == '.json' else {})
+            defaults = inventory.get('seed_hunter', {}).get('defaults', {})
+            raw['steps'] = source['seed_hunter'].get('full_length_steps') or original.get('steps') or defaults.get('steps', DEFAULTS['steps'])
+            for key in ('sampler', 'scheduler'):
+                raw[key] = original.get(key, defaults.get(key, raw[key]))
+        if raw.get('mode') != 'ref2va':
+            model = next((c for c in inventory['components'] if c.get('role') == 'model' and c.get('variant') == 'ref2va'), None)
+            if model is None:
+                raise HTTPException(400, 'Install a Reference-to-video H3 model to continue this video')
+            raw['model'] = model['id']
+        raw.update(recipe='seed_hunter', mode='ref2va')
+        for key in ('director', 'h3md', 'model_fl2va', 'reference_video_ranges'):
+            raw.pop(key, None)
+        options = deepcopy(raw.get('seed_hunter', {}))
+        options.update(stage='continuation', preview_count=1, source_start_seconds=0, source_end_seconds=None,
+                       first_frame_guide=False, last_frame_guide=False, force_audio=False,
+                       audio_start_seconds=0, audio_end_seconds=None, refmod_strengths=[])
+        for key in ('auto_refine', 'final_frames', 'full_length_steps'):
+            options.pop(key, None)
+        raw['seed_hunter'] = options
+        info = output.stat()
+        selected = {'root': JOB_OUTPUT_ROOT, 'path': f'{job_id}/{revision(manifest)}/{output.name}',
+                    'size': info.st_size, 'mtime_ns': str(info.st_mtime_ns)}
+        from src.h3_loras import frozen_components
+        return {'family': 'h3', 'config': raw, 'uploads': {'source_video': [selected]},
+                'lora_components': frozen_components(source, inventory),
+                'notice': 'Completed video attached in full. Continue a video is selected. Review the prompt and extension length, then queue when ready.'}
 
 
 def _saved(manager, owner, job_id, version, field, index):

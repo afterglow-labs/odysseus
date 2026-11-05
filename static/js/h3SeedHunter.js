@@ -1,4 +1,5 @@
 import { bindModelGuide } from './h3LoraPromptExample.js';
+import { createExtendVideoButton } from './videoJobReuse.js';
 import { createPreviewActions } from './videoPreviewActions.js';
 import { applyVideoMemoryReset } from './videoMemoryReset.js';
 import { createResultEditor } from './videoResultEdit.js';
@@ -115,6 +116,7 @@ async function request(path, options = {}) {
 export function showH3SeedScout(options = {}, anchor = document.activeElement) { return showH3SeedHunter({ ...options, scout: true }, anchor); }
 
 export function showH3SeedHunter({ scout = false, layout = 'classic', initialDraft = null } = {}, anchor = document.activeElement) {
+  const isolatedDraft = !!initialDraft;
   const storageKey = (scout ? 'odysseus-h3-seed-scout-v1' : STORAGE) + (layout === 'pipeline' ? ':pipeline' : ''), title = scout ? 'H3 Seed Scout' : 'H3 Seed Hunter';
   const defaults = { ...OPTIONS, ...(scout ? SEED_SCOUT_OPTIONS : {}) }, base = { ...BASE, ...(scout ? { steps: 20, sampler:'euler', scheduler:'simple', shift_audio:3 } : {}) };
   if (scout && !document.getElementById('h3-scout-styles')) { const css = make('link'); css.id = 'h3-scout-styles'; css.rel = 'stylesheet'; css.href = '/static/h3-seed-scout.css'; document.head.append(css); }
@@ -407,7 +409,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic', initialDra
       ? `Preview: ${(preview/24).toFixed(2)} seconds. Final output: ${(frames/24).toFixed(2)} seconds. First generates the full video at preview resolution in ${finalFields.full_length_steps.value || selection.steps} steps, then upscales and runs ${finalFields.steps.value} refinement steps. The selected seed, saved prompt and references are retained.`
       : `Preview and final: ${(preview/24).toFixed(2)} seconds. Reuses the saved preview latent, upscales, then runs ${finalFields.steps.value} refinement steps. No extra full-length generation pass.`;
   }
-  function save() { if (jobEditor?.active) return; try { localStorage.setItem(storageKey, JSON.stringify({ config: config(), sizing: { aspect: aspect.value, megapixels: megapixels.value }, dialogue_text: dialogueText.value, dialogue_tone: dialogueTone.value, dialogue_template: dialogueTemplate.value, enhancer: enhancer[Number(enhancerSelect.value)] ? {model:enhancer[Number(enhancerSelect.value)].model,endpoint_id:enhancer[Number(enhancerSelect.value)].endpoint_id} : null, auto_request: bulkPending, auto_requests: [...archivedBulk.values()], selected: selection && !selection.automatic && { job_id: selection.job_id, index: selection.index }, final_config: finalConfig(), final_request: finalRequest })); } catch {} }
+  function save() { if (isolatedDraft || jobEditor?.active) return; try { localStorage.setItem(storageKey, JSON.stringify({ config: config(), sizing: { aspect: aspect.value, megapixels: megapixels.value }, dialogue_text: dialogueText.value, dialogue_tone: dialogueTone.value, dialogue_template: dialogueTemplate.value, enhancer: enhancer[Number(enhancerSelect.value)] ? {model:enhancer[Number(enhancerSelect.value)].model,endpoint_id:enhancer[Number(enhancerSelect.value)].endpoint_id} : null, auto_request: bulkPending, auto_requests: [...archivedBulk.values()], selected: selection && !selection.automatic && { job_id: selection.job_id, index: selection.index }, final_config: finalConfig(), final_request: finalRequest })); } catch {} }
   function changed() { revision++; error.hidden = true; update(); save(); }
   function restore(values, inputFiles = {}, retained = {}) {
     restoredRangeConfig = Object.prototype.hasOwnProperty.call(values, 'reference_video_ranges') ? {reference_video_ranges: clone(values.reference_video_ranges)} : {};
@@ -791,7 +793,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic', initialDra
         nodes.remove.textContent = 'Delete job';
         nodes.deletion.querySelector('p').textContent = 'Delete this job and its saved previews, latents and outputs?';
       }
-      if(job.status==='completed'&&stageName!=='preview'&&!(job.seed_hunter?.candidates?.length)&&!nodes.output.childElementCount){nodes.output.append(createVideoJobMedia(`${API}/jobs/${encodeURIComponent(job.id)}/video`).node);}
+      if(job.status==='completed'&&stageName!=='preview'&&!(job.seed_hunter?.candidates?.length)&&!nodes.output.childElementCount){nodes.output.append(createVideoJobMedia(`${API}/jobs/${encodeURIComponent(job.id)}/video`).node,createExtendVideoButton(job.id));}
     }
     jobPager.finish(jobNodes);
   }

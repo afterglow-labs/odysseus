@@ -1,4 +1,5 @@
 import { bindModelGuide } from './h3LoraPromptExample.js';
+import { createExtendVideoButton } from './videoJobReuse.js';
 import { createVideoJobSources } from './videoJobSources.js';
 import { createPinkCherryControls } from './h3PinkCherry.js';
 import { createH3MDControls, h3mdQueueFields } from './h3MD.js';
@@ -1063,7 +1064,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
         const url = `${API}/jobs/${encodeURIComponent(job.id)}/video`;
         const video = createVideoJobMedia(url);
         const download = el('a', 'memory-toolbar-btn', 'Download MP4'); download.href = url; download.download = job.filename || 'odysseus-h3.mp4';
-        nodes.output.append(video.node, download);
+        nodes.output.append(video.node, download, createExtendVideoButton(job.id));
       }
     }
     updateReady();
