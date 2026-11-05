@@ -378,8 +378,10 @@ def start() -> None:
     config_url = settings.get("AFTERGLOW_URL", "")
     if config_url and config_url not in (base, base.replace("127.0.0.1", "localhost")):
         raise ValueError("AFTERGLOW_URL points outside this local Afterglow stack")
-    if ensure_gateway_token(base, odysseus_env):
-        subprocess.run([str(launcher), "--stop"], cwd=ROOT, check=True)
+    ensure_gateway_token(base, odysseus_env)
+    # The native launcher deliberately rejects a second --start. Restarting
+    # also loads any updated gateway settings or Cybersecurity source code.
+    subprocess.run([str(launcher), "--stop"], cwd=ROOT, check=True)
     subprocess.run([str(launcher), "--start"], cwd=ROOT, check=True)
     print(f"Cybersecurity stack ready. Open the client with odysseus; Afterglow: {base}", flush=True)
 
