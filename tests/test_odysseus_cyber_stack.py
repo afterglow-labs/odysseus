@@ -73,3 +73,23 @@ def test_expired_gateway_token_is_renewed_with_afterglow_login(tmp_path, monkeyp
     assert ("POST", "/api/auth/login", {"username": "Afterglow", "password": "private-password"}, "") in calls
     assert stack.read_env(odysseus_env)["AFTERGLOW_TOKEN"] == "scoped-token"
     assert "private-password" not in odysseus_env.read_text()
+
+
+def test_native_stop_fallback_signals_only_a_verified_recorded_process(tmp_path, monkeypatch):
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs" / "odysseus-server.json").write_text('{"pid":123,"start":"recorded"}')
+    monkeypatch.setattr(stack, "ROOT", tmp_path)
+    running = [True]
+    monkeypatch.setattr(stack, "verified_native_pid", lambda state, prefix="": 123 if prefix == "" and running[0] else None)
+    launched = []
+    monkeypatch.setattr(stack.subprocess, "run", lambda command, **kwargs: launched.append(command))
+    signals = []
+
+    def signal_process(pid, sig):
+        signals.append((pid, sig))
+        running[0] = False
+
+    monkeypatch.setattr(stack.os, "kill", signal_process)
+    stack.stop_native(tmp_path / "dist" / "Odysseus")
+    assert launched == [[str(tmp_path / "dist" / "Odysseus"), "--stop"]]
+    assert signals == [(123, stack.signal.SIGTERM)]

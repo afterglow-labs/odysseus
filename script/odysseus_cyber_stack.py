@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import signal
 import shutil
 import subprocess
 import sys
@@ -350,6 +351,65 @@ def ensure_gateway_token(base: str, odysseus_env: Path) -> bool:
     return changed
 
 
+def verified_native_pid(state: dict, prefix: str = "") -> int | None:
+    """Identify only a recorded process from this checkout before signaling it."""
+    pid = state.get(prefix + "pid")
+    if not isinstance(pid, int) or pid <= 1:
+        return None
+    proc = Path("/proc") / str(pid)
+    try:
+        stat = proc.joinpath("stat").read_text().rsplit(")", 1)[1].split()
+        if stat[0] == "Z" or stat[19] != state.get(prefix + "start"):
+            return None
+        uid = int(next(line for line in proc.joinpath("status").read_text().splitlines()
+                       if line.startswith("Uid:")).split()[1])
+        if uid != os.getuid():
+            return None
+        args = proc.joinpath("cmdline").read_bytes().rstrip(b"\0").decode().split("\0")
+        python = str(ROOT / "venv" / "bin" / "python")
+        if prefix == "chroma_":
+            expected = [python, str(ROOT / "venv" / "bin" / "chroma"), "run", "--host", "127.0.0.1",
+                        "--port", str(state["chroma_port"]), "--path", str(ROOT / "data" / "chroma")]
+        else:
+            expected = [python, "-", "serve"]
+        if args != expected:
+            return None
+        try:
+            cwd = proc.joinpath("cwd").resolve(strict=True)
+        except PermissionError:
+            cwd = None
+        if cwd is not None and cwd != ROOT:
+            return None
+        return pid
+    except (OSError, ValueError, IndexError, KeyError, StopIteration):
+        return None
+
+
+def stop_native(launcher: Path) -> None:
+    state_path = ROOT / "logs" / "odysseus-server.json"
+    try:
+        state = json.loads(state_path.read_text())
+    except (OSError, ValueError):
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+    recorded = [(prefix, verified_native_pid(state, prefix)) for prefix in ("", "chroma_")]
+    subprocess.run([str(launcher), "--stop"], cwd=ROOT, check=True)
+    for prefix, pid in recorded:
+        if pid is None or verified_native_pid(state, prefix) != pid:
+            continue
+        print(f"Stopping verified Odysseus process {pid} left by the native launcher...", flush=True)
+        os.kill(pid, signal.SIGTERM)
+        deadline = time.monotonic() + 25
+        while verified_native_pid(state, prefix) == pid and time.monotonic() < deadline:
+            time.sleep(0.1)
+        if verified_native_pid(state, prefix) == pid:
+            os.kill(pid, signal.SIGKILL)
+            time.sleep(0.2)
+        if verified_native_pid(state, prefix) == pid:
+            raise ValueError(f"verified Odysseus process {pid} did not stop")
+
+
 def start() -> None:
     odysseus_env = ROOT / ".env"
     settings = read_env(odysseus_env)
@@ -381,7 +441,7 @@ def start() -> None:
     ensure_gateway_token(base, odysseus_env)
     # The native launcher deliberately rejects a second --start. Restarting
     # also loads any updated gateway settings or Cybersecurity source code.
-    subprocess.run([str(launcher), "--stop"], cwd=ROOT, check=True)
+    stop_native(launcher)
     subprocess.run([str(launcher), "--start"], cwd=ROOT, check=True)
     print(f"Cybersecurity stack ready. Open the client with odysseus; Afterglow: {base}", flush=True)
 
@@ -392,7 +452,7 @@ def stop() -> None:
     launcher = ROOT / "dist" / "Odysseus"
     if not launcher.is_file() or not os.access(launcher, os.X_OK):
         raise ValueError(f"native Odysseus launcher is missing: {launcher}")
-    subprocess.run([str(launcher), "--stop"], cwd=ROOT, check=True)
+    stop_native(launcher)
     if docker_running():
         subprocess.run(compose_command(backend, "stop", "scopeweaver", "ollama", "postgres"),
                        cwd=backend, check=True)
