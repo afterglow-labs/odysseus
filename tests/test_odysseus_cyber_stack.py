@@ -2,6 +2,7 @@
 
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "script" / "odysseus_cyber_stack.py"
@@ -93,3 +94,24 @@ def test_native_stop_fallback_signals_only_a_verified_recorded_process(tmp_path,
     stack.stop_native(tmp_path / "dist" / "Odysseus")
     assert launched == [[str(tmp_path / "dist" / "Odysseus"), "--stop"]]
     assert signals == [(123, stack.signal.SIGTERM)]
+
+
+def test_docker_socket_activation_pauses_only_configured_auto_started_project(monkeypatch):
+    monkeypatch.setattr(stack.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(stack, "docker_running", lambda: True)
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[:2] == ["systemctl", "is-active"]:
+            return SimpleNamespace(returncode=3)
+        if command[:2] == ["docker", "ps"]:
+            return SimpleNamespace(returncode=0, stdout="cvat-one\ncvat-two\n")
+        if command[:2] == ["docker", "stop"]:
+            return SimpleNamespace(returncode=0)
+        raise AssertionError(command)
+
+    monkeypatch.setattr(stack.subprocess, "run", run)
+    stack.ensure_docker({"AFTERGLOW_AUTO_PAUSE_COMPOSE_PROJECTS": "cvat"})
+    assert ["docker", "stop", "--time", "10", "cvat-one", "cvat-two"] in calls
+    assert not any(command[:4] == ["sudo", "-n", "systemctl", "start"] for command in calls)

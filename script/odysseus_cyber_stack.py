@@ -163,21 +163,27 @@ def docker_running() -> bool:
 
 
 def ensure_docker(odysseus_settings: dict[str, str]) -> None:
-    if docker_running():
+    systemctl = shutil.which("systemctl")
+    was_active = (subprocess.run(["systemctl", "is-active", "--quiet", "docker.service"],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+                  if systemctl else None)
+    if not docker_running():
+        if not systemctl or not shutil.which("sudo"):
+            raise ValueError("Start the Docker daemon, then run odysseus-cyber-start again")
+        print("Starting Docker...", flush=True)
+        subprocess.run(["sudo", "-n", "systemctl", "start", "docker.service"], check=True)
+        for _ in range(30):
+            if docker_running():
+                break
+            time.sleep(1)
+        else:
+            raise ValueError("Docker did not become ready")
+    if was_active is not False:
         return
-    if not shutil.which("systemctl") or not shutil.which("sudo"):
-        raise ValueError("Start the Docker daemon, then run odysseus-cyber-start again")
-    print("Starting Docker...", flush=True)
-    subprocess.run(["sudo", "-n", "systemctl", "start", "docker.service"], check=True)
-    for _ in range(30):
-        if docker_running():
-            break
-        time.sleep(1)
-    else:
-        raise ValueError("Docker did not become ready")
     # A disabled Docker service can wake unrelated restart-policy containers.
-    # This optional, host-specific list restores only the projects the user
-    # configured for that case; ordinary Docker starts never touch them.
+    # docker info may itself start an inactive daemon through docker.socket,
+    # so check service state before calling it. An already active service never
+    # touches other Compose projects.
     configured = odysseus_settings.get("AFTERGLOW_AUTO_PAUSE_COMPOSE_PROJECTS", "")
     for project in filter(None, (part.strip() for part in configured.split(","))):
         if not re.fullmatch(r"[A-Za-z0-9_-]+", project):
