@@ -62,7 +62,6 @@ for updating them.
 - **Email** — IMAP/SMTP inbox with triage, tags, summaries, reminders, and reply drafts.
 - **Notes, Tasks + Calendar** — reminders, todos, scheduled agent tasks, and CalDAV sync.
 - **Extras** — gallery/image editor, themes, uploads, web search, presets, sessions, and 2FA.
-- **Cybersecurity mode** — switch the web client to an [Afterglow workbench](docs/cybersecurity-mode.md) backed by a separate server.
 
 ## Demo
 
