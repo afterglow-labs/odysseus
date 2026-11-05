@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from core.atomic_io import atomic_write_json
+from src.agent_environment import agent_subprocess_env
 from core.platform_compat import (
     detached_popen_kwargs,
     find_bash,
@@ -136,6 +137,7 @@ def launch(command: str, session_id: str, cwd: Optional[str] = None,
         stderr=subprocess.DEVNULL,
         stdin=subprocess.DEVNULL,
         cwd=cwd or None,
+        env=agent_subprocess_env(),
         **detached_popen_kwargs(),  # detach from the request lifecycle (setsid / DETACHED_PROCESS)
     )
 

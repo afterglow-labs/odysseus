@@ -32,6 +32,9 @@ _IMPORT_REWRITES = {
     "import { initModelPicker, updateModelPicker } from './modelPicker.js?v=20260722ctxheader1';": (
         "import { initModelPicker, updateModelPicker } from './modelPicker.mjs';"
     ),
+    "import { daybreakForSelection, reasoningForSelection, beginChatSelection } from './daybreak.js';": (
+        "import { daybreakForSelection, reasoningForSelection, beginChatSelection } from './daybreak.mjs';"
+    ),
     "import themeModule from './theme.js';": "import themeModule from './theme.mjs';",
     "import spinnerModule from './spinner.js';": "import spinnerModule from './spinner.mjs';",
 }
@@ -68,6 +71,11 @@ export default ui;
     "modelPicker.mjs": (
         "export const initModelPicker = () => {};\n"
         "export const updateModelPicker = () => {};\n"
+    ),
+    "daybreak.mjs": (
+        "export const daybreakForSelection = () => false;\n"
+        "export const reasoningForSelection = () => null;\n"
+        "export const beginChatSelection = () => () => true;\n"
     ),
     "theme.mjs": "export default {};\n",
     "spinner.mjs": "export default {};\n",

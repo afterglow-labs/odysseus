@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 from collections import namedtuple
 from pathlib import Path
 
@@ -1373,7 +1374,10 @@ def test_frontend_tool_approval_uses_opaque_id_and_fixed_decisions():
     assert "/test-approval`" in skills
     assert "approval_id: approval.approval_id" in skills
     assert "['approve', 'Allow once'" in skills
-    assert index.count("app.js?v=20260815toolapproval4") == 2
+    app_versions = re.findall(r"/static/app\.js\?v=([A-Za-z0-9_-]+)", index)
+    assert len(app_versions) == 2
+    assert app_versions[0] == app_versions[1]
+    assert app_versions[0] != "20260815toolapproval4"
     assert "app.js?v=20260808startupshell1" not in index
     approval_module_sources = [
         (root / path).read_text()

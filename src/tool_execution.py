@@ -38,6 +38,7 @@ from src.constants import (
     AGENT_WORKSPACE_DIR,
 )
 from src.tool_utils import _truncate, get_mcp_manager
+from src.agent_environment import agent_subprocess_env
 
 
 class _MissingToolSecurityContext:
@@ -755,7 +756,7 @@ async def _direct_fallback(
     owner: Optional[str] = None,
 ) -> Optional[Dict]:
     _subproc_env = {
-        **os.environ,
+        **agent_subprocess_env(),
         "TERM": "xterm-256color",
         "COLUMNS": "120",
         "LINES": "40",

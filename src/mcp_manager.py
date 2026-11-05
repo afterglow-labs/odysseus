@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from src.database import McpServer, SessionLocal
 
 from src.runtime_paths import get_app_root
+from src.agent_environment import agent_subprocess_env
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +191,7 @@ class McpManager:
             server_params = StdioServerParameters(
                 command=command,
                 args=args,
-                env={**os.environ, **env} if env else None,
+                env=agent_subprocess_env({**os.environ, **(env or {})}),
             )
 
             stack = AsyncExitStack()
