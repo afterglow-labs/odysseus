@@ -1,4 +1,4 @@
-// Odysseus Cybersecurity mode: a native, same-origin workbench for Afterglow.
+// Odysseus Cybersecurity mode: a native, same-origin workbench for APTEX.
 // All backend paths are fixed by the server gateway. Backend text is rendered
 // only through textContent, including findings and intercepted tool inputs.
 
@@ -154,8 +154,8 @@ export function initCybersecurityMode() {
     const main = byId('chat-container');
     if (main) main.setAttribute('aria-label', isCyber ? 'Cybersecurity workbench' : 'Chat area');
     const heading = main?.querySelector('h1');
-    if (heading) heading.textContent = isCyber ? 'Afterglow Cybersecurity' : 'Odysseus';
-    document.title = isCyber ? 'Cybersecurity · Odysseus' : 'Odysseus Chat';
+    if (heading) heading.textContent = isCyber ? 'APTEX Cybersecurity' : 'Odysseus';
+    document.title = isCyber ? 'APTEX · Odysseus' : 'Odysseus Chat';
     try { localStorage.setItem(MODE_KEY, next); } catch (_) {}
     if (isCyber) refresh();
     else showNotice('');
@@ -218,10 +218,10 @@ export function initCybersecurityMode() {
     const pending = Array.isArray(intercept.pending) ? intercept.pending : [];
     const recentFindings = Array.isArray(findings.items) ? findings.items : [];
     metrics.append(
-      card('LLM', status.stats?.llm_configured ? 'Ready' : 'Not set', 'Afterglow engine configuration'),
+      card('LLM', status.stats?.llm_configured ? 'Ready' : 'Not set', 'APTEX engine configuration'),
       card('Tasks', taskList.length, tasks.active ? `Active task #${tasks.active}` : 'No active task'),
       card('Findings', findings.total ?? 0, 'All recorded findings'),
-      card('Pending interception', pending.length, 'Requires a decision in Afterglow'),
+      card('Pending interception', pending.length, 'Requires a decision in APTEX'),
       card('Traffic', traffic.count ?? 0, traffic.enabled ? 'Capture enabled' : 'Capture disabled'),
     );
     wrap.append(metrics);
@@ -253,7 +253,7 @@ export function initCybersecurityMode() {
     const wrap = element('div');
     const createPanel = panel('Create task');
     createPanel.append(element('p', 'cyber-detail',
-      'A new task starts on the Afterglow server. Choose a model profile when the default is not the one you want.'));
+      'A new task starts on the APTEX server. Choose a model profile when the default is not the one you want.'));
     const form = element('form', 'cyber-stack');
     const name = input('Task name'); name.maxLength = 160;
     const description = textarea('Description', true); description.maxLength = 5000;
@@ -585,7 +585,7 @@ export function initCybersecurityMode() {
     if (!turns.length) transcript.append(empty('No messages in this conversation.'));
     for (const item of turns) {
       const bubble = element('article', `cyber-message ${item.kind === 'user' ? 'user' : 'agent'}`);
-      bubble.append(element('div', 'cyber-row-sub', `${item.kind === 'user' ? 'You' : 'Afterglow'} · ${fmtDate(item.ts)}`),
+      bubble.append(element('div', 'cyber-row-sub', `${item.kind === 'user' ? 'You' : 'APTEX'} · ${fmtDate(item.ts)}`),
         element('div', 'cyber-detail', item.summary || item.detail || ''));
       transcript.append(bubble);
     }
@@ -604,7 +604,7 @@ export function initCybersecurityMode() {
         chatDraft = '';
         chatPollUntil = Date.now() + 120000;
         await refresh();
-        showNotice('Message accepted by Afterglow');
+        showNotice('Message accepted by APTEX');
       } catch (error) { showNotice(error.message, true); }
       finally { send.disabled = false; }
     });
@@ -711,7 +711,7 @@ export function initCybersecurityMode() {
   async function renderScope() {
     await loadTasks();
     const wrap = element('div');
-    if (!selectedTask) return empty('Select a task after one has been created in Afterglow.');
+    if (!selectedTask) return empty('Select a task after one has been created in APTEX.');
     wrap.append(taskPicker(refresh));
     const [scope, coverage] = await Promise.all([
       api(`/tasks/${selectedTask}/scope`), api(`/tasks/${selectedTask}/coverage`),
@@ -1005,7 +1005,7 @@ export function initCybersecurityMode() {
     const profilesPanel = panel('Model profiles');
     const profiles = Array.isArray(profileData.profiles) ? profileData.profiles : [];
     const profileList = element('div', 'cyber-list');
-    if (!profiles.length) profileList.append(empty('No model profiles configured on Afterglow.'));
+    if (!profiles.length) profileList.append(empty('No model profiles configured on APTEX.'));
     for (const profile of profiles) {
       const entry = row(profile.name || profile.model || `Profile #${profile.id}`,
         `${profile.format || 'provider'} · ${profile.model || 'No model'}${profile.base_url ? ` · ${profile.base_url}` : ''}`,
@@ -1032,10 +1032,10 @@ export function initCybersecurityMode() {
     wrap.append(profilesPanel);
     const localPanel = panel('Add a local Ollama profile');
     localPanel.append(element('p', 'cyber-detail',
-      'Choose an Ollama endpoint reachable from the Afterglow server. Discovery lists installed models; it does not download one.'));
+      'Choose an Ollama endpoint reachable from the APTEX server. Discovery lists installed models; it does not download one.'));
     const localForm = element('form', 'cyber-stack');
     const target = selectOptions('Ollama location', [
-      ['http://127.0.0.1:11434', 'Ollama on the Afterglow host'],
+      ['http://127.0.0.1:11434', 'Ollama on the APTEX host'],
       ['http://host.docker.internal:11434', 'Ollama on the Docker host'],
       ['http://ollama:11434', 'Ollama container'],
     ]);
@@ -1086,7 +1086,7 @@ export function initCybersecurityMode() {
     else {
       const accounts = Array.isArray(chatgptResult.value?.accounts) ? chatgptResult.value.accounts : [];
       chatgptPanel.append(element('p', 'cyber-detail',
-        'ChatGPT plan connection uses Afterglow’s local OAuth callback. Open this page on the Afterglow machine to connect an account.'));
+        'ChatGPT plan connection uses APTEX’s local OAuth callback. Open this page on the APTEX machine to connect an account.'));
       if (localBrowser) chatgptPanel.append(button('Connect ChatGPT', async () => {
         const popup = window.open('about:blank', '_blank');
         if (popup) popup.opener = null;
@@ -1101,7 +1101,7 @@ export function initCybersecurityMode() {
           showNotice('Complete ChatGPT sign-in in the new window');
         } catch (error) { popup?.close(); showNotice(error.message, true); }
       }));
-      if (!accounts.length) chatgptPanel.append(empty('No ChatGPT account connected on Afterglow.'));
+      if (!accounts.length) chatgptPanel.append(empty('No ChatGPT account connected on APTEX.'));
       for (const account of accounts) {
         const entry = row(account.email || account.id || 'ChatGPT account',
           account.plan_block_reason || (account.plan_enabled ? 'Plan enabled' : 'Plan unavailable'),
@@ -1196,7 +1196,7 @@ export function initCybersecurityMode() {
   async function refresh() {
     if (mode !== 'cybersecurity') return;
     const run = ++generation;
-    content.replaceChildren(empty('Loading Afterglow…'));
+    content.replaceChildren(empty('Loading APTEX…'));
     setConnection('connecting', 'Connecting');
     let connected = false;
     try {
@@ -1228,7 +1228,7 @@ export function initCybersecurityMode() {
     } catch (error) {
       if (run !== generation || mode !== 'cybersecurity') return;
       if (!connected) setConnection('disconnected', 'Unavailable');
-      content.replaceChildren(empty('Afterglow data is unavailable. Check the server connection and credential.'));
+      content.replaceChildren(empty('APTEX data is unavailable. Check the server connection and credential.'));
       showNotice(error.message, true);
     }
   }

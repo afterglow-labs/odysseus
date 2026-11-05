@@ -1,6 +1,6 @@
 # Cybersecurity mode
 
-Odysseus can switch to an Afterglow Cybersecurity workbench with the button at
+Odysseus can switch to the APTEX workbench with the Cybersecurity button at
 the top of the web client. The two servers keep their own data and processes.
 Odysseus calls a fixed set of Afterglow API routes from its backend; the web
 client only calls Odysseus. Switching back restores the regular chat and agent
