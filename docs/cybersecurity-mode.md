@@ -31,9 +31,12 @@ The launcher finds the Afterglow checkout relative to the Odysseus checkout.
 Set `AFTERGLOW_COMPOSE_ROOT` in Odysseus's `.env` if it lives elsewhere. The
 local model must already be downloaded; the launcher mounts it read-only and
 does not download it. It keeps administrator credentials in a private file
-under `~/.config/afterglow-security/` and the scoped gateway token in
-Odysseus's mode-0600 `.env`. The full Afterglow console uses the **Afterglow**
-login name by default; Odysseus keeps its own accounts.
+at `~/.config/afterglow-security/afterglow-admin.txt` and the scoped gateway
+token in Odysseus's mode-0600 `.env`. To sign in to the full APTEX console at
+`http://127.0.0.1:8787`, use **Afterglow** and read the generated initial
+password with `cat ~/.config/afterglow-security/afterglow-admin.txt`. Change
+that password in the console after signing in. Odysseus keeps its own accounts;
+sign in there first, then press **Cybersecurity** to switch modes.
 
 The following manual setup is for deployments that do not use the native
 launcher.
