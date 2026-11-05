@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 import core.middleware as middleware
 import routes.cybersecurity_routes as cyber_routes
+import src.afterglow_client as afterglow_module
 from src.afterglow_client import AfterglowClient, AfterglowError, MAX_RESPONSE_BYTES, validate_origin
 
 
@@ -28,6 +29,27 @@ def test_rejected_afterglow_origins(origin):
 
 def test_private_http_requires_explicit_opt_in():
     assert validate_origin("http://scopeweaver:8787", allow_http=True) == "http://scopeweaver:8787"
+
+
+def test_gateway_token_updates_without_restarting_odysseus(tmp_path, monkeypatch):
+    path = tmp_path / ".env"
+    monkeypatch.setattr(afterglow_module, "ODYSSEUS_ENV_PATH", path)
+    monkeypatch.setenv("AFTERGLOW_TOKEN", "stale-process-token")
+    afterglow_module._client_for_settings.cache_clear()
+    try:
+        path.write_text("AFTERGLOW_URL=http://127.0.0.1:8787\nAFTERGLOW_TOKEN=first-token\nAFTERGLOW_PUBLIC_URL=http://127.0.0.1:8787\n")
+        first = afterglow_module.get_afterglow_client()
+        assert first._supplied_token == "first-token"
+        path.write_text("AFTERGLOW_URL=http://127.0.0.1:8787\nAFTERGLOW_TOKEN=renewed-token\nAFTERGLOW_PUBLIC_URL=http://localhost:8787\n")
+        second = afterglow_module.get_afterglow_client()
+        assert second is not first
+        assert second._supplied_token == "renewed-token"
+        assert afterglow_module.get_afterglow_client() is second
+        assert afterglow_module.afterglow_settings()["AFTERGLOW_PUBLIC_URL"] == "http://localhost:8787"
+        path.unlink()
+        assert afterglow_module.afterglow_settings()["AFTERGLOW_TOKEN"] == "stale-process-token"
+    finally:
+        afterglow_module._client_for_settings.cache_clear()
 
 
 @pytest.mark.asyncio

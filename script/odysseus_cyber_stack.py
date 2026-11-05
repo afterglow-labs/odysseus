@@ -445,9 +445,8 @@ def start() -> None:
     if config_url and config_url not in (base, base.replace("127.0.0.1", "localhost")):
         raise ValueError("AFTERGLOW_URL points outside this local Afterglow stack")
     ensure_gateway_token(base, odysseus_env)
-    # The native launcher deliberately rejects a second --start. Restarting
-    # also loads any updated gateway settings or Cybersecurity source code.
-    stop_native(launcher)
+    # The native launcher leaves its verified server running on a second
+    # --start. Cybersecurity routes read renewed gateway settings from .env.
     subprocess.run([str(launcher), "--start"], cwd=ROOT, check=True)
     print(f"Cybersecurity stack ready. Open the client with odysseus; Afterglow: {base}", flush=True)
 

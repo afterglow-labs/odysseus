@@ -115,3 +115,40 @@ def test_docker_socket_activation_pauses_only_configured_auto_started_project(mo
     stack.ensure_docker({"AFTERGLOW_AUTO_PAUSE_COMPOSE_PROJECTS": "cvat"})
     assert ["docker", "stop", "--time", "10", "cvat-one", "cvat-two"] in calls
     assert not any(command[:4] == ["sudo", "-n", "systemctl", "start"] for command in calls)
+
+
+def test_start_keeps_existing_odysseus_process_running(tmp_path, monkeypatch):
+    backend = tmp_path / "backend"
+    backend.mkdir()
+    (backend / ".env").write_text("ARTEX_PORT=8787\n")
+    launcher = tmp_path / "dist" / "Odysseus"
+    launcher.parent.mkdir()
+    launcher.write_text("#!/bin/sh\n")
+    launcher.chmod(0o755)
+    route = tmp_path / "routes" / "cybersecurity_routes.py"
+    route.parent.mkdir()
+    route.write_text("")
+    page = tmp_path / "static" / "index.html"
+    page.parent.mkdir()
+    page.write_text("product-mode-cybersecurity")
+    monkeypatch.setattr(stack, "ROOT", tmp_path)
+    monkeypatch.setattr(stack, "backend_root", lambda settings: backend)
+    monkeypatch.setattr(stack, "prepare_backend", lambda backend, settings: {"SCOPEWEAVER_LLM_MODEL": "qwen3:32b"})
+    monkeypatch.setattr(stack, "ensure_docker", lambda settings: None)
+    monkeypatch.setattr(stack, "compose_command", lambda backend, *args: ["docker", "compose", *args])
+    monkeypatch.setattr(stack, "model_directory", lambda *args: tmp_path / "models")
+    monkeypatch.setattr(stack, "ollama_ip_and_mount", lambda *args: "172.20.0.2")
+    monkeypatch.setattr(stack, "wait_for_local_model", lambda *args: None)
+    monkeypatch.setattr(stack, "update_local_allowlist", lambda *args: False)
+    monkeypatch.setattr(stack, "wait_for_backend", lambda base: None)
+    monkeypatch.setattr(stack, "ensure_gateway_token", lambda *args: True)
+    monkeypatch.setattr(stack, "stop_native", lambda launcher: (_ for _ in ()).throw(AssertionError("server was stopped")))
+    calls = []
+    monkeypatch.setattr(stack.subprocess, "run", lambda command, **kwargs: calls.append(command) or SimpleNamespace(returncode=0))
+
+    stack.start()
+
+    assert calls == [
+        ["docker", "compose", "up", "-d", "--build", "postgres", "ollama", "scopeweaver"],
+        [str(launcher), "--start"],
+    ]

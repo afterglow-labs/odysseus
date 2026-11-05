@@ -8,12 +8,36 @@ import asyncio
 import json
 import os
 from functools import lru_cache
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
+from dotenv import dotenv_values
 
 
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+ODYSSEUS_ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
+
+
+def afterglow_settings() -> dict[str, str]:
+    """Read the native checkout's current gateway settings without changing process env.
+
+    The Cybersecurity launcher may install or renew a scoped token while the
+    regular Odysseus server is already running. A container without a checkout
+    .env continues to use its process environment.
+    """
+    file_values = dotenv_values(ODYSSEUS_ENV_PATH) if ODYSSEUS_ENV_PATH.is_file() else {}
+    defaults = {
+        "AFTERGLOW_URL": "http://127.0.0.1:8787",
+        "AFTERGLOW_TOKEN": "",
+        "AFTERGLOW_PASSWORD": "",
+        "AFTERGLOW_ALLOW_HTTP": "false",
+        "AFTERGLOW_PUBLIC_URL": "",
+    }
+    return {
+        key: file_values[key] if file_values.get(key) is not None else os.getenv(key, default)
+        for key, default in defaults.items()
+    }
 
 
 class AfterglowError(Exception):
@@ -139,13 +163,20 @@ class AfterglowClient:
 
 
 @lru_cache(maxsize=1)
-def get_afterglow_client() -> AfterglowClient:
-    allow_http = os.getenv("AFTERGLOW_ALLOW_HTTP", "false").lower()
+def _client_for_settings(origin: str, token: str, password: str, allow_http: str) -> AfterglowClient:
     if allow_http not in ("true", "false"):
         raise ValueError("AFTERGLOW_ALLOW_HTTP must be true or false")
     return AfterglowClient(
-        origin=os.getenv("AFTERGLOW_URL", "http://127.0.0.1:8787"),
-        token=os.getenv("AFTERGLOW_TOKEN", ""),
-        password=os.getenv("AFTERGLOW_PASSWORD", ""),
+        origin=origin,
+        token=token,
+        password=password,
         allow_http=allow_http == "true",
+    )
+
+
+def get_afterglow_client() -> AfterglowClient:
+    settings = afterglow_settings()
+    return _client_for_settings(
+        settings["AFTERGLOW_URL"], settings["AFTERGLOW_TOKEN"],
+        settings["AFTERGLOW_PASSWORD"], settings["AFTERGLOW_ALLOW_HTTP"].lower(),
     )

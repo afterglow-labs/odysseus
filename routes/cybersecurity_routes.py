@@ -1,6 +1,5 @@
 """Admin-only, allowlisted gateway into the separate Afterglow server."""
 
-import os
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -8,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Res
 from pydantic import BaseModel, Field, model_validator
 
 from core.middleware import require_admin
-from src.afterglow_client import AfterglowError, get_afterglow_client, validate_origin
+from src.afterglow_client import AfterglowError, afterglow_settings, get_afterglow_client, validate_origin
 
 
 router = APIRouter(
@@ -238,7 +237,7 @@ class ChatGPTProfile(ChatGPTAccount):
 
 @router.get("/status")
 async def status():
-    public_url = os.getenv("AFTERGLOW_PUBLIC_URL", "").strip()
+    public_url = afterglow_settings()["AFTERGLOW_PUBLIC_URL"].strip()
     console_error = ""
     if public_url:
         try:
