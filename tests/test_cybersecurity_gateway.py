@@ -60,6 +60,7 @@ async def test_password_login_reuses_token_then_refreshes_expired_token():
             logins += 1
             assert "Authorization" not in request.headers
             assert request.content.decode().count('"password":"local-password"') == 1
+            assert '"username":"Afterglow"' in request.content.decode()
             return httpx.Response(200, json={"token": f"token-{logins}"})
         if request.headers.get("Authorization") == "Bearer token-1" and len(seen) > 2:
             return httpx.Response(401, json={"error": "expired"})

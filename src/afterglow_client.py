@@ -117,7 +117,7 @@ class AfterglowClient:
                 return
             data = await self._fetch(
                 "/api/auth/login", method="POST",
-                body={"username": "ARTEX", "password": self._password}, auth=False,
+                body={"username": "Afterglow", "password": self._password}, auth=False,
             )
             token = data.get("token") if isinstance(data, dict) else None
             if not isinstance(token, str) or not token:

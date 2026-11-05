@@ -8,6 +8,36 @@ controls. The selected mode and task are kept in the browser's local storage.
 
 ## Run the two servers
 
+On a native Odysseus installation, use `odysseus-cyber-start`. It starts Docker
+if needed, builds and starts the separate Afterglow API, PostgreSQL, and
+private Ollama services, verifies the mounted local model directory, updates
+the model network allowlist, installs or renews Odysseus's scoped gateway
+token, and starts Odysseus. Open the client with `odysseus` and press the
+**Cybersecurity** mode button. Use `odysseus-cyber-stop` to stop this stack
+without deleting its data. The regular `odysseus-start` shortcut still starts
+only Odysseus.
+
+To install the Cybersecurity shortcuts for a native checkout, run this once
+from the Odysseus repository root:
+
+```sh
+test -f script/odysseus_cyber_stack.py
+mkdir -p "$HOME/.local/bin"
+ln -s "$(pwd)/script/odysseus_cyber_stack.py" "$HOME/.local/bin/odysseus-cyber-start"
+ln -s "$(pwd)/script/odysseus_cyber_stack.py" "$HOME/.local/bin/odysseus-cyber-stop"
+```
+
+The launcher finds the Afterglow checkout relative to the Odysseus checkout.
+Set `AFTERGLOW_COMPOSE_ROOT` in Odysseus's `.env` if it lives elsewhere. The
+local model must already be downloaded; the launcher mounts it read-only and
+does not download it. It keeps administrator credentials in a private file
+under `~/.config/afterglow-security/` and the scoped gateway token in
+Odysseus's mode-0600 `.env`. The full Afterglow console uses the **Afterglow**
+login name by default; Odysseus keeps its own accounts.
+
+The following manual setup is for deployments that do not use the native
+launcher.
+
 Start the combined `afterglow-labs/afterglow-cybersecurity` server from its own
 checkout. That checkout supplies the full API used by this workbench, including
 the ChatGPT account and model routes. The standalone `afterglow-labs/scopeweaver`
