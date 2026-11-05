@@ -113,7 +113,7 @@ def add_workflow_routes(router, manager, *, family):
                 incoming = {field: form.getlist(field) for field in extensions}
                 if any(not isinstance(item, UploadFile) for values in incoming.values() for item in values):
                     raise ValueError('Workflow media must be uploaded files')
-                async with server_video_inputs(form, incoming, extensions) as incoming:
+                async with server_video_inputs(form, incoming, extensions, manager=manager, owner=owner) as incoming:
                     if limit is not None and known_input_bytes(incoming) > limit:
                         raise HTTPException(413, f'Workflow input media exceeds {format_byte_limit(limit)}')
                     inventory = await asyncio.to_thread(manager.inventory)

@@ -33,7 +33,7 @@ def _cache_key(selection, info, start_seconds, duration_seconds):
 
 
 def _job_prefix(selection):
-    if isinstance(selection, dict) and selection.get('root') == 'job-input':
+    if isinstance(selection, dict) and selection.get('root') in {'job-input', 'job-output'}:
         job_id = str(selection.get('path', '')).split('/')[0]
         if re.fullmatch(r'[0-9a-f]{32}', job_id):
             return job_id + '-'
@@ -118,10 +118,10 @@ class _CachedPreviewUpload(ServerVideoUpload):
             raise HTTPException(409, 'The video preview changed. Reload the preview.')
 
 
-def open_server_video_proxy(selection, *, start_seconds=0, duration_seconds=30):
+def open_server_video_proxy(selection, *, start_seconds=0, duration_seconds=30, manager=None, owner=None):
     """Hold the cache inode before responding so eviction cannot break a seek."""
     return _open_cached_preview(lambda: get_server_video_preview(
-        selection, start_seconds=start_seconds, duration_seconds=duration_seconds))
+        selection, start_seconds=start_seconds, duration_seconds=duration_seconds, manager=manager, owner=owner))
 
 
 def open_owned_video_proxy(opener, identity, *, start_seconds=0, duration_seconds=None):
@@ -183,7 +183,7 @@ def _prune(directory, keep=None):
                 pass
 
 
-def get_server_video_preview(selection, *, start_seconds=0, duration_seconds=30):
+def get_server_video_preview(selection, *, start_seconds=0, duration_seconds=30, manager=None, owner=None):
     """Return a seekable H.264/AAC MP4 window; time zero is the requested start.
 
     Only a maximum of 30 seconds is encoded, on CPU. The validated source file
@@ -194,7 +194,7 @@ def get_server_video_preview(selection, *, start_seconds=0, duration_seconds=30)
             or type(duration_seconds) not in (int, float) or not math.isfinite(duration_seconds)
             or not .25 <= duration_seconds <= 30):
         raise HTTPException(400, 'Choose a preview start at zero or later and a length up to 30 seconds')
-    return _get_open_video_preview(open_server_video_preview(selection), selection,
+    return _get_open_video_preview(open_server_video_preview(selection, manager=manager, owner=owner), selection,
                                    start_seconds=start_seconds, duration_seconds=duration_seconds)
 
 

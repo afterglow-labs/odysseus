@@ -1,0 +1,58 @@
+[
+  {
+    "repo": "smhfacct/Minimax-H3-fl2va-ref2va-hybrid-models",
+    "revision": "a36feb17fbd1f20ff4bdd509ccd07e2b7b585a38",
+    "filename": "minimax_h3_hybrid_fl2va_ref2va_b25-49-int8.safetensors",
+    "sha256": "a629cfea8d89a071b140c6e1935dc9a23e72de6badc18975a2bb9e6d1423d76d",
+    "bytes": 20970379632
+  },
+  {
+    "repo": "lightx2v/Minimax-h3-Turbo",
+    "revision": "30f485ed874aa44c8183348ad361c5eabad318da",
+    "filename": "minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16.safetensors",
+    "sha256": "70103fd0d80a947ed4e7fe6f88915863d54ef22c5cab03bd5d2fd649385ffe1e",
+    "bytes": 1956193000
+  },
+  {
+    "repo": "t8star/minimax_h3_turbo_v4_step600_ema_DasiwaREF2VAHybridV1_0_curveproj1025_compat_v001",
+    "revision": "fad61152f4a42a02494114f4094ca82d68ca04f5",
+    "filename": "minimax_h3_turbo_v4_step600_ema_DasiwaREF2VAHybridV1_0_curveproj1025_compat_v001.safetensors",
+    "sha256": "a117f18682a22a0381cadd9832da0afe9912f604305b3e44310b5aa1919734cc",
+    "bytes": 794888704
+  },
+  {
+    "repo": "t8star/minimax_h3_turbo_4step_10ErosMax_test4_pruned_curveproj1025_T8",
+    "revision": "fcd42cc417a6490146331e851fa1ef7d62c12b72",
+    "filename": "minimax_h3_turbo_4step_10ErosMax_test4_pruned_curveproj1025_exp_v001-T8.safetensors",
+    "sha256": "6c2f38d45dfa3fc282a48de3171b6946a5e6d46e13f832c43b93734f6d12edf5",
+    "bytes": 794888696
+  },
+  {
+    "repo": "fal/MiniMax-H3-Realism-People-LoRA",
+    "revision": "039cc8579d7aa357a882d7f4111b25da4f72dccc",
+    "filename": "h3-realism-people-t2v-i2v-r2v.safetensors",
+    "sha256": "acc529601d2da117fb81179e76c56e488a3beab1171659d305f04fa3655b787e",
+    "bytes": 131229656
+  },
+  {
+    "repo": "Alissonerdx/Minimax-H3-ComfyUI",
+    "revision": "4bb14d4a611179d4cf633e74d3ae33e965ae2301",
+    "filename": "experiments/h3_upscaler_sharpness_2000steps_v0.1_fp32.safetensors",
+    "sha256": "7b70711ebf13051bac4b637247f2e6f0db5e1c6da88af3f28ad0165c6483c8c4",
+    "bytes": 1381153616
+  },
+  {
+    "repo": "Alissonerdx/Minimax-H3-ComfyUI",
+    "revision": "4bb14d4a611179d4cf633e74d3ae33e965ae2301",
+    "filename": "loras/minimax_h3_lms_v1.0_r64.safetensors",
+    "sha256": "16f3195bc6bffa431c0598dc2031e520ba058b4fcbc9f104db9e3fdfdeacf60c",
+    "bytes": 1239664536
+  },
+  {
+    "repo": "JOKER141/MiniMax-H3-Combat-Base-V2",
+    "revision": "7b3c5b7157d66517f5bd8f5d3fa8fd2c66bc4d11",
+    "filename": "H3_Combat_V2.safetensors",
+    "sha256": "5b3edb09e9d6029439badf9bc9db4ba4a355ae679b0810888de82c4793c0bac8",
+    "bytes": 155110280
+  }
+]

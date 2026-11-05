@@ -71,6 +71,34 @@ def test_bfs_combines_server_target_with_phone_identity(backend, server_media):
     assert job["source_name"] == "target.mov"
 
 
+@pytest.mark.parametrize('family,field', [('h3', 'reference_videos'), ('bfs', 'source_video')])
+def test_reuse_saved_original_creates_independent_job_without_media_upload(backend, server_media, family, field):
+    source, selection = server_media.put('original-full-video.mp4', b'whole original file, not a cut')
+    files = [('identity_image', ('head.png', image(), 'image/png'))] if family == 'bfs' else []
+    first = create(backend, family, {field: [selection]}, files=files)
+    original_dir, original = manifest(backend, first, family)
+    calls = len(backend.calls)
+    source.unlink()  # The saved job owns the original even after its drive copy is gone.
+    response = backend.client().get(f'/api/video/{family}/jobs/{original_dir.name}/input-videos/{field}/0/reuse?revision=0', headers={'x-user': 'corey'})
+    assert response.status_code == 200, response.text
+    draft = response.json()
+    assert len(backend.calls) == calls, 'Opening the draft must not launch anything'
+    assert h3._read(original_dir / 'manifest.json') == original
+    assert draft['family'] == family and draft['uploads'][field][0]['root'] == 'job-input'
+    if family == 'h3':
+        draft['config']['reference_video_ranges'] = [{'start_seconds': 40, 'duration_seconds': 15}]
+    selections = {key: [{**item, 'index': i} for i, item in enumerate(items)]
+                  for key, items in draft['uploads'].items()}
+    second = create(backend, family, selections, files=files, config=draft['config'])
+    new_dir, new = manifest(backend, second, family)
+    path = new[field][0] if family == 'h3' else new[field]
+    assert new_dir != original_dir and Path(path).parent == new_dir
+    assert Path(path).read_bytes() == b'whole original file, not a cut'
+    assert h3._read(original_dir / 'manifest.json') == original
+    if family == 'h3':
+        assert new['config']['reference_video_ranges'][0]['start_seconds'] == 40
+
+
 def test_accepted_retry_does_not_reopen_missing_server_source(backend, server_media):
     source, descriptor = server_media.put("source.mp4", b"saved original")
     key = uuid.uuid4().hex
@@ -81,6 +109,74 @@ def test_accepted_retry_does_not_reopen_missing_server_source(backend, server_me
     assert retry.status_code == 201 and retry.json()["id"] == first.json()["id"]
     assert Path(job["reference_videos"][0]).read_bytes() == b"saved original"
     assert len(backend.calls) == 1
+
+
+def completed_output(backend):
+    response = send(backend, 'h3')
+    directory, original = manifest(backend, response)
+    output = directory / 'completed.mp4'
+    output.write_bytes(b'entire completed video and audio')
+    original['output_path'] = str(output)
+    h3._write(directory / 'manifest.json', original)
+    state = h3._read(directory / 'state.json')
+    state['status'] = 'completed'
+    h3._write(directory / 'state.json', state)
+    backend.inventories['h3']['seed_hunter'] = {'features': {'continuation': True}, 'defaults': {'steps': 20}}
+    return directory, original, output
+
+
+def test_extend_output_opens_continuation_then_copies_full_video_only_on_submission(backend):
+    directory, original, output = completed_output(backend)
+    calls = len(backend.calls)
+    response = backend.client().get(f'/api/video/h3/jobs/{directory.name}/extend')
+    assert response.status_code == 200, response.text
+    draft = response.json()
+    assert len(backend.calls) == calls
+    assert h3._read(directory / 'manifest.json') == original
+    assert draft['config']['recipe'] == 'seed_hunter'
+    assert draft['config']['seed_hunter']['stage'] == 'continuation'
+    assert draft['config']['seed_hunter']['source_end_seconds'] is None
+    assert draft['config']['prompt'] == original['config']['prompt']
+    assert str(directory) not in json.dumps(draft)
+    selected = draft['uploads']['source_video'][0]
+    assert selected['root'] == 'job-output'
+    playback = backend.client().get('/api/video/h3/server-files/video', params=selected)
+    assert playback.status_code == 200 and playback.content == output.read_bytes()
+    queued = create(backend, 'h3', {'source_video': [{**selected, 'index': 0}]}, config=draft['config'])
+    new_dir, new = manifest(backend, queued)
+    output.unlink()
+    assert Path(new['source_video']).parent == new_dir
+    assert Path(new['source_video']).read_bytes() == b'entire completed video and audio'
+    assert 'reference_videos' not in new or not new['reference_videos']
+
+
+def test_extend_refinement_restores_generation_steps_without_changing_resolution(backend):
+    directory, original, _ = completed_output(backend)
+    metadata = directory / 'source-latent.json'
+    h3._write(metadata, {'config': {'steps': 8, 'sampler': 'euler', 'scheduler': 'simple'}})
+    original['seed_hunter_input'] = {'metadata': str(metadata)}
+    original['config'].update(recipe='seed_hunter', steps=2, width=1920, height=1088,
+                              seed_hunter={'stage': 'final', 'auto_refine': {'candidates': 'all'}})
+    h3._write(directory / 'manifest.json', original)
+    reply = backend.client().get(f'/api/video/h3/jobs/{directory.name}/extend')
+    assert reply.status_code == 200, reply.text
+    config = reply.json()['config']
+    assert config['steps'] == 8 and config['sampler'] == 'euler'
+    assert (config['width'], config['height']) == (1920, 1088)
+    assert 'auto_refine' not in config['seed_hunter']
+    assert h3._read(directory / 'manifest.json') == original
+
+
+def test_extend_saved_output_is_owned_revision_checked_and_rejects_symlinks(backend):
+    directory, original, output = completed_output(backend)
+    url = f'/api/video/h3/jobs/{directory.name}/extend'
+    assert backend.client().get(url, headers={'x-user': 'other'}).status_code == 404
+    selected = backend.client().get(url).json()['uploads']['source_video'][0]
+    assert backend.client().get('/api/video/h3/server-files/video', params=selected, headers={'x-user': 'other'}).status_code == 404
+    original['revision'] = 1; h3._write(directory / 'manifest.json', original)
+    assert backend.client().get('/api/video/h3/server-files/video', params=selected).status_code == 409
+    output.unlink(); output.symlink_to(directory / 'state.json')
+    assert backend.client().get(url).status_code == 404
 
 
 def test_batch_auto_length_uses_each_server_video(backend, server_media, monkeypatch):

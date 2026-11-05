@@ -23,6 +23,22 @@ PROFILE_LIMIT = 65536
 def built_in_lora_profile(name):
     """Editable defaults for known adapters; a saved profile always wins."""
     name = Path(str(name)).name.casefold()
+    documented = {
+        'h3-realism-people-t2v-i2v-r2v.safetensors': ('shared', 'r34l1sm', 'prefix', 1.0),
+        'anime2realsim__h3.safetensors': ('ref2va', 'LumiReal', 'prefix', None),
+        'rough2dcartoon1200.safetensors': ('shared', 'rough 2D cartoon illustration', 'prefix', None),
+    }
+    if name in documented:
+        from scripts.h3_lora_help import lora_documentation
+        help = lora_documentation(name)
+        variant, trigger, position, strength = documented[name]
+        return validate_lora_profile({
+            'display_name': help['title'], 'variant': variant, 'trigger_words': trigger,
+            'trigger_position': position, 'prompt_example': help.get('prompt_example', ''),
+            'notes': ' '.join(help.get('settings', [])),
+            **({'strength_control': {'kind': 'custom', 'label': 'Strength', 'min': -5, 'max': 5,
+                                     'step': .05, 'default': strength}} if strength is not None else {}),
+        })
     turbo_steps = {
         "minimax_h3_ref2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors": 4,
         "minimax_h3_ref2v_turbo_8step_v1.1_768p_comfyui_bf16.safetensors": 8,

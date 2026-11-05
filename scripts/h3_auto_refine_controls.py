@@ -6,7 +6,7 @@ DEFAULTS = {"candidates": [], "project": "", "existing": "skip", "refinement": {
 REFINEMENT_FIELDS = {"prompt", "width", "height", "frames", "steps", "sampler", "scheduler",
                      "gpu", "vae_gpu", "loras", "lora", "lora_scale", "latent_upscaler",
                      "denoise", "seed_hunter", "shift_video", "shift_audio"}
-REFINEMENT_OPTIONS = {"denoise", "output_fps", "final_frames", "upscaler_chunking", "upscaler_force_unload", "shift_enabled",
+REFINEMENT_OPTIONS = {"denoise", "output_fps", "final_frames", "full_length_steps", "upscaler_chunking", "upscaler_force_unload", "shift_enabled",
                      "preset", "sampling_schedule", "refinement_method",
                      "attention_backend", "sparse_method", "sparse_keep_percent", "sparse_start", "sparse_end",
                      "sparse_min_tokens", "sparse_extra_tokens", "sparse_sink_conditioning", "ff_chunk_size",
@@ -61,6 +61,9 @@ def validate(value, options):
         raise ValueError("Refinement denoise must be from 0 to 1")
     if not isinstance(patch.get('seed_hunter', {}), dict) or patch.get('seed_hunter', {}).keys() - REFINEMENT_OPTIONS:
         raise ValueError("Unsupported shared refinement option")
+    generation_steps = patch.get('seed_hunter', {}).get('full_length_steps')
+    if generation_steps is not None and (type(generation_steps) is not int or not 1 <= generation_steps <= 100):
+        raise ValueError("Full-length generation steps must be from 1 to 100")
     for key in ("gpu", "vae_gpu", "latent_upscaler", "lora", "prompt"):
         if key in patch and (not isinstance(patch[key], str) or len(patch[key]) > (16000 if key == 'prompt' else 1024)):
             raise ValueError(f"Invalid refinement {key}")

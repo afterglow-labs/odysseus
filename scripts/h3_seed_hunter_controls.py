@@ -52,7 +52,7 @@ def validate_scout_output(config):
 
 
 def validate_options(raw):
-    if not isinstance(raw, dict) or raw.keys() - (DEFAULTS.keys() | SCOUT_UPSCALE_DEFAULTS.keys() | {"auto_refine"}):
+    if not isinstance(raw, dict) or raw.keys() - (DEFAULTS.keys() | SCOUT_UPSCALE_DEFAULTS.keys() | {"auto_refine", "full_length_steps"}):
         raise ValueError("Unknown Seed Hunter setting")
     # Keep legacy defaults unchanged for clients that validate their known
     # options strictly. Only opted-in submissions receive the new settings.
@@ -95,9 +95,11 @@ def validate_options(raw):
     if "scout_upscale" in result:
         ranges.update(scout_final_width=(32, 4096, True), scout_final_height=(32, 4096, True),
                       scout_refine_steps=(1, 100, True))
+    if "full_length_steps" in result:
+        ranges["full_length_steps"] = (1, 100, True)
     for key, (low, high, integer) in ranges.items():
         value = result[key]
-        if value is None and key in {"source_end_seconds", "audio_end_seconds", "final_frames", "scout_final_width", "scout_final_height"}:
+        if value is None and key in {"source_end_seconds", "audio_end_seconds", "final_frames", "scout_final_width", "scout_final_height", "full_length_steps"}:
             continue
         if (isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high
                 or not math.isfinite(value) or integer and type(value) is not int):

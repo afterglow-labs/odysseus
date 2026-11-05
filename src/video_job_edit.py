@@ -243,6 +243,8 @@ def commit_edit(manager, job_id, owner, family, raw, expected, retain, saved, na
             guard_edit(manifest["config"], config)
             from src.h3_director import guard_edit as guard_director
             guard_director(manifest["config"], config)
+            from src.h3md import guard_edit as guard_h3md
+            guard_h3md(manifest["config"], config)
             guard_saved_refinement(directory, manifest, config)
             saved_refinement = (manifest["config"].get("seed_hunter", {}).get("stage") == "final"
                                 or manifest["config"].get("director", {}).get("stage") == "refine")

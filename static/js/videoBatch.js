@@ -209,7 +209,8 @@ export function videoBatchLengthLabel(job) {
     : `${timing.duration_seconds.toFixed(2)}s source → ${timing.selected_seconds.toFixed(2)}s · ${timing.frames} frames`;
 }
 
-export function createVideoBatchQueue({ family, container, getSnapshot, onJob, onChange = () => {}, sessionKey = family, recipe = null }) {
+export function createVideoBatchQueue({ family, container, getSnapshot, onJob, onChange = () => {}, sessionKey = family, recipe = null, isolated = false }) {
+  if (isolated) sessionKey = Symbol("original-video-draft");
   const retained = sessions.get(sessionKey);
   const panel = node('section', 'video-batch-panel');
   const label = node('label', 'video-batch-toggle'), toggle = node('input'); toggle.type = 'checkbox'; toggle.dataset.batchToggle = '';
@@ -427,6 +428,7 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
     get active() { return available && toggle.checked; }, get busy() { return queue.running; },
     get autoVideoLength() { return recipe!=='director' && family === 'h3' && (videoField === 'reference_videos' && autoLength.checked || videoField === 'source_video' && recipe!=='seed_hunter'); },
     destroy() {
+      if (isolated) sessions.delete(sessionKey);
       picker?.close();
       rows.forEach(row => row._range?.destroy());
       destroyed = true; queue.dispose(); queue.onChange = () => {}; queue.onJob = () => {};

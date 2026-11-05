@@ -29,6 +29,7 @@ UPLOAD_EXTENSIONS = VIDEO_EXTENSIONS | IMAGE_EXTENSIONS | AUDIO_EXTENSIONS | {'.
 SELECTION_LIMIT = 65536
 MAX_FILES = 17
 MAX_DIRECTORY_ENTRIES = 100000
+DEFAULT_BROWSE_DRIVES = ('e', 'f', 'c')
 ROOT_ID = re.compile(r'[a-zA-Z0-9_-]{1,64}\Z')
 STAMP = re.compile(r'0|[1-9][0-9]{0,19}\Z')
 
@@ -46,11 +47,11 @@ def media_roots():
     if not raw:
         return [MediaRoot(drive, f'{drive.upper()}:',
                           Path(f'{drive.upper()}:\\') if os.name == 'nt' else Path('/mnt') / drive)
-                for drive in ('e', 'f')]
+                for drive in DEFAULT_BROWSE_DRIVES]
     try:
         data = json.loads(raw)
         if isinstance(data, dict):
-            data = [{'id': key, 'name': f'{key.upper()}:' if key in {'e', 'f'} else key, 'path': value}
+            data = [{'id': key, 'name': f'{key.upper()}:' if key in DEFAULT_BROWSE_DRIVES else key, 'path': value}
                     for key, value in data.items()]
         if not isinstance(data, list) or not 1 <= len(data) <= 32:
             raise ValueError()
@@ -317,11 +318,22 @@ def _open_selection(value, roots, extensions=VIDEO_EXTENSIONS):
             file.close()
 
 
-def open_server_video_preview(selection):
+def _open_media_selection(selection, roots, extensions, *, manager=None, owner=None):
+    if selection.get('root') == 'job-output':
+        from src.video_job_reuse import open_reused_output
+        return open_reused_output(selection, manager=manager, owner=owner, extensions=extensions)
+    if selection.get('root') == 'job-input':
+        from src.video_job_reuse import open_reused_input
+        return open_reused_input(selection, manager=manager, owner=owner, extensions=extensions)
+    return _open_selection(selection, roots, extensions)
+
+
+def open_server_video_preview(selection, *, manager=None, owner=None):
     """Open the same allowlisted, unchanged video accepted by job submission."""
     if not isinstance(selection, dict) or set(selection) != {'root', 'path', 'size', 'mtime_ns'}:
         raise HTTPException(400, 'Invalid server video selection')
-    return _open_selection({**selection, 'index': 0}, media_roots())
+    return _open_media_selection({**selection, 'index': 0}, media_roots(), VIDEO_EXTENSIONS,
+                                 manager=manager, owner=owner)
 
 
 def _unique_object(pairs):
@@ -366,7 +378,7 @@ def _parse_inputs(form, uploads, extensions):
     return values
 
 
-def _acquire_inputs(selections, uploads, extensions):
+def _acquire_inputs(selections, uploads, extensions, *, manager=None, owner=None):
     opened = []
     try:
         roots = media_roots()
@@ -374,7 +386,7 @@ def _acquire_inputs(selections, uploads, extensions):
         for field, values in selections.items():
             items = combined.setdefault(field, [])
             for selection in sorted(values, key=lambda item: item['index']):
-                upload = _open_selection(selection, roots, extensions[field])
+                upload = _open_media_selection(selection, roots, extensions[field], manager=manager, owner=owner)
                 opened.append(upload)
                 items.insert(selection['index'], upload)
         return combined, opened
@@ -385,7 +397,7 @@ def _acquire_inputs(selections, uploads, extensions):
 
 
 @asynccontextmanager
-async def server_video_inputs(form, uploads, extensions):
+async def server_video_inputs(form, uploads, extensions, *, manager=None, owner=None):
     """Merge positional server selections into multipart inputs and own handles.
 
     Call only after authentication and accepted-submission lookup, and keep this
@@ -398,7 +410,8 @@ async def server_video_inputs(form, uploads, extensions):
         return
     acquired, handles = None, []
     try:
-        acquired = asyncio.create_task(asyncio.to_thread(_acquire_inputs, selections, uploads, extensions))
+        acquired = asyncio.create_task(asyncio.to_thread(_acquire_inputs, selections, uploads, extensions,
+                                                        manager=manager, owner=owner))
         try:
             combined, handles = await asyncio.shield(acquired)
         except asyncio.CancelledError:

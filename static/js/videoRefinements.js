@@ -1,6 +1,7 @@
 import { createVideoJobMedia, releaseVideoJobMedia } from './videoJobMedia.js';
 import { videoActionMessage } from './videoJobActions.js';
 import { BASE_RERUN_LABEL, BASE_RERUN_HELP } from './videoJobRerun.js';
+import { createExtendVideoButton } from './videoJobReuse.js';
 
 const make = (tag, text = '', cls = '') => {
   const node = document.createElement(tag); node.textContent = text; node.className = cls; return node;
@@ -80,7 +81,7 @@ export function createVideoRefinements({ stop, edit, rerun, retry, reprocessBase
       if (job.status === 'completed' && job.url && !row.output.childElementCount) {
         const player = createVideoJobMedia(job.url, { label: 'Play refined video' });
         const download = make('a', 'Download refinement', 'memory-toolbar-btn'); download.href = job.url; download.download = `h3-refinement-${job.id}.mp4`;
-        row.output.append(player.node, download);
+        row.output.append(player.node, download, createExtendVideoButton(job.id));
       }
     }
   }

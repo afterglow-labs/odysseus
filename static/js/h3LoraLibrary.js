@@ -56,7 +56,12 @@ export function showH3LoraLibrary({ components = [], selectedId = '', onChange =
   const source = field(form, 'source', 'LoRA file', { value: 'installed', options: [['installed', 'Installed LoRA'], ['upload', 'Upload a file'], ['hf', 'Download from Hugging Face']] });
   const installed = make('div', 'h3-lora-library-source'); form.append(installed);
   const componentSelect = field(installed, 'component', 'Installed LoRA', { options: [] });
-  const refresh = action('Refresh installed files'); installed.append(refresh);
+  const refresh = action('Refresh installed files'), help = action('About this LoRA'); installed.append(refresh, help);
+  help.onclick = async () => {
+    const component = library.find(row => row.id === componentSelect.value);
+    const { showLoraHelp } = await import('./h3LoraPromptExample.js');
+    if (help.isConnected) showLoraHelp(component, help);
+  };
   const componentPath = make('p', 'h3-video-muted h3-video-component-path'); installed.append(componentPath);
   const upload = make('div', 'h3-lora-library-source'); form.append(upload);
   const file = field(upload, 'file', 'LoRA file to upload', { type: 'file', help: 'Safetensors only, up to 8 GiB. The file is saved in the server’s managed model folder.' }); file.accept = '.safetensors';
@@ -145,6 +150,7 @@ export function showH3LoraLibrary({ components = [], selectedId = '', onChange =
     installed.hidden = source.value !== 'installed'; upload.hidden = source.value !== 'upload'; hf.hidden = source.value !== 'hf';
     submit.textContent = busy ? 'Saving…' : source.value === 'hf' ? 'Download and save profile' : source.value === 'upload' ? 'Upload and save profile' : 'Save profile';
     componentPath.textContent = library.find(row => row.id === componentSelect.value)?.path || '';
+    help.disabled = !library.some(row => row.id === componentSelect.value);
     submit.disabled = busy || loading || source.value === 'installed' && !componentSelect.value;
     for (const input of form.querySelectorAll('input,select,textarea')) input.disabled = busy || loading && initial;
     strengthSettings.hidden = !customSlider.checked;

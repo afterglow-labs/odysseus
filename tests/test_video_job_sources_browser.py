@@ -26,22 +26,23 @@ def test_original_video_players_are_lazy_stable_and_job_scoped(tmp_path, workflo
     image = base64.b64decode('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7')
     stage = 'scout' if workflow == 'scout' else 'preview'
     inputs = [{'id': f'{field}:{index}', 'field': field, 'index': index, 'name': name,
-               'url': f'/api/video/h3/jobs/job-1/input-videos/{field}/{index}/preview?revision=1',
+               'url': f'/api/video/h3/jobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/input-videos/{field}/{index}/preview?revision=1',
+               'reuse_url': f'/api/video/h3/jobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/input-videos/{field}/{index}/reuse?revision=1',
                'playback': 'selected_section' if section else 'original', 'start_seconds': 1 if section else 0,
                'duration_seconds': 2 if section else None, 'revision': 1}
               for field, index, name, section in [('source_video', 0, 'original-guide.mp4', False),
                  ('reference_videos', 0, 'first-reference-with-a-long-original-filename.mkv', False),
                  ('reference_videos', 1, 'second-reference.mov', True)]]
-    main = {'id': 'job-1', 'status': 'completed', 'recipe': 'seed_hunter', 'prompt': 'Neutral fixture prompt.',
+    main = {'id': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'status': 'completed', 'recipe': 'seed_hunter', 'prompt': 'Neutral fixture prompt.',
             'seed_hunter': {'stage': stage}, 'input_videos': inputs}
     if workflow == 'hunter':
         main['seed_hunter']['candidates'] = [{'index': n, 'seed': n * 1000, 'can_refine': True} for n in (1, 2, 3)]
     else:
         main['scout'] = {'status': 'completed', 'scout_step': 3, 'total_steps': 20, 'seeds': [1, 2, 3],
-                        'previews': [{'seed': n, 'url': f'/api/video/h3/jobs/job-1/scout/previews/{n}'} for n in (1, 2, 3)]}
+                        'previews': [{'seed': n, 'url': f'/api/video/h3/jobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/scout/previews/{n}'} for n in (1, 2, 3)]}
     components = [{'id': role, 'role': role, 'name': role + '.safetensors', 'variant': 'ref2va'}
                   for role in ('model', 'encoder', 'video_vae', 'audio_vae', 'latent_upscaler')]
-    inventory = {'runtime_ready': True, 'components': components, 'gpus': [{'id': 'GPU-5090', 'name': 'RTX 5090'}],
+    inventory = {'reference_video_ranges': True, 'server_video_files': True, 'runtime_ready': True, 'components': components, 'gpus': [{'id': 'GPU-5090', 'name': 'RTX 5090'}],
                  'seed_hunter': {'features': {'seed_scout': True}, 'defaults': {}}}
     media_requests, writes, errors = [], [], []
 
@@ -74,6 +75,15 @@ def test_original_video_players_are_lazy_stable_and_job_scoped(tmp_path, workflo
                             {'id': 'legacy-job', 'status': 'queued', 'seed_hunter': {'stage': stage}}] if number == 1 else [
                                 {'id': 'other-page', 'status': 'queued', 'seed_hunter': {'stage': stage}}]
                     await handler.fulfill(json={'jobs': jobs, 'pagination': {'page': number, 'total': 11, 'total_pages': 2, 'before': 12345}, 'counts': {'completed': 1}, 'queue': {'paused': False}})
+                elif path.endswith('/reuse'):
+                    await handler.fulfill(json={'family': 'h3', 'config': {'recipe': 'seed_hunter', 'mode': 'ref2va',
+                        'model': 'model', 'encoder': 'encoder', 'video_vae': 'video_vae', 'audio_vae': 'audio_vae',
+                        'gpu': 'GPU-5090', 'prompt': 'Neutral fixture prompt.', 'width': 864, 'height': 480,
+                        'frames': 107, 'steps': 20, 'seed': 42, 'seed_hunter': {'stage': stage, 'preview_count': 3}},
+                        'uploads': {'reference_videos': [{'root': 'job-input', 'path': 'saved/1/reference_videos/1/second-reference.mov', 'size': 1234, 'mtime_ns': '12345'}]},
+                        'notice': 'Full original video attached. Choose a section and review the settings before submitting.'})
+                elif path.endswith('/server-files/metadata'):
+                    await handler.fulfill(json={'duration_seconds': 60, 'video_codec': 'h264', 'audio_codec': 'aac'})
                 elif '/input-videos/' in path or path.endswith('/video'):
                     media_requests.append(url.path + ('?' + url.query if url.query else ''))
                     await handler.fulfill(body=video_bytes, content_type='video/mp4')
@@ -90,7 +100,7 @@ def test_original_video_players_are_lazy_stable_and_job_scoped(tmp_path, workflo
                 await panel.get_by_text(('H3 Seed Scout' if workflow == 'scout' else 'H3 Seed Hunter') + ' is ready.', exact=True).wait_for()
                 if layout == 'pipeline':
                     await panel.locator('[data-pipeline-stage=review]').click()
-                card = panel.locator('[data-job-id="job-1"]')
+                card = panel.locator('[data-job-id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]')
                 originals = card.locator('.h3-video-originals')
                 await originals.wait_for()
                 assert await originals.locator('.h3-video-original-name').all_text_contents() == [item['name'] for item in inputs]
@@ -127,6 +137,23 @@ def test_original_video_players_are_lazy_stable_and_job_scoped(tmp_path, workflo
                 await originals.locator('.h3-video-original').first.scroll_into_view_if_needed()
                 assert await originals.evaluate('(n)=>n.getBoundingClientRect().right<=innerWidth&&n.scrollWidth<=n.clientWidth+2')
                 await page.screenshot(path=str(tmp_path / 'original-video-mobile.png'))
+                # Reuse the full source in an isolated draft of the same workflow.
+                await originals.locator('.h3-video-original').nth(2).get_by_role('button', name='Use original video in new job').click()
+                draft = page.get_by_role('dialog', name='H3 Seed Scout' if workflow == 'scout' else 'H3 Seed Hunter', exact=True).last
+                await pw.expect(draft).to_contain_text('Full original video attached.')
+                start = draft.get_by_role('textbox', name='Start at (seconds or time) for second-reference.mov', exact=True)
+                await pw.expect(start).to_have_value('0')
+                await start.fill('40'); await start.blur()
+                await pw.expect(start).to_have_value('40')
+                assert not await draft.locator('[data-batch-toggle]').is_checked()
+                assert await page.get_by_role('dialog', name='H3 Seed Scout' if workflow == 'scout' else 'H3 Seed Hunter', exact=True).count() == 2
+                await start.scroll_into_view_if_needed()
+                await page.screenshot(path=str(tmp_path / 'reuse-original-mobile.png'))
+                await page.set_viewport_size({'width': 1440, 'height': 1000})
+                await start.scroll_into_view_if_needed()
+                await page.screenshot(path=str(tmp_path / 'reuse-original-desktop.png'))
+                await draft.get_by_role('button', name='Close', exact=True).click()
+                assert not writes, 'Opening a fresh draft must not queue a job or upload the original'
                 # A real attachment revision releases only the changed original.
                 inputs[0]['revision'] = 2
                 inputs[0]['url'] = inputs[0]['url'].replace('revision=1', 'revision=2')

@@ -154,9 +154,9 @@ def get_open_video_metadata(upload, selection):
     return data
 
 
-def get_server_video_metadata(selection):
+def get_server_video_metadata(selection, *, manager=None, owner=None):
     """Synchronous API helper; route must authenticate before running in a thread."""
-    upload = open_server_video_preview(selection)
+    upload = open_server_video_preview(selection, manager=manager, owner=owner)
     try:
         return get_open_video_metadata(upload, selection)
     finally:

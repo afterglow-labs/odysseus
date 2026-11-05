@@ -124,7 +124,7 @@ def config_prompts(config, *, family=None, draft=False):
     elif config.get("recipe") == "comfy_graph" or isinstance(config.get("prompt"), dict):
         candidates, workflow = _positive_graph_prompts(config.get("prompt")), "workflow_graph"
     else:
-        workflow = "director" if config.get("recipe") == "director" else "h3"
+        workflow = config["recipe"] if config.get("recipe") in {"director", "h3md", "pinkcherry"} else "h3"
         if config.get("recipe") == "seed_hunter":
             options = config.get("seed_hunter", {})
             workflow = "seed_scout" if isinstance(options, dict) and options.get("stage") == "scout" else "seed_hunter"

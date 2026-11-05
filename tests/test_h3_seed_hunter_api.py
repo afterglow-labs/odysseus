@@ -437,3 +437,17 @@ def test_final_explicit_legacy_lora_selection_is_not_shadowed_by_previous_stack(
     assert response.status_code == 201, response.text
     saved = h3._read(manager.directory(response.json()['id']) / 'manifest.json')['config']
     assert saved['loras'] == [{'path': str(adapter), 'strength': .7}]
+
+
+@pytest.mark.parametrize('generation_steps', [None, 3, 8])
+def test_full_length_generation_steps_do_not_replace_refinement_steps(hunter, generation_steps):
+    hunter.configs['h3']['steps'] = 8
+    hunter.configs['h3']['seed_hunter']['final_frames'] = 311
+    job, source = preview(hunter)
+    body = final_body(hunter, seed_hunter={'full_length_steps': generation_steps})
+    response = hunter.client().post(f"/api/video/h3/jobs/{job['id']}/seed-hunter/finalize", json=body)
+    assert response.status_code == 201, response.text
+    config = h3._read(hunter.managers['h3'].directory(response.json()['id']) / 'manifest.json')['config']
+    assert config['steps'] == 2
+    assert config['seed_hunter']['full_length_steps'] == generation_steps
+    assert h3._read(source / 'manifest.json')['config']['steps'] == 8

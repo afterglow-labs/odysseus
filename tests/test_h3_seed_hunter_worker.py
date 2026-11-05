@@ -36,6 +36,23 @@ def test_patch_model_preserves_explicit_chunks_and_translates_sparse_sink(monkey
     assert calls[0]["sink_conditioning"] == expected
 
 
+@pytest.mark.parametrize('groups', [0, 3])
+def test_dense_manual_attention_never_replaces_adaptive_guard(monkeypatch, groups):
+    backend = ModuleType('comfy_extras.nodes_model_advanced')
+    backend.ModelAttentionBackend = SimpleNamespace(execute=lambda value, *_: (value,))
+    monkeypatch.setitem(sys.modules, 'comfy_extras.nodes_model_advanced', backend)
+    monkeypatch.setattr(hunter, '_load_module', lambda *_: pytest.fail('Fixed-count override must not replace the guard'))
+    original = SimpleNamespace(model_options={})
+    cloned = SimpleNamespace(model_options={})
+    original.clone = lambda: cloned
+    result = hunter.patch_model(None, {'seed_hunter': validate_options({'low_vram_chunks': groups})}, original, '/tmp/ComfyUI')
+    assert original.model_options == {}
+    if groups:
+        assert result.model_options['transformer_options']['minimax_head_chunks'] == 3
+    else:
+        assert result is original
+
+
 @pytest.fixture
 def manifest(tmp_path):
     config = dict(recipe="seed_hunter", mode="ref2va", prompt="A ball bounces.",
@@ -238,8 +255,9 @@ def test_edited_final_prompt_uses_original_context_and_latent_without_reencoding
 @pytest.mark.parametrize('changed_lora', [False, True])
 @pytest.mark.parametrize('change', ['length', 'model', 'model_and_length'])
 @pytest.mark.parametrize('preview_steps', [6, 20])
+@pytest.mark.parametrize('generation_steps', [None, 3])
 def test_final_regenerates_only_selected_seed_at_original_settings_before_refinement(
-        manifest, monkeypatch, tmp_path, changed_lora, changed_prompt, change, preview_steps):
+        manifest, monkeypatch, tmp_path, changed_lora, changed_prompt, change, preview_steps, generation_steps):
     from copy import deepcopy
     original, _ = worker.validate_job(manifest)
     original['loras'] = []
@@ -251,7 +269,7 @@ def test_final_regenerates_only_selected_seed_at_original_settings_before_refine
     manifest['seed_hunter_input'] = {'latent': str(candidate), 'metadata': str(candidate.with_suffix('.json'))}
     frames = 73 if change == 'model' else 311
     manifest['config'].update(width=960, height=1728, frames=frames, seed=123, steps=2,
-                             scheduler='linear_quadratic', loras=[], seed_hunter={'stage': 'final'})
+                             scheduler='linear_quadratic', loras=[], seed_hunter={'stage': 'final', 'full_length_steps': generation_steps})
     if change != 'length':
         replacement = tmp_path / 'replacement_ref2va.safetensors'
         replacement.touch()
@@ -299,7 +317,7 @@ def test_final_regenerates_only_selected_seed_at_original_settings_before_refine
         assert config['model'] == selected_model
         if len(sampled) == 1:
             assert config['seed'] == 1042  # Actual selected branch, not base 42 or edited 123.
-            assert config['steps'] == preview_steps and config['scheduler'] == 'beta' and config['sampler'] == 'er_sde'
+            assert config['steps'] == (generation_steps or preview_steps) and config['scheduler'] == 'beta' and config['sampler'] == 'er_sde'
             assert config['width'] == 480 and config['frames'] == frames and config['loras'] == []
             assert config['seed_hunter']['preview_count'] == 1 and config['seed_hunter']['stage'] == 'preview'
             assert positive[0][0].item() == 5
@@ -330,7 +348,7 @@ def test_final_regenerates_only_selected_seed_at_original_settings_before_refine
         assert calls.index('unload_all') < calls.index('load', calls.index('load') + 1)
         assert loaded[1]['loras'][0]['strength'] == .75
     assert statuses[0]['phase'] == 'regenerating_full_length_candidate'
-    assert statuses[0]['total_steps'] == preview_steps and statuses[0]['source_seed'] == 1042
+    assert statuses[0]['total_steps'] == (generation_steps or preview_steps) and statuses[0]['source_seed'] == 1042
     assert statuses[1]['total_steps'] == 2 and statuses[1]['step'] == 2
     result = json.loads(Path(manifest['status_path']).read_text())
     assert result['frames'] == frames and result['model_changed'] == (change != 'length')

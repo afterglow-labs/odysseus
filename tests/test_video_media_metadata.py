@@ -49,7 +49,7 @@ def test_metadata_cache_tracks_current_handle_and_ignores_stale_listing(source, 
 def test_open_handle_remains_original_during_path_replacement(source, monkeypatch):
     original = metadata.open_server_video_preview
     path, selection = source
-    def replace(value):
+    def replace(value, **kwargs):
         upload = original(value)
         path.parent.rename(path.parent.with_name(path.parent.name + '-moved'))
         path.parent.mkdir()
@@ -89,7 +89,7 @@ def test_invalid_metadata_is_clear_and_never_leaks_diagnostics(source, monkeypat
 def test_global_probe_limit_returns_retryable_error_without_leaking_handle(source, monkeypatch):
     opened = []
     original = metadata.open_server_video_preview
-    def record(selection):
+    def record(selection, **kwargs):
         upload = original(selection)
         opened.append(upload)
         return upload

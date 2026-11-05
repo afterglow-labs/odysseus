@@ -195,6 +195,13 @@ def validate_job(manifest):
     config = dict(manifest["config"])
     hunter = config.get("recipe") == "seed_hunter"
     director = config.get("recipe") == "director"
+    h3md = config.get("recipe") == "h3md"
+    if h3md:
+        try:
+            from scripts import h3md_controls as md
+        except ModuleNotFoundError:
+            import h3md_controls as md
+        config["h3md"] = md.validate_options(config.get("h3md", {}))
     if director:
         try:
             from scripts import h3_director_controls as dc
@@ -212,7 +219,7 @@ def validate_job(manifest):
     if config.get("mode", "t2va") not in {"t2va", "fl2va", "ref2va"}:
         raise ValueError("Unknown MiniMax H3 mode")
     config.setdefault("mode", "t2va")
-    if not isinstance(config.get("prompt"), str) or not director and not config["prompt"].strip():
+    if not isinstance(config.get("prompt"), str) or not (director or h3md) and not config["prompt"].strip():
         raise ValueError("A prompt is required")
     if len(config["prompt"]) > 16000:
         raise ValueError("Prompt is too long")
@@ -227,7 +234,7 @@ def validate_job(manifest):
     config["gpu"] = devices[0]
     config["vae_gpu"] = devices[1] if len(devices) > 1 else ""
     min_edge, max_edge = (bounds["min_edge"], bounds["max_edge"]) if hunter else (32, 2048)
-    if director:
+    if director or h3md:
         min_edge, max_edge = 256, 4096
     for name, default, low, high in (("width", 960, min_edge, max_edge), ("height", 544, min_edge, max_edge),
                                    ("frames", 124, bounds["min_frames"] if hunter else 5, 362), ("steps", 20, 1, 100)):
@@ -236,7 +243,7 @@ def validate_job(manifest):
         if config[name] % 32:
             raise ValueError(f"{name} must be a multiple of 32")
     max_pixels = bounds["max_pixels"] if hunter else 768 * 1344
-    if director:
+    if director or h3md:
         max_pixels = 4_000_000
     if config["width"] * config["height"] > max_pixels:
         raise ValueError(f"MiniMax H3 canvas must not exceed {max_pixels:,} pixels")
@@ -289,10 +296,10 @@ def validate_job(manifest):
             from h3_reference_video import validate_ranges
         config["reference_video_ranges"] = validate_ranges(config["reference_video_ranges"], len(media["reference_videos"]))
     total = sum(len(media[name]) for name in ("reference_images", "reference_videos", "reference_audio"))
-    if total > (15 if director else 12):
-        raise ValueError(f"At most {15 if director else 12} references are supported")
+    if total > (15 if director or h3md else 12):
+        raise ValueError(f"At most {15 if director or h3md else 12} references are supported")
     if config["mode"] == "ref2va":
-        if not (hunter or director) and not vfx_edit and not media["reference_images"] and not media["reference_videos"]:
+        if not (hunter or director or h3md) and not vfx_edit and not media["reference_images"] and not media["reference_videos"]:
             raise ValueError("Reference mode needs at least one reference image or video; audio alone is unsupported")
         if not hunter and (media["first_frame"] or media["last_frame"]):
             raise ValueError("First/last frames belong to first/last-frame mode")
@@ -308,6 +315,13 @@ def validate_job(manifest):
         except ModuleNotFoundError:
             from h3_seed_hunter import validate_inputs
         validate_inputs(manifest, config, media, uploads)
+    if h3md:
+        md.validate(config, {key: len(value) if isinstance(value, list) else int(bool(value)) for key, value in media.items()})
+        path = Path(config.get("latent_upscaler", ""))
+        if not path.is_absolute() or not path.is_file() or path.suffix != ".safetensors":
+            raise ValueError("H3MD needs an installed latent upscaler")
+        if config["h3md"]["rerun_segments"] and not (Path(manifest["output_path"]).parent / "h3md-cache").is_dir():
+            raise ValueError("Redo segments from an existing H3MD run using Edit & rerun")
     if director:
         dc.validate_inputs(config, {key: len(value) if isinstance(value, list) else int(bool(value)) for key, value in media.items()})
         if config["director"]["stage"] == "refine":
@@ -536,7 +550,7 @@ def prepare_vfx_media(media, config):
             "source_audio": soundtrack, "output_frames": output_frames}
 
 
-def mux_mp4(output_path, frames, audio, fps=FPS):
+def mux_mp4(output_path, frames, audio, fps=FPS, *, crf=18):
     """Encode RGB frames and their selected audio into one atomic H.264/AAC MP4."""
     import av
     import numpy as np
@@ -571,7 +585,7 @@ def mux_mp4(output_path, frames, audio, fps=FPS):
             video = container.add_stream("libx264", rate=fps)
             video.width, video.height = int(frames[0].shape[1]), int(frames[0].shape[0])
             video.pix_fmt = "yuv420p"
-            video.options = {"crf": "18", "preset": "medium"}
+            video.options = {"crf": str(crf), "preset": "medium"}
             sound = container.add_stream("aac", rate=sample_rate)
             sound.layout = "stereo"
             sound.bit_rate = 192000
@@ -693,10 +707,11 @@ def configure_bounded_lora(bypass_hook_type, lora_type, *, max_residual_bytes=12
                  max_residual_bytes // 1024**2)
 
 
-def configure_bounded_int8_feedforward(mlp_type, *, max_intermediate_bytes=1024**3):
-    """Bound H3 INT8 MLP activation temporaries without changing quantization.
+def configure_bounded_feedforward(mlp_type, *, max_intermediate_bytes=1024**3):
+    """Bound row-independent H3 MLP temporaries, including unquantized layers.
 
-    Both INT8 projections quantize activations per row, including ConvRot.
+    Mixed INT8 checkpoints can keep some projections in BF16. These plain
+    projections and INT8 projections (including ConvRot) are independent per row.
     NVFP4 and other layouts can use a scale across rows and must retain their
     original full forward. Explicit Seed Hunter chunk controls take precedence.
     The final output still occupies its full size; only temporary tensors are
@@ -704,30 +719,41 @@ def configure_bounded_int8_feedforward(mlp_type, *, max_intermediate_bytes=1024*
     """
     import torch
     if max_intermediate_bytes <= 0:
-        raise ValueError("INT8 feedforward temporary memory limit must be positive")
-    original = getattr(mlp_type, "_odysseus_original_int8_forward", mlp_type.forward)
-    mlp_type._odysseus_original_int8_forward = original
+        raise ValueError("Feedforward temporary memory limit must be positive")
+    original = getattr(mlp_type, "_odysseus_original_feedforward", mlp_type.forward)
+    mlp_type._odysseus_original_feedforward = original
     reported_shapes = set()
+
+    def row_independent(layer):
+        weight = layer.weight
+        layout = getattr(weight, "_layout_cls", None)
+        quant = getattr(layer, "quant_format", None)
+        if quant == "int8_tensorwise" and layout == "TensorWiseINT8Layout":
+            return True
+        # Do not mistake an unknown quantized layout or tensor subclass for a
+        # plain linear. NVFP4 and FP8 may calculate scales across all rows.
+        return (quant is None and layout is None and getattr(layer, "layout_type", None) is None
+                and type(weight) in (torch.Tensor, torch.nn.Parameter)
+                and weight.is_floating_point())
 
     def bounded_forward(module, x, *args, **kwargs):
         projections = (module.fc1, module.fc2)
         if (torch.is_grad_enabled() or x.ndim != 2 or args or kwargs
                 or getattr(module, "_odysseus_manual_ff_chunks", 0)
-                or any(getattr(layer, "quant_format", None) != "int8_tensorwise"
-                       or getattr(layer.weight, "_layout_cls", None) != "TensorWiseINT8Layout"
-                       for layer in projections)):
+                or not all(row_independent(layer) for layer in projections)):
             return original(module, x, *args, **kwargs)
         fc1, fc2 = projections
-        # The fused SwiGLU halves fc1's row width. Include its live output,
-        # fc2's INT8 activation and output, plus the row scale, in the budget.
-        row_bytes = (fc1.weight.shape[0] + fc2.weight.shape[0]) * x.element_size()
+        # Include fc1's output plus both half-width eager SwiGLU temporaries,
+        # fc2's output, and an INT8 activation/row scale. This also covers plain
+        # BF16 and cast/LoRA paths where the fused activation is unavailable.
+        row_bytes = (2 * fc1.weight.shape[0] + fc2.weight.shape[0]) * x.element_size()
         row_bytes += fc2.weight.shape[1] + 4
         chunk_rows = max(1, max_intermediate_bytes // row_bytes)
         if x.shape[0] <= chunk_rows:
             return original(module, x, *args, **kwargs)
         signature = (x.shape[0], chunk_rows)
         if signature not in reported_shapes:
-            logging.info("INT8 feedforward temporary memory protection: %d rows in chunks of %d (budget %d MiB)",
+            logging.info("H3 feedforward temporary memory protection: %d rows in chunks of %d (budget %d MiB)",
                          x.shape[0], chunk_rows, max_intermediate_bytes // 1024**2)
             reported_shapes.add(signature)
         output = torch.empty((x.shape[0], fc2.weight.shape[0]), dtype=x.dtype, device=x.device)
@@ -737,7 +763,7 @@ def configure_bounded_int8_feedforward(mlp_type, *, max_intermediate_bytes=1024*
         return output
 
     mlp_type.forward = bounded_forward
-    logging.info("Automatic H3 INT8 feedforward temporary memory budget: %d MiB; other quantization layouts unchanged",
+    logging.info("Automatic H3 INT8/BF16 feedforward temporary memory budget: %d MiB; global-scale quantization layouts unchanged",
                  max_intermediate_bytes // 1024**2)
 
 
@@ -795,7 +821,7 @@ class H3Runtime:
             from .h3_attention_memory import configure_bounded_attention
         else:
             from h3_attention_memory import configure_bounded_attention
-        configure_bounded_int8_feedforward(minimax_model.MLP)
+        configure_bounded_feedforward(minimax_model.MLP)
         configure_bounded_attention(minimax_model, attention_backend)
         self.sd, self.sample, self.utils = comfy.sd, comfy.sample, comfy.utils
         self.nodes, self.audio, self.h3 = nodes, nodes_audio, nodes_minimax_h3
@@ -971,7 +997,8 @@ class H3Runtime:
         H3Runtime.log_gpu_memory(self, "after conditioning")
         H3Runtime.release_conditioning(self)
         H3Runtime.log_gpu_memory(self, "after conditioning cleanup")
-        model = self.h3.MiniMaxH3SigmaShift.execute(model, config["shift_video"], config["shift_audio"])[0]
+        if config.get("recipe") != "pinkcherry":
+            model = self.h3.MiniMaxH3SigmaShift.execute(model, config["shift_video"], config["shift_audio"])[0]
         latent_image = latent["samples"]
         noise = self.sample.prepare_noise(latent_image, config["seed"])
         def callback(step, x0, x, total_steps):
@@ -997,6 +1024,12 @@ class H3Runtime:
 def run_job(manifest, *, runtime_factory=H3Runtime, media_loader=prepare_media, muxer=mux_mp4):
     config, media = validate_job(manifest)
     os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(visible_gpu_ids(config))
+    if config.get("recipe") == "h3md":
+        try:
+            from scripts.h3md_worker import run
+        except ModuleNotFoundError:
+            from h3md_worker import run
+        return run(manifest, config, media, runtime_factory=runtime_factory)
     if config.get("recipe") == "director":
         try:
             from scripts.h3_director_worker import run
@@ -1036,7 +1069,7 @@ def run_job(manifest, *, runtime_factory=H3Runtime, media_loader=prepare_media, 
         else:
             frames, audio = runtime.decode(samples, vae, audio_vae, progress)
     progress("encoding_mp4")
-    muxer(manifest["output_path"], frames, audio)
+    muxer(manifest["output_path"], frames, audio, **({"crf": 9} if config.get("recipe") == "pinkcherry" else {}))
     if not Path(manifest["output_path"]).is_file() or Path(manifest["output_path"]).stat().st_size == 0:
         raise RuntimeError("Video encoder did not produce an MP4")
     progress("completed", config["steps"], frames=len(frames), fps=FPS, duration_seconds=len(frames) / FPS)

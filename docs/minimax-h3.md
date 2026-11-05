@@ -43,7 +43,7 @@ changes a job that has already started rendering.
 and cancelled jobs across every history page. Choose the current workflow or
 all your H3 and BFS workflows, review the exact count, then confirm. Deletion
 includes saved input copies, generated previews, latents, final videos and their
-Gallery entries. Original source files on E: or F: and installed models remain
+Gallery entries. Original source files on C:, E: or F: and installed models remain
 available; running and queued jobs keep their place.
 
 The confirmation shows deletion progress and the result. An interrupted request
@@ -188,6 +188,20 @@ it does not move an already queued or running job between GPUs.
 | First/last frames (`fl2va`) | Prompt, first image and/or last image | Video anchored to the keyframes, with generated audio |
 | References (`ref2va`) | Prompt, reference image or video; optional audio references | Reference-conditioned video and generated audio |
 
+Saved jobs show **Use original video in new job** beside each original input video.
+It opens an editable draft of the same workflow with that full video already
+attached, using the job's saved settings. It clears the old section selection,
+so you can choose a different section anywhere in the original. It does not
+queue a render. Desktop and iOS send only a saved-file selection; submitting
+makes an independent server-side input copy without uploading the video again.
+Keep the old job until the new submission finishes, since deleting the old job
+before submission also removes its saved input.
+
+Completed H3 outputs offer **Extend this video**. This prepares a separate
+**H3 Seed Hunter → Continue a video** draft with the full result already
+attached. Review its prompt and extension length before submitting; no video
+upload is needed. It does not change the original job or the saved base draft.
+
 Reference mode supports up to nine images, three videos and three audio files,
 with at most twelve uploaded references overall. A reference video can be longer
 than 15 seconds: use its **Start at** and **Length (seconds)** controls
@@ -199,13 +213,13 @@ seconds: `80`, `1:20`, and `0:01:20` select the same start. Backward and forward
 jump buttons move the preview by 30 seconds, 60 seconds, 5 minutes, 10 minutes,
 or 30 minutes from its current position. Jumps stop at the source boundaries
 and leave the chosen section unchanged until **Use current time as start**.
-Local files and supported E:/F: server videos can be previewed; timestamps remain
+Local files and supported C:/E:/F: server videos can be previewed; timestamps remain
 usable when a saved job input has no preview. Unsupported containers and codecs
 automatically use a compatible H.264/AAC MP4 preview. For a local file, opening
 its preview first uploads a temporary copy, with progress and a cancel action.
 The copy is reused while browsing sections and does not replace the workflow
 attachment or submit a generation job. Closing the editor releases it; expired
-copies are also removed by the server. E:/F: server files need no preview upload.
+copies are also removed by the server. C:/E:/F: server files need no preview upload.
 The compatible preview covers up to 30 seconds
 and follows the original video's timeline as you seek. It does not replace the
 source or change generation inputs. Preview preparation failures are displayed
@@ -559,7 +573,7 @@ Interrupted submissions can be retried without reselecting the batch.
 
 Video inputs in the desktop workflow offer **Server files** alongside local file
 selection. The iOS client offers **Photos**, **Files**, and **Server files**.
-Choose **Server files**, then choose `E:` or `F:` in **Drive** to browse the
+Choose **Server files**, then choose `C:`, `E:` or `F:` in **Drive** to browse the
 Odysseus computer. Open folders, search the current folder, and select videos.
 Choose **Use video** or **Use N**
 to attach the selection. In **Batch job**, select multiple server videos to
@@ -574,11 +588,11 @@ keep their attachment order. A file changed or removed since selection must be
 selected again. Existing accepted submissions can be retried without reopening
 the original file.
 
-On WSL the default drives are `/mnt/e` and `/mnt/f`; each must be mounted on the server. Browsing
+On WSL the default drives are `/mnt/c`, `/mnt/e` and `/mnt/f`; each must be mounted on the server. Browsing
 uses the same administrator authentication as the video workflows. To configure
 different media folders, set `ODYSSEUS_VIDEO_BROWSE_ROOTS` to a JSON map, such as
-`{"e":"/mnt/e","f":"/mnt/f","videos":"/home/corey/Videos"}`, and restart the server. This setting replaces
-the default roots, so include both drives if you want to retain them. The
+`{"c":"/mnt/c","e":"/mnt/e","f":"/mnt/f","videos":"/home/corey/Videos"}`, and restart the server. This setting replaces
+the default roots, so include the drives you want to retain. The
 picker exposes folders and supported video files inside those roots.
 
 To mount `F:` whenever WSL starts, add this entry to `/etc/fstab` (once):

@@ -1,5 +1,6 @@
 """Authenticated server media browsing and video previews shared by H3 and BFS."""
 import asyncio
+from functools import partial
 from pathlib import Path
 import re
 
@@ -61,24 +62,32 @@ class _VideoPreviewResponse(StreamingResponse):
             await asyncio.shield(self.upload.close())
 
 
-def add_server_video_file_routes(router, owner_callback):
+def add_server_video_file_routes(router, owner_callback, manager=None):
+    if manager is not None:
+        @router.get('/jobs/{job_id}/input-videos/{field}/{index}/reuse')
+        async def reuse_original(request: Request, job_id: str, field: str, index: int, revision: int):
+            from src.video_job_reuse import reuse_video_draft
+            owner = owner_callback(request)
+            result = await anyio.to_thread.run_sync(reuse_video_draft, manager, owner, job_id, field, index, revision)
+            return JSONResponse(result, headers={'Cache-Control': 'private, no-store'})
+
     @router.get('/server-files/metadata')
     async def server_video_metadata(request: Request, root: str, path: str, size: int, mtime_ns: str):
-        owner_callback(request)
+        owner = owner_callback(request)
         from src.video_media_metadata import get_server_video_metadata
-        result = await anyio.to_thread.run_sync(get_server_video_metadata, {
-            'root': root, 'path': path, 'size': size, 'mtime_ns': mtime_ns})
+        result = await anyio.to_thread.run_sync(partial(get_server_video_metadata, {
+            'root': root, 'path': path, 'size': size, 'mtime_ns': mtime_ns}, manager=manager, owner=owner))
         return JSONResponse(result, headers={'Cache-Control': 'private, no-store'})
 
     @router.api_route('/server-files/preview', methods=['GET', 'HEAD'])
     async def compatible_server_video(request: Request, root: str, path: str, size: int, mtime_ns: str,
                                        start_seconds: float = 0, duration_seconds: float = 30):
-        owner_callback(request)
+        owner = owner_callback(request)
         from functools import partial
         from src.video_preview_proxy import open_server_video_proxy
         upload = await anyio.to_thread.run_sync(partial(open_server_video_proxy, {
             'root': root, 'path': path, 'size': size, 'mtime_ns': mtime_ns},
-            start_seconds=start_seconds, duration_seconds=duration_seconds))
+            start_seconds=start_seconds, duration_seconds=duration_seconds, manager=manager, owner=owner))
         try:
             value = None if request.headers.get('if-range') else request.headers.get('range')
             start, end, status = _byte_range(value, upload.size)
@@ -92,9 +101,9 @@ def add_server_video_file_routes(router, owner_callback):
 
     @router.api_route('/server-files/video', methods=['GET', 'HEAD'])
     async def preview_server_video(request: Request, root: str, path: str, size: int, mtime_ns: str):
-        owner_callback(request)
-        upload = await anyio.to_thread.run_sync(open_server_video_preview, {
-            'root': root, 'path': path, 'size': size, 'mtime_ns': mtime_ns})
+        owner = owner_callback(request)
+        upload = await anyio.to_thread.run_sync(partial(open_server_video_preview, {
+            'root': root, 'path': path, 'size': size, 'mtime_ns': mtime_ns}, manager=manager, owner=owner))
         try:
             # Without an entity validator, If-Range requests receive the full
             # current file. The descriptor independently rejects changed files.

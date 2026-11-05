@@ -33,6 +33,16 @@ saved source files, rather than applying a different model or prompt to the old
 cached latent. An unconfirmed submission offers **Retry request**, which sends
 the same frozen request even if the base form has since changed.
 
+Completed outputs and refinements also offer **Extend this video**. It opens a
+separate H3 Seed Hunter draft with **Continue a video** selected and the entire
+saved output attached as its source. Review the prompt, extension length and
+settings, then queue. Opening it does not start a render or overwrite the base
+draft. A short refinement step count is replaced by that candidate's generation
+schedule when available. Submission copies the full video within the server;
+there is no upload from the phone or browser. Keep the original job until that
+submission finishes. The continuation workflow retains the source, conditions
+on its ending and appends the newly generated portion using its overlap setting.
+
 ## Bulk refinements
 
 Refinement is an explicit action. Opening, refreshing or rerunning a preview

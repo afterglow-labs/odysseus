@@ -1,3 +1,8 @@
+import { bindModelGuide } from './h3LoraPromptExample.js';
+import { createExtendVideoButton } from './videoJobReuse.js';
+import { createVideoJobSources } from './videoJobSources.js';
+import { createPinkCherryControls } from './h3PinkCherry.js';
+import { createH3MDControls, h3mdQueueFields } from './h3MD.js';
 import { createDirectorControls, directorQueueFields, renderDirectorCandidates } from './h3Director.js';
 import { bindWorkflowPromptHistory } from './workflowPromptHistory.js';
 import { createVideoJobPager, observePagedVideoJobEditor } from './videoJobPage.js';
@@ -204,15 +209,15 @@ function h3WorkflowHelp(label, ...content) {
   const details = el('details', 'h3-workflow-help'); details.append(el('summary', '', label), ...content); return details;
 }
 
-export function showH3Video({ preferredModel = null, layout = 'classic', recipe = '' } = {}, anchor = document.activeElement) {
-  document.querySelectorAll('.h3-video-overlay').forEach(dismissOrRemove);
+export function showH3Video({ preferredModel = null, layout = 'classic', recipe = '', initialDraft = null } = {}, anchor = document.activeElement) {
+  if (!initialDraft) document.querySelectorAll('.h3-video-overlay').forEach(dismissOrRemove);
   if (!document.getElementById('h3-video-styles')) {
     const style = el('link');
     style.id = 'h3-video-styles'; style.rel = 'stylesheet'; style.href = '/static/h3-video.css';
     document.head.appendChild(style);
   }
-  const director = recipe === 'director';
-  const storageKey = (director ? 'odysseus-h3-director-v1' : STORAGE) + (layout === 'pipeline' ? ':pipeline' : '');
+  const director = recipe === 'director', h3md = recipe === 'h3md', pinkcherry = recipe === 'pinkcherry';
+  const storageKey = (pinkcherry ? 'odysseus-pinkcherry-v1' : h3md ? 'odysseus-h3md-v1' : director ? 'odysseus-h3-director-v1' : STORAGE) + (layout === 'pipeline' ? ':pipeline' : '');
   let pipeline = null, promptHistory = null;
   let closed = false, submitting = false, jobPager = null, timer = null, inventory = null, jobs = [], loadFailed = false;
   let enhancing = false, enhancementController = null, enhancer = null, enhancerChecking = false, enhancerCheck = 0;
@@ -225,15 +230,16 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
   let editingLoraComponents = null;
   const loraComponents = () => h3LoraComponents(inventory?.components || [], editingLoraComponents);
   let saved = {};
-  try { saved = JSON.parse(localStorage.getItem(storageKey)) || {}; } catch {}
+  if (!initialDraft) try { saved = JSON.parse(localStorage.getItem(storageKey)) || {}; } catch {}
   let appliedPresetRevision = saved._installedPresetRevision || '';
+  let directorLoraDefaultsApplied = saved._directorLoraDefaultsApplied === true;
   const fields = {}, uploads = {}, jobNodes = new Map(), pendingStops = new Set(), pendingDeletes = new Set(), deletedJobs = new Set(), gpuNodes = new Map();
   const overlay = el('div', 'cookbook-edit-overlay h3-video-overlay');
   overlay.style.zIndex = String(topPortalZ());
   const dialog = el('section', 'cookbook-edit-modal h3-video-dialog');
   dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true'); dialog.setAttribute('aria-labelledby', 'h3-video-title');
   const header = el('div', 'h3-video-header');
-  const title = el('h2', '', director ? 'H3 Director' : 'MiniMax H3 Video'); title.id = 'h3-video-title';
+  const title = el('h2', '', pinkcherry ? 'PinkCherry' : h3md ? 'H3MD Director' : director ? 'H3 Director' : 'MiniMax H3 Video'); title.id = 'h3-video-title';
   const closeButton = button('Close');
   header.append(title, closeButton); dialog.appendChild(header);
   const scroll = el('div', 'h3-video-scroll'); dialog.appendChild(scroll);
@@ -282,11 +288,11 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
     return field(parent, key, label, control, help);
   }
   select(components, 'model', 'H3 model');
-  select(components, 'mode', 'Mode', director ? MODES.filter(([key])=>key!=='t2va') : MODES);
+  select(components, 'mode', 'Mode', (h3md || pinkcherry) ? MODES.filter(([key])=>key==='ref2va') : director ? MODES.filter(([key])=>key!=='t2va') : MODES);
   select(components, 'encoder', 'Text encoder');
   select(components, 'video_vae', 'Video VAE');
   select(components, 'audio_vae', 'Audio VAE');
-  const loraEditor = createH3LoraEditor({ onChange: () => { loraTouched = true; editRevision++; updateMode(true); save(); },
+  const loraEditor = createH3LoraEditor({ onChange: () => { loraTouched = true; if(h3md)directorControls?.syncLoras(); if(director && !jobEditor?.active)directorLoraDefaultsApplied = true; editRevision++; updateMode(true); save(); },
     onManage: (selectedId, anchor) => {
       loraLibrary?.close();
       loraLibrary = showH3LoraLibrary({ components: inventory?.components || [], selectedId,
@@ -443,12 +449,23 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
   const jobsHeader = el('div', 'h3-video-toolbar');
   jobsHeader.appendChild(el('h3', '', 'Recent video jobs'));
   const refreshJobs = button('Refresh jobs'); jobsHeader.appendChild(refreshJobs); scroll.appendChild(jobsHeader);
-  const directorControls = director ? createDirectorControls({form,before:dimensions,onChange:()=>{editRevision++;save();updateReady();},getMode:()=>fields.mode.value,getInputs:()=>Object.fromEntries(Object.entries(uploads).map(([key,state])=>[key,state.files.length+state.retained.length]))}) : null;
+  function applyWorkflowPreset(preset) {
+    if(jobEditor?.active || submitting || transferBusy || queueControls?.busy)return;
+    const previous=config(),values=preset.config;
+    for(const [key,value] of Object.entries(values))if(fields[key])fields[key].value=value;
+    loraEditor.setValue(h3LoraStack(values));
+    directorControls.set(h3md ? {...values,h3md:{...values.h3md,shots:previous.h3md.shots}} : values,inventory.components);
+    updateMode(true);save();updateReady();
+  }
+  const directorControls = pinkcherry ? createPinkCherryControls({form,onPreset:applyWorkflowPreset}) : h3md ? createH3MDControls({form,before:dimensions,onChange:()=>{editRevision++;save();updateReady();},getLoras:()=>loraEditor.getValue(),onPreset:applyWorkflowPreset}) : director ? createDirectorControls({form,before:dimensions,onChange:()=>{editRevision++;save();updateReady();},getMode:()=>fields.mode.value,getInputs:()=>Object.fromEntries(Object.entries(uploads).map(([key,state])=>[key,state.files.length+state.retained.length]))}) : null;
+  if(pinkcherry || h3md)fields.seed.max=9007199254740991;
+  if(pinkcherry){fields.mode.value='ref2va';for(const key of ['shift_video','shift_audio'])fields[key].parentElement.hidden=true;}
+  if(h3md){fields.mode.value='ref2va';fields.frames.parentElement.hidden=true;prompt.required=false;for(const key of ['width','height']){fields[key].max=4096;fields[key].step=64;}for(const key of ['shift_video','shift_audio'])fields[key].parentElement.hidden=true;}
   if(director){fields.seed.max=9007199251740942;fields.frames.parentElement.hidden=true;prompt.required=false;for(const key of ['width','height'])fields[key].max=4096;fields.sampler.replaceChildren(...['res_multistep','euler','euler_ancestral','dpmpp_2m'].map(v=>new Option(v,v)));fields.scheduler.replaceChildren(...['simple','normal','beta','sgm_uniform'].map(v=>new Option(v,v)));}
   const jobStatus = el('p', 'h3-video-muted', 'Loading jobs…'); jobStatus.setAttribute('role', 'status'); scroll.appendChild(jobStatus);
   const queueContainer = el('div'); scroll.appendChild(queueContainer);
   const jobList = el('div', 'h3-video-jobs'); scroll.appendChild(jobList);
-  jobPager = createVideoJobPager({ container: scroll, beforeNode: jobList, historyKey: director ? 'h3Director' : 'h3Video', recipe:director?'director':'h3', request, isClosed: () => closed,
+  jobPager = createVideoJobPager({ container: scroll, beforeNode: jobList, historyKey: pinkcherry ? 'pinkcherry' : h3md ? 'h3md' : director ? 'h3Director' : 'h3Video', recipe:recipe||'h3', request, isClosed: () => closed,
     onData: async data => {
       queueControls?.update(data.queue); jobs = data.jobs.filter(job => !deletedJobs.has(job.id)); renderJobs();
       await observePagedVideoJobEditor(jobEditor, data.legacyJobs || jobs, request, () => closed);
@@ -469,15 +486,30 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
   };
   const config = () => {
     const loras = loraEditor.getValue();
-    return { ...directorControls?.get(), ...Object.fromEntries(SETTINGS.map(key => [key, NUMBER_FIELDS.has(key) ? Number(fields[key].value) : fields[key].value])), reference_video_ranges: !director && fields.mode.value === 'ref2va' ? referenceVideoRanges(uploads.reference_videos) : [], loras, lora: loras[0]?.id || '', lora_scale: loras[0]?.strength ?? 1 };
+    return { ...directorControls?.get(), ...Object.fromEntries(SETTINGS.map(key => [key, NUMBER_FIELDS.has(key) ? Number(fields[key].value) : fields[key].value])), reference_video_ranges: !director && !h3md && fields.mode.value === 'ref2va' ? referenceVideoRanges(uploads.reference_videos) : [], loras, lora: loras[0]?.id || '', lora_scale: loras[0]?.strength ?? 1 };
   };
   function save() {
     if (jobEditor?.active) return;
-    try { localStorage.setItem(storageKey, JSON.stringify({ ...config(), prompt:prompt.value, _installedPresetRevision: appliedPresetRevision })); } catch {}
+    try { localStorage.setItem(storageKey, JSON.stringify({ ...config(), prompt:prompt.value, _installedPresetRevision: appliedPresetRevision, ...(director ? {_directorLoraDefaultsApplied:directorLoraDefaultsApplied} : {}) })); } catch {}
+  }
+  function restoreDirectorLoraSelection() {
+    if(!director || directorLoraDefaultsApplied || jobEditor?.active || jobEditor?.loading || config().director?.stage==='refine')return;
+    const rows=h3LoraStack(inventory?.director?.defaults || {});
+    if(!rows.length || !rows.every(row=>inventory.components.some(item=>item.role==='lora' && item.id===row.id)))return;
+    // Repair the omitted adapter in existing Director drafts once. Later
+    // removals and any already selected adapters remain the user's choice.
+    directorLoraDefaultsApplied=true;
+    if(!loraEditor.getValue().length){
+      loraEditor.setValue(rows);
+      presetStatus.textContent='Selected Director’s Turbo LoRA at strength 1.';
+    }
+    save();
   }
   function applyInstalledPreset({ automatic = false } = {}) {
+    if(h3md||pinkcherry)return false;
     if(director){
       if(automatic || !inventory?.director?.ready || jobEditor?.active || jobEditor?.loading || queueControls?.busy || queueControls?.editing || batchQueue?.busy || transferBusy || enhancing || submitting)return false;
+      directorLoraDefaultsApplied=true;
       const values=inventory.director.preset.config, previous=config();
       for(const [key,value] of Object.entries(values))if(fields[key])fields[key].value=value;
       loraEditor.setValue(h3LoraStack(values));
@@ -506,14 +538,14 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
   function incompatibleLora() {
     const stack = loraEditor.getValue();
     if (inventory && inventory.lora_stack !== true && stack.length > 1) return 'Multiple LoRAs need the updated Odysseus server. Restart the server and refresh components.';
-    return h3LoraIssue(stack, loraComponents(), fields.mode.value, inventory?.max_loras || 8, loraComponents().find(c=>c.id===fields.model.value)?.name);
+    return h3LoraIssue(stack, h3md && loraComponents().find(c=>c.id===fields.model.value)?.name==='minimax_h3_hybrid_fl2va_ref2va_b25-49-int8.safetensors' ? loraComponents().map(c=>({...c,variant:c.role==='lora'?'shared':c.variant})) : loraComponents(), fields.mode.value, inventory?.max_loras || 8, loraComponents().find(c=>c.id===fields.model.value)?.name);
   }
   const inputCount = key => uploads[key].files.length + uploads[key].retained.length;
   function isVfxEdit() {
     return loraEditor.getValue().some(row => Number(row.strength) !== 0 && loraComponents().some(item => item.id === row.id && item.role === 'lora' && item.recipe === 'vfx_edit'));
   }
   function incompatibleLength() {
-    if (director || batchActive() && batchQueue?.autoVideoLength) return '';
+    if (director || h3md || batchActive() && batchQueue?.autoVideoLength) return '';
     return !isVfxEdit() && Number(fields.frames.value) < 124 ? 'This duration is available only for VFX Edit. Choose a length of at least 124 frames.' : '';
   }
   const batchActive = () => !jobEditor?.active && !!batchQueue?.active;
@@ -560,11 +592,11 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
     if (vfxInputsIssue({ batch: true })) return vfxInputsIssue({ batch: true });
     if (selected.some(item => item?.nvfp4) && !primary.nvfp4) return 'The selected NVFP4 components require a Blackwell GPU, such as the RTX 5090.';
     if (!prompt.value.trim() && !directorControls?.hasPrompt()) return 'Enter a prompt or timeline cut.';
-    if (Number(fields.width.value) * Number(fields.height.value) > (director ? 4000000 : 1032192)) return `Choose dimensions totaling at most ${director ? '4,000,000' : '1,032,192'} pixels.`;
+    if (Number(fields.width.value) * Number(fields.height.value) > ((director || h3md) ? 4000000 : 1032192)) return `Choose dimensions totaling at most ${director || h3md ? '4,000,000' : '1,032,192'} pixels.`;
     const images = batchVideoField()==='reference_images'?1:uploads.reference_images.files.length, audio = batchVideoField()==='reference_audio'?1:uploads.reference_audio.files.length;
     const videos = batchVideoField()==='reference_videos'?1:uploads.reference_videos.files.length;
-    if(!director&&fields.mode.value==='ref2va'&&!isVfxEdit()&&!images&&!videos&&!batchQueue?.hasInputForEach?.(['reference_images','reference_videos']))return 'Attach an image or video to each audio job, or add a shared reference.';
-    if(!director&&fields.mode.value==='fl2va'&&batchVideoField()==='copies'&&!inputCount('first_frame')&&!inputCount('last_frame')&&!batchQueue?.hasInputForEach?.(['first_frame','last_frame']))return 'Attach a first or last frame to each job before creating copies.';
+    if(!director&&!h3md&&fields.mode.value==='ref2va'&&!isVfxEdit()&&!images&&!videos&&!batchQueue?.hasInputForEach?.(['reference_images','reference_videos']))return 'Attach an image or video to each audio job, or add a shared reference.';
+    if(!director&&!h3md&&fields.mode.value==='fl2va'&&batchVideoField()==='copies'&&!inputCount('first_frame')&&!inputCount('last_frame')&&!batchQueue?.hasInputForEach?.(['first_frame','last_frame']))return 'Attach a first or last frame to each job before creating copies.';
     const formIssue=videoFormIssue(form);if(formIssue)return formIssue;
     return '';
   }
@@ -605,7 +637,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
     loraCompatibilityError.textContent = [incompatibleLora(), incompatibleLength()].filter(Boolean).join(' '); loraCompatibilityError.hidden = !loraCompatibilityError.textContent;
     generate.disabled = queueBusy || batching || batchBusy || editLoading || !!jobEditor?.blocked || transferBusy || enhancing || submitting || loadFailed || !inventory?.runtime_ready || !!missingGpu?.length || !!loraCompatibilityError.textContent || !!vfxInputError.textContent || !required.every(key => fields[key].value);
     useInstalledPreset.disabled = (director ? !inventory?.director?.ready : !inventory?.installed_preset) || inventoryLoading || queueBusy || !!queueControls?.editing || editing || editLoading || batchBusy || transferBusy || enhancing || submitting;
-    presetBar.hidden = director ? editing : !isVfxEdit() || !(inventory?.installed_preset || inventory?.installed_preset_error);
+    presetBar.hidden = h3md || pinkcherry || (director ? editing : !isVfxEdit() || !(inventory?.installed_preset || inventory?.installed_preset_error));
     exportWorkflow.disabled = importWorkflow.disabled = queueBusy || editing || editLoading || batchBusy || transferBusy || enhancing || submitting || !inventory;
     importWorkflow.textContent = transferBusy ? 'Importing workflow…' : 'Import workflow';
     generate.textContent = submitting ? editing ? 'Saving changes…' : 'Uploading and adding job…' : editing ? 'Save changes' : ((jobPager?.counts.running || 0) + (jobPager?.counts.queued || 0)) ? 'Add to queue' : 'Generate video';
@@ -799,7 +831,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
     if(isVfxEdit())batchQueue?.setVideoField?.('source_video');
     modeHelp.textContent = vfx ? 'VFX Edit uses one source video and preserves its duration and sound. Short clips are padded internally for processing, then trimmed to the source duration. Optional references use <Picture 1>, <Video 1> or <Audio 1>; the source is separate.' : fields.mode.value === 'fl2va' ? 'Choose a first frame, a last frame, or both.' : fields.mode.value === 'ref2va' ? 'Use <Picture 1>, <Video 1> or <Audio 1> in your prompt to identify each reference. Add at least one image or video; audio is optional.' : 'Text mode generates from the prompt without image inputs.';
     if (director) modeHelp.textContent = fields.mode.value === 'fl2va' ? 'First and last frames are optional. Without them, Director generates from the timeline and prompt.' : 'Attach optional images, videos or audio, then describe them under Reference direction. Director assigns their tags to the timeline.';
-    referenceLengthHelp.hidden = director || fields.mode.value !== 'ref2va';
+    referenceLengthHelp.hidden = director || h3md || fields.mode.value !== 'ref2va';
     const current = models.find(item => item.id === fields.model.value);
     componentPath.textContent = current?.path || '';
     componentPath.title = current?.path || '';
@@ -867,7 +899,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
       const data = providedInventory || await request('/inventory'); if (closed) return;
       const firstInventory = !inventory;
       const useBaseDefaults = preferredModel || (saved.mode && data.installed_preset && saved.mode !== data.installed_preset.config.mode);
-      const previous = inventory ? config() : { ...((useBaseDefaults ? data.base_defaults : data.defaults) || data.defaults || {}), ...(director ? data.director?.defaults : {}), ...saved };
+      const previous = inventory ? config() : { ...((useBaseDefaults ? data.base_defaults : data.defaults) || data.defaults || {}), ...(pinkcherry ? data.pinkcherry?.defaults : h3md ? data.h3md?.defaults : director ? data.director?.defaults : {}), ...saved };
       inventory = data; loadFailed = false;
       presetBar.hidden = director ? false : !data.installed_preset && !data.installed_preset_error;
       useInstalledPreset.hidden = director ? false : !data.installed_preset;
@@ -906,12 +938,20 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
         if (previous[key] !== undefined) fields[key].value = previous[key];
       }
       directorControls?.set(previous,data.components);
+      if(h3md||pinkcherry)directorControls.presets(data[recipe]);
       updateMode(true);
+      restoreDirectorLoraSelection();
       if (firstInventory && applyInstalledPreset({ automatic: true })) updateMode(true);
       if (separateVaeGpu) save();
       const missing = ['model', 'encoder', 'video_vae', 'audio_vae', 'gpu'].filter(key => !fields[key].value);
       inventoryStatus.textContent = !data.runtime_ready ? `Runtime unavailable: ${data.runtime_error || 'H3 runtime is not installed.'}` : missing.length ? `Missing: ${missing.map(key => key.replaceAll('_', ' ')).join(', ')}. Download the H3 components, then refresh.` : 'Components ready on this Odysseus server.';
       inventoryStatus.classList.toggle('h3-video-error', !data.runtime_ready || !!missing.length);
+      if (initialDraft) {
+        editingLoraComponents = initialDraft.lora_components || null;
+        applyEditorDraft(initialDraft.config, initialDraft.uploads);
+        transferStatus.hidden = false; transferStatus.textContent = initialDraft.notice;
+        pipeline?.select('inputs'); initialDraft = null;
+      }
     } catch (e) {
       if (!closed) { loadFailed = true; inventoryStatus.textContent = e.message; inventoryStatus.classList.add('h3-video-error'); }
     } finally { inventoryLoading = false; if (!closed) updateReady(); }
@@ -952,6 +992,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
           } finally { if (!closed) copyPrompt.disabled = false; }
         });
         const output = el('div', 'h3-video-output');
+        const originals = createVideoJobSources();
         const rerunStatus = el('p', 'h3-video-muted'); rerunStatus.hidden = true; rerunStatus.setAttribute('role', 'status');
         const rerunError = el('p', 'h3-video-error'); rerunError.hidden = true; rerunError.setAttribute('role', 'alert');
         const deletion = el('div', 'h3-video-delete-confirmation'); deletion.hidden = true;
@@ -959,8 +1000,8 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
         const deleteActions = el('div', 'h3-video-job-actions'); const keep = button('Keep job'), confirmDelete = button('Delete permanently');
         confirmDelete.classList.add('h3-video-delete-button'); deleteActions.append(keep, confirmDelete); deletion.appendChild(deleteActions);
         const deleteError = el('p', 'h3-video-error'); deleteError.hidden = true; deleteError.setAttribute('role', 'alert'); deletion.appendChild(deleteError);
-        card.append(row, description, rerunStatus, rerunError, deletion, progress, jobError, output, promptDetails, details); jobList.appendChild(card);
-        nodes = { card, heading, edit, rerun, baseRerun, editRerun, rerunStatus, rerunError, stop, remove, deletion, keep, confirmDelete, deleteError, description, progress, jobError, log, output, promptText, copyPrompt, copyStatus }; jobNodes.set(job.id, nodes);
+        card.append(row, description, rerunStatus, rerunError, deletion, progress, jobError, originals.node, output, promptDetails, details); jobList.appendChild(card);
+        nodes = { card, heading, edit, rerun, baseRerun, editRerun, rerunStatus, rerunError, stop, remove, deletion, keep, confirmDelete, deleteError, description, progress, jobError, log, output, promptText, copyPrompt, copyStatus }; nodes.originals = originals; jobNodes.set(job.id, nodes);
         edit.onclick = () => jobEditor.open(job.id);
         baseRerun.title = BASE_RERUN_HELP; baseRerun.onclick = () => reruns.runBase(jobs.find(item => item.id === job.id) || job);
         editRerun.title = 'Edit this job’s saved settings before queuing a new copy. Changes apply only to that copy.';
@@ -1023,10 +1064,11 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
         const url = `${API}/jobs/${encodeURIComponent(job.id)}/video`;
         const video = createVideoJobMedia(url);
         const download = el('a', 'memory-toolbar-btn', 'Download MP4'); download.href = url; download.download = job.filename || 'odysseus-h3.mp4';
-        nodes.output.append(video.node, download);
+        nodes.output.append(video.node, download, createExtendVideoButton(job.id));
       }
     }
     updateReady();
+    for (const job of jobs) jobNodes.get(job.id)?.originals.update(job.input_videos);
     jobPager.finish(jobNodes);
   }
   function loadJobs(options = {}) { return jobPager.load(options); }
@@ -1074,6 +1116,8 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
           : total > 0 ? `Uploading workflow… ${Math.min(100, Math.round(loaded / total * 100))}% · ${(loaded / 1048576).toFixed(1)} / ${(total / 1048576).toFixed(1)} MB`
             : 'Uploading workflow…';
       } }); if (closed) return;
+      if ((result.config.recipe==='pinkcherry')!==pinkcherry)throw new Error('Open the matching PinkCherry workflow to import this file.');
+      if ((result.config.recipe==='h3md')!==h3md)throw new Error('Open H3MD Director to import this workflow.');
       if ((result.config.recipe==='director')!==director)throw new Error('Open the matching H3 Director or MiniMax H3 workflow before importing.');
       if (revision !== editRevision) throw new Error('The draft changed while importing. Import again to apply this workflow.');
       if (result.inventory) await loadInventory(result.inventory);
@@ -1102,12 +1146,12 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
     setError('');
     const values = { ...config(), prompt: prompt.value.trim() };
     if (!values.prompt && !directorControls?.hasPrompt()) { setError('Enter a prompt or timeline cut.'); prompt.focus(); return; }
-    if (values.width * values.height > (director ? 4000000 : 1032192)) { setError(`Choose dimensions totaling at most ${director ? '4,000,000' : '1,032,192'} pixels.`); return; }
+    if (values.width * values.height > ((director || h3md) ? 4000000 : 1032192)) { setError(`Choose dimensions totaling at most ${director || h3md ? '4,000,000' : '1,032,192'} pixels.`); return; }
     const vfxIssue = vfxInputsIssue({ requireSource: true });
     if (vfxIssue) { setError(vfxIssue); return; }
     const applicable = Object.entries(uploads).filter(([, state]) => state.wrap.dataset.mode === values.mode);
-    if (!director && values.mode === 'fl2va' && !inputCount('first_frame') && !inputCount('last_frame')) { setError('Choose a first frame, a last frame, or both.'); uploads.first_frame.input.focus(); return; }
-    if (!director && values.mode === 'ref2va' && !isVfxEdit() && !inputCount('reference_images') && !inputCount('reference_videos')) { setError('Add at least one reference image or video. Audio alone is not supported.'); return; }
+    if (!director && !h3md && values.mode === 'fl2va' && !inputCount('first_frame') && !inputCount('last_frame')) { setError('Choose a first frame, a last frame, or both.'); uploads.first_frame.input.focus(); return; }
+    if (!director && !h3md && values.mode === 'ref2va' && !isVfxEdit() && !inputCount('reference_images') && !inputCount('reference_videos')) { setError('Add at least one reference image or video. Audio alone is not supported.'); return; }
     const editing = jobEditor.active;
     const body = editing ? videoJobEditFormData(editing, values,
       Object.fromEntries(applicable.map(([key, state]) => [key, state.files])),
@@ -1127,6 +1171,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
     } catch (e) { if (!closed) { if (editing) jobEditor.failed(e); else setError(e.message); } }
     finally { submitting = false; if (!closed) updateReady(); }
   });
+  bindModelGuide(fields.model, () => inventory?.components || []);
   fields.model.addEventListener('change', () => { updateMode(true); if (applyInstalledPreset({ automatic: true })) updateMode(true); });
   fields.mode.addEventListener('change', () => { updateMode(); if (applyInstalledPreset({ automatic: true })) updateMode(); });
   useInstalledPreset.onclick = () => { if (applyInstalledPreset()) { updateMode(); updateReady(); } };
@@ -1163,9 +1208,9 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
   }, () => false);
   closeButton.onclick = close; window.addEventListener('keydown', onKey, true); closeButton.focus();
   function applyEditorDraft(values, attached, retained = {}) {
-    directorControls?.set(values,inventory?.components);
     loraEditor.setInventory(loraComponents(), inventory?.max_loras || 8);
     loraEditor.setValue(h3LoraStack(values));
+    directorControls?.set(values,inventory?.components);
     // Old VFX jobs used the only reference video as their source guide. New
     // records explicitly contain source_video (even when empty), so never
     // reinterpret one of their reference videos as a source.
@@ -1197,14 +1242,14 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
     restoreDraft: value => { editingLoraComponents = null; originalPrompt = value.originalPrompt; applyEditorDraft(value.config, value.uploads); },
     onChange: updateReady, onError: setError,
   });
-  batchQueue = createVideoBatchQueue({
-    family: 'h3', recipe, sessionKey:(director?'director':'h3')+(layout==='pipeline'?':pipeline':''), container: batchContainer, getSnapshot: batchSnapshot,
+  batchQueue = createVideoBatchQueue({isolated: !!initialDraft,
+    family: 'h3', recipe, sessionKey:(recipe||'h3')+(layout==='pipeline'?':pipeline':''), container: batchContainer, getSnapshot: batchSnapshot,
     onJob: () => { if (!closed) loadJobs({ reset: true }); },
     onChange: () => { if (!closed) { editRevision++; updateReady(); } },
   });
   queueControls = createVideoQueueControls({
-    container: queueContainer, historyContainer: jobsHeader, family: 'h3', request, reload: loadJobs, onChange: updateReady, isClosed: () => closed, historyFilter:director?{recipe:'director'}:{}, targetName:director?'H3 Director':null, filterJobs:job=>director?job.recipe==='director':!['seed_hunter','director'].includes(job.recipe),
-    getFields: (savedConfig, savedJob) => [...SETTINGS, 'prompt'].filter(key => key !== 'mode' && !(director && key === 'frames') &&
+    container: queueContainer, historyContainer: jobsHeader, family: 'h3', request, reload: loadJobs, onChange: updateReady, isClosed: () => closed, historyFilter:recipe?{recipe}:{}, targetName:pinkcherry?'PinkCherry':h3md?'H3MD Director':director?'H3 Director':null, filterJobs:job=>recipe?job.recipe===recipe:!['seed_hunter','director','h3md','pinkcherry'].includes(job.recipe),
+    getFields: (savedConfig, savedJob) => [...SETTINGS, 'prompt'].filter(key => key !== 'mode' && !((h3md || pinkcherry) && ['shift_video','shift_audio'].includes(key)) && !((director || h3md) && key === 'frames') &&
       !(savedConfig?.director?.stage === 'refine' && !['width','height','steps','seed','sampler','scheduler','gpu','vae_gpu'].includes(key))).map(key => {
       let control = fields[key];
       const label = control.closest('label')?.querySelector('span')?.textContent || (key === 'prompt' ? 'Prompt' : key.replaceAll('_', ' '));
@@ -1214,15 +1259,15 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
         for (const option of control.options) option.disabled = option.hidden = !vfx && Number(option.value) < 124;
       }
       return videoQueueField(key, label, control, NUMBER_FIELDS.has(key));
-    }).concat(director ? directorQueueFields(savedConfig || config(), inventory?.components || []) : [])
+    }).concat(h3md ? h3mdQueueFields(savedConfig || config(), inventory?.components || []) : director ? directorQueueFields(savedConfig || config(), inventory?.components || []) : [])
       .concat(savedConfig?.reference_video_ranges?.length ? [referenceVideoRangesField(savedConfig.reference_video_ranges)] : []).concat(savedConfig?.director?.stage === 'refine' ? [] : [{ key: 'loras', label: 'LoRA stack (replace all)', getSavedValue: h3LoraStack, create: onChange => createH3LoraEditor({
       components: h3LoraComponents(inventory?.components || [], savedJob?.lora_components), value: loraEditor.getValue(), max: inventory?.max_loras || 8, idPrefix: 'h3-queue', onChange,
     }) }]),
   });
-  promptHistory = bindWorkflowPromptHistory(dialog, { workflow: director ? 'director' : 'h3' });
+  promptHistory = bindWorkflowPromptHistory(dialog, { workflow: recipe || 'h3' });
   if (layout === 'pipeline') {
     components.append(fields.gpu.parentElement,fields.vae_gpu.parentElement);
-    pipeline=createWorkflowPipeline({container:scroll,dialog,form,family:'h3',title:director?'H3 Director':'MiniMax H3 Video',
+    pipeline=createWorkflowPipeline({container:scroll,dialog,form,family:'h3',title:pinkcherry?'PinkCherry':h3md?'H3MD Director':director?'H3 Director':'MiniMax H3 Video',
       sections:[
         {id:'inputs',title:'Inputs',parent:form,nodes:[fields.mode.parentElement,batchContainer,inputArea,referenceHelp,vfxInputError]},
         {id:'prepare',title:'Prompt',parent:form,nodes:[promptGroup,enhancerBar]},

@@ -55,9 +55,21 @@ def test_director_queues_its_timeline_modes_and_independent_candidates(layout,wi
             await page.route("**/*",route)
             try:
                 await page.goto("https://director.test/")
+                key='odysseus-h3-director-v1'+(':pipeline' if layout=='pipeline' else '')
+                await page.evaluate("([key, draft]) => localStorage.setItem(key, JSON.stringify(draft))",
+                                    [key,dict(recipe='director',loras=[],prompt='Keep my saved prompt',steps=27,
+                                              director=dict(duration_seconds=12))])
                 await page.evaluate("async layout=>(await import('/static/js/h3Director.js')).showH3Director({layout})",layout)
                 await page.get_by_text("Components ready on this Odysseus server.",exact=True).wait_for()
                 if layout=="pipeline": await page.get_by_role("button",name="Show all settings",exact=True).click()
+                selected=await page.evaluate("key => JSON.parse(localStorage.getItem(key))",key)
+                assert selected['loras']==[dict(id=WORKFLOW_COMPONENTS['lora'],strength=1)], 'Opening a saved Director must select its workflow LoRA without Apply'
+                assert await page.get_by_role('combobox',name='LoRA 1',exact=True).input_value()==WORKFLOW_COMPONENTS['lora']
+                await page.get_by_role('combobox',name='LoRA 1',exact=True).scroll_into_view_if_needed()
+                await page.screenshot(path=f'/tmp/director63-selected-{layout}-{width}.png')
+                assert await page.locator('#h3-steps').input_value()=='27'
+                assert await page.get_by_label('Total seconds',exact=True).input_value()=='12'
+                assert await page.locator('#h3-prompt').input_value()=='Keep my saved prompt'
                 await page.get_by_label("Cut 1 prompt",exact=True).fill("Keep this direction.")
                 await page.locator('#h3-steps').fill('7')
                 await page.get_by_role('button',name='Apply Director website workflow',exact=True).click()
@@ -71,7 +83,9 @@ def test_director_queues_its_timeline_modes_and_independent_candidates(layout,wi
                 await page.get_by_role("button",name="Add cut",exact=True).click()
                 await page.get_by_label("Cut 2 prompt",exact=True).fill("Close-up of the ripples.")
                 await page.get_by_label("Candidate 3",exact=True).check()
-                await page.get_by_label("Hybrid continuation",exact=True).check()
+                hybrid=page.get_by_label("Hybrid continuation",exact=True)
+                await hybrid.focus();await hybrid.press('Space')
+                assert await hybrid.is_checked()
                 await page.get_by_label("Continuation checkpoint",exact=True).select_option(components[1]["id"])
                 if layout == 'classic' and width == 1440:
                     pixel = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=')
@@ -123,6 +137,19 @@ def test_director_queues_its_timeline_modes_and_independent_candidates(layout,wi
                 assert await page.get_by_role("spinbutton",name="Total seconds",exact=True).input_value()=="25"
                 await page.locator('#h3-model').select_option(components[1]["id"])
                 assert await page.locator('#h3-mode').input_value()=="fl2va"
+                await page.get_by_role('button',name='Remove LoRA 1',exact=True).click()
+                await page.reload()
+                await page.evaluate("async layout=>(await import('/static/js/h3Director.js')).showH3Director({layout})",layout)
+                await page.get_by_text("Components ready on this Odysseus server.",exact=True).wait_for()
+                assert await page.locator('.h3-lora-list select').count()==0, 'An intentional later removal must persist'
+                if layout=='classic' and width==390:
+                    # A selected adapter at strength zero is not the old omission.
+                    await page.evaluate("([key,id]) => {const draft=JSON.parse(localStorage.getItem(key));delete draft._directorLoraDefaultsApplied;draft.loras=[{id,strength:0}];localStorage.setItem(key,JSON.stringify(draft));}",[key,WORKFLOW_COMPONENTS['lora']])
+                    await page.reload()
+                    await page.evaluate("async ()=>(await import('/static/js/h3Director.js')).showH3Director()")
+                    await page.get_by_text("Components ready on this Odysseus server.",exact=True).wait_for()
+                    kept=await page.evaluate("key=>JSON.parse(localStorage.getItem(key)).loras",key)
+                    assert kept==[dict(id=WORKFLOW_COMPONENTS['lora'],strength=0)]
                 assert not errors
             finally: await browser.close()
     asyncio.run(exercise())
