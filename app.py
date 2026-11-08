@@ -813,6 +813,8 @@ app.include_router(setup_shell_routes())
 # Cookbook (model download/serve/cache, cookbook state sync)
 from routes.cookbook_routes import setup_cookbook_routes
 app.include_router(setup_cookbook_routes())
+from routes.image_workflow_routes import setup_image_workflow_routes
+app.include_router(setup_image_workflow_routes())
 
 # MiniMax H3 video generation in the private local environment.
 from routes.h3_video_routes import setup_h3_video_routes

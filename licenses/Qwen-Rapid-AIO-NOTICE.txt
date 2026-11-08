@@ -1,0 +1,11 @@
+The qwen_condition implementation in scripts/image_workflow_worker.py adapts
+Phr00t/Qwen-Image-Edit-Rapid-AIO's fixed-textencode-node/nodes_qwen.v2.py.
+Source revision: 691024f438640508f8aa86414863fc15edfb8a84
+https://huggingface.co/Phr00t/Qwen-Image-Edit-Rapid-AIO/blob/691024f438640508f8aa86414863fc15edfb8a84/fixed-textencode-node/nodes_qwen.v2.py
+
+The publisher identifies the repository license as Apache-2.0. A copy is
+provided in Qwen-Rapid-AIO-Apache-2.0.txt.
+
+Odysseus adaptation: replaces Comfy node registration and node IO with direct
+function arguments, retains the publisher's four-reference conditioning and
+target-size latent encoding, and uses Odysseus-owned input/job storage.
