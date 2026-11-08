@@ -1,5 +1,9 @@
-"""Active sampling path of Corey's PinkCherry_ref2va_turbo_lightx2v_workflow.json."""
+"""Active sampling path of the PinkCherry publisher's hybrid v1.8 workflow."""
 from scripts.h3_seed_hunter_presets import PINKCHERRY
+
+SOURCE_REVISION = "08ac92dbd56a8523beea55aafaaba1a1d72c45cb"
+SOURCE_URL = ("https://huggingface.co/SexGod1979/PinkCherry-NSFW_MiniMax-H3/blob/"
+              f"{SOURCE_REVISION}/1.8-hybrid/PinkCherry_ref2va_turbo_lightx2v_workflow.json")
 
 RECIPE = "pinkcherry"
 LORA = "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors"

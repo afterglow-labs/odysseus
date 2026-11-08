@@ -58,9 +58,13 @@ supplies DMAD, Heretic and the stock VAEs.
 
 ## PinkCherry
 
-The source is the user-supplied
-`PinkCherry_ref2va_turbo_lightx2v_workflow.json`. The standalone default follows
-its connected 12-step path, and a second preset follows its four-step switch.
+The source is the workflow published by **SexGod1979** in the
+[PinkCherry hybrid v1.8 repository](https://huggingface.co/SexGod1979/PinkCherry-NSFW_MiniMax-H3/blob/08ac92dbd56a8523beea55aafaaba1a1d72c45cb/1.8-hybrid/PinkCherry_ref2va_turbo_lightx2v_workflow.json),
+re-fetched directly from the publisher on November 8, 2026. The repository's
+current revision is 08ac92dbd56a8523beea55aafaaba1a1d72c45cb; the workflow's
+SHA-256 is 11ccd64db9a80adfaee60d71b5a032ec06dfa4398461d7f8abc9516bcec479b7.
+The standalone default follows its connected 12-step path, and a second preset
+follows its four-step switch.
 Both use Euler/simple, denoise 1, no sigma shift and the same LoRA at strength 1.
 There is no seed preview or upscale stage in this graph.
 
@@ -73,8 +77,8 @@ H.264/yuv420p at CRF 9 with audio.
 
 Explicit source adaptations:
 
-- The user-supplied pruned PinkCherry hybrid v1.8 checkpoint replaces the
-  unpruned filename in the JSON.
+- The publisher's currently listed pruned PinkCherry hybrid v1.8 INT8
+  checkpoint replaces the older unpruned filename embedded in the JSON.
 - Heretic Qwen replaces the ordinary Qwen encoder, as requested.
 - Odysseus's existing bounded attention replaces the SageAttention node.
 - The TinyVAE intermediate preview node is not used. The final output uses
