@@ -84,3 +84,20 @@ the Linux models directory. Their original E: copies are retained. Direct
 streaming from the Windows network drive failed with pread errno 12 inside
 the model loader; the Linux copies avoid that filesystem path. Copy receipts
 are in outputs/image-workflow-setup/linux-model-copies.json.
+
+## Verification on this installation
+
+On November 8, 2026, all three recipes completed real 1024×1024 renders on the
+RTX 4090 with their default sampler and step settings. Outputs were inspected;
+the inpainting check also preserved pixels outside its mask exactly.
+
+| Recipe | Steps | Runtime after acquiring the GPU lease |
+| --- | --- | --- |
+| LUSTIFY inpainting | 30 | 81.93 seconds |
+| SNOFS Krea, Heretic encoder | 8 | 19.66 seconds |
+| Qwen Rapid image edit | 4 | 22.81 seconds |
+
+These timings describe the individual verification runs, not a performance
+guarantee. The jobs waited for an active video to finish before acquiring the
+shared execution lease. Settings, paths, output hashes and logs are recorded in
+outputs/image-workflow-setup/runtime-verification.json and its adjacent logs.
