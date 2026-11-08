@@ -75,9 +75,13 @@ roots rather than request fields. Submission IDs avoid duplicate renders after
 a lost response. PNG output includes the submitted settings.
 
 The native iPhone/iPad client also exposes the three recipes in Cookbook →
-Launch. It accepts Photos/Files references and a mask file for inpainting,
-preserves drafts across navigation, and previews/shares authenticated results.
-Painting a new mask is available in the web client.
+Launch. For inpainting, choose a photo from Photos or Files, tap **Paint area**,
+and paint over what should change. Brush size, erase, undo, and clear are
+available over the visible photo. **Use selection** saves the highlighted area;
+the app creates the mask automatically. Cancel keeps the previous selection,
+and removing the source clears it. Existing masks can be imported under
+**Advanced**. The client preserves drafts across navigation and previews/shares
+authenticated results. Painting is also available in the web client.
 
 On this WSL installation, Krea and Qwen Rapid have checksum-verified copies in
 the Linux models directory. Their original E: copies are retained. Direct
