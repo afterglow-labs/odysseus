@@ -68,6 +68,10 @@ follows its four-step switch.
 Both use Euler/simple, denoise 1, no sigma shift and the same LoRA at strength 1.
 There is no seed preview or upscale stage in this graph.
 
+The installed 21,056,259,240-byte pruned INT8 checkpoint was also hashed in full
+and matches the publisher's LFS SHA-256:
+cff4adf96f503d4a7f631e5757306192d3bbc6477980da244caba86e2656654e.
+
 The selected LoRA is exactly
 `minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors`.
 The similarly named `_768p` file is a different published file and is not
