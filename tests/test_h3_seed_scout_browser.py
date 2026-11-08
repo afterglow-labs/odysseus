@@ -137,13 +137,13 @@ def test_native_scout_choices_retained_draft_and_classic_hunter(tmp_path,layout)
           assert await page.evaluate('window.previewElement===document.querySelector(".h3-scout-choice img")')
           await choices.first.scroll_into_view_if_needed();await page.screenshot(path=str(tmp_path/'seed-scout-native-desktop.png'))
           job['status']='completed';await panel.get_by_role('button',name='Refresh jobs',exact=True).click()
-          await choices.first.get_by_role('button',name='Render this seed → full result',exact=True).click()
+          await choices.first.get_by_role('button',name='Refine this preview with default settings',exact=True).click()
           await choices.first.get_by_text('Full result queued',exact=False).wait_for()
           assert renders[0]['seed']==100 and renders[0]['request_id']
           assert scout['selected_seed']==101
           scout['previews'][2]['can_resume']=True
           await panel.get_by_role('button',name='Refresh jobs',exact=True).click()
-          await choices.nth(2).get_by_role('button',name='Resume this seed → full result',exact=True).click()
+          await choices.nth(2).get_by_role('button',name='Refine this preview with default settings',exact=True).click()
           await choices.nth(2).get_by_text('Full result queued',exact=False).wait_for()
           assert renders[1]['seed']==102
           await panel.get_by_role('button',name='Play video',exact=True).wait_for();assert await panel.locator('.h3-video-output video[src]').count()==0

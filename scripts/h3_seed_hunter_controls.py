@@ -7,6 +7,7 @@ except ModuleNotFoundError:
     from h3_seed_hunter_presets import PRESET_IDS, SAMPLING_SCHEDULES, candidate_limit
 
 RECIPE = "seed_hunter"
+LATENT_UPSCALER = "minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors"
 SAMPLERS = ("euler", "res_multistep", "er_sde", "lcm")
 SCHEDULERS = ("simple", "normal", "beta", "linear_quadratic")
 DEFAULTS = {

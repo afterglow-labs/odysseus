@@ -50,6 +50,22 @@ def test_catalog_resolves_installed_recipes_and_distinct_final_schedules(presets
         assert [Path(v['path']).name for v in resolved['loras']] == [CHARACTER_SWAP, CHARACTER_TURBO]
 
 
+def test_hunter_and_scout_keep_publisher_upscaler_when_h3md_is_installed(presets):
+    from src.h3_seed_hunter import capabilities
+    from src.h3_seed_scout import defaults as scout_defaults
+    inv, _ = presets
+    original = {'id': 'hunter-upscaler', 'role': 'latent_upscaler',
+                'name': 'minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors'}
+    md = {'id': 'md-upscaler', 'role': 'latent_upscaler',
+          'name': 'h3_upscaler_sharpness_2000steps_v0.1_fp32.safetensors'}
+    for ordering in ([md, original], [original, md]):
+        components = ordering + [row for row in inv['components'] if row['role'] != 'latent_upscaler']
+        assert all(row['config']['latent_upscaler'] == original['id'] for row in catalog(components))
+        hunter = capabilities('/tmp/fixture', '/tmp/fixture/ComfyUI', components, inv['gpus'])
+        assert hunter['defaults']['latent_upscaler'] == original['id']
+        assert scout_defaults(components, inv['gpus'])['latent_upscaler'] == original['id']
+
+
 def test_character_cross_task_exception_requires_the_character_adapter(presets):
     inventory, rows = presets
     raw = {**config(inventory, 'ref2va'), 'recipe':'seed_hunter', 'frames':73, **deepcopy(rows['character_swap']['config'])}

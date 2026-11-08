@@ -59,3 +59,16 @@ def test_three_short_mp4_candidates_with_independent_full_source_target(manifest
         metadata = json.loads((folder / row["metadata"]).read_text())
         assert metadata["config"]["frames"] == 107
         assert metadata["config"]["seed_hunter"]["final_frames"] == 311
+
+
+def test_continuation_ffmpeg_requires_encoding_support(tmp_path, monkeypatch):
+    import imageio_ffmpeg
+    from scripts import h3_seed_hunter as worker
+    from src import video_preview_proxy as proxy
+    bundled = tmp_path / 'complete-ffmpeg'
+    decode_only = tmp_path / 'decode-only-ffmpeg'
+    bundled.touch(); decode_only.touch()
+    monkeypatch.setattr(imageio_ffmpeg, 'get_ffmpeg_exe', lambda: str(bundled))
+    monkeypatch.setattr(proxy.shutil, 'which', lambda _: str(decode_only))
+    monkeypatch.setattr(proxy, '_playback_encoders', lambda path, *_: path == str(bundled))
+    assert worker.ffmpeg_binary() == str(bundled)

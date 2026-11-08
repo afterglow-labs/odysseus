@@ -5,6 +5,7 @@ from src.h3_video import DEFAULTS as H3_DEFAULTS, _read, _write, _locked, _redac
 def defaults(components, gpus):
     """Independent full-schedule Scout setup, without a Hunter/VFX adapter."""
     from scripts.h3_seed_hunter_controls import DEFAULTS
+    from src.h3_seed_hunter_presets import preferred_upscaler
     gpu = next((row for row in gpus if row.get("nvfp4")), next(iter(gpus), None))
     result = {**H3_DEFAULTS, "mode": "ref2va", "recipe": "seed_hunter", "loras": [], "lora": "",
               "latent_upscaler": "", "vae_gpu": "", "seed_hunter": {
@@ -13,6 +14,8 @@ def defaults(components, gpus):
                   "scout_preview_mode": "vae", "shift_enabled": True}}
     if gpu:
         result["gpu"] = gpu["id"]
+    upscaler = preferred_upscaler(components)
+    result["latent_upscaler"] = upscaler["id"] if upscaler else ""
     for role in ("model", "encoder", "video_vae", "audio_vae"):
         available = [row for row in components if row.get("role") == role
                      and (role != "model" or row.get("variant") == "ref2va")

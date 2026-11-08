@@ -548,7 +548,7 @@ export function showH3SeedHunter({ scout = false, layout = 'classic', initialDra
       for (const key of OUTER.filter(key => !['model','encoder','video_vae','audio_vae','latent_upscaler','gpu','vae_gpu'].includes(key))) if (before[key] !== undefined) fields[key].value = before[key];
       for (const key of Object.keys(options)) { const n = options[key], value = before.seed_hunter?.[key] ?? defaults[key] ?? n.value; if (n.type === 'checkbox') n.checked = value; else n.value = key==='preview_count'?seedHunterPreviewCount(value,optionSnapshot.preset):value ?? ''; }
       loras.setInventory(effectiveComponents(), data.max_loras || 8); loras.setValue(h3LoraStack(before));
-      fill(finalFields.latent_upscaler, data.components.filter(c => c.role === 'latent_upscaler'), finalFields.latent_upscaler.value || saved.final_config?.latent_upscaler);
+      fill(finalFields.latent_upscaler, data.components.filter(c => c.role === 'latent_upscaler'), finalFields.latent_upscaler.value || saved.final_config?.latent_upscaler || data.seed_hunter?.defaults?.latent_upscaler);
       if (first) { prompt.value = before.prompt || ''; for (const key of ['dialogue_text','dialogue_tone','dialogue_template']) if (saved[key] !== undefined) fields[key].value = saved[key]; }
       if (first) syncSizeControls(saved.sizing);
       if (first && retained) { restore(retained.config, retained.uploads); syncSizeControls(saved.sizing); }

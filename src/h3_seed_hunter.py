@@ -5,7 +5,7 @@ from pathlib import Path
 
 from scripts.h3_seed_hunter_controls import DEFAULTS, SAMPLERS, SCHEDULERS, scout_upscale_enabled, scout_output_size
 from src.h3_video import TERMINAL, _read, _write, _locked
-from src.h3_seed_hunter_presets import catalog, final_defaults
+from src.h3_seed_hunter_presets import catalog, final_defaults, preferred_upscaler
 from scripts.h3_seed_hunter_presets import candidate_limit, final_size, validate_sampling
 
 FINAL_DEFAULTS = {"megapixels": 2, "steps": 2, "sampler": "er_sde",
@@ -23,6 +23,8 @@ def capabilities(project, runtime, components, gpus=()):
                      and c.get("variant") == "ref2va" and "pruned" in c.get("name", "").lower()), None)
     if authored:
         defaults["model"] = authored["id"]
+    upscaler = preferred_upscaler(components)
+    defaults["latent_upscaler"] = upscaler["id"] if upscaler else ""
     main = next((gpu for gpu in gpus if gpu.get("nvfp4")), None)
     vae = next((gpu for gpu in gpus if "4090" in gpu.get("name", "") and gpu is not main), None)
     if main:

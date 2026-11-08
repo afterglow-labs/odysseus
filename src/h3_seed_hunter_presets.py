@@ -1,9 +1,18 @@
 """Resolve named Seed Hunter setups against the server's actual inventory."""
 from scripts.h3_pinkcherry_controls import LORA as PINKCHERRY_TURBO
 from copy import deepcopy
+from scripts.h3_seed_hunter_controls import LATENT_UPSCALER
+from scripts.h3md_controls import UPSCALER as H3MD_UPSCALER
 
 from scripts.h3_seed_hunter_presets import (LIGHTVAE, PIKA, TURBO4, TURBO8,
                                           CHARACTER_SWAP, CHARACTER_TURBO, PRISM8, PINKCHERRY, refinement_settings)
+
+
+def preferred_upscaler(components):
+    """Keep the authored Hunter upscaler independent of other recipe installs."""
+    available = [c for c in components if c.get("role") == "latent_upscaler"]
+    return next((c for c in available if c.get("name", "").lower() == LATENT_UPSCALER.lower()),
+                next((c for c in available if c.get("name", "").lower() != H3MD_UPSCALER.lower()), None))
 
 
 def catalog(components):
@@ -16,7 +25,7 @@ def catalog(components):
     base = next((c for c in components if c.get("role") == "model" and c.get("variant") == "ref2va"
                  and "pruned_int8" in c.get("name", "").lower() and "singularity" not in c.get("name", "").lower()), None)
     vae = named("minimax_h3_video_vae_fp16.safetensors", "video_vae")
-    upscaler = next((c for c in components if c.get("role") == "latent_upscaler"), None)
+    upscaler = preferred_upscaler(components)
     definitions = [
         ("quality", "Singularity quality · 20 / 2 steps", "Short seed previews followed by a longer, higher-resolution final clip.", quality, None, vae),
         ("turbo4", "LightX2V fast · 4 / 2 steps", "Four-step Ref2VA previews with the v1.0 Turbo adapter.", base, named(TURBO4, "lora"), vae),

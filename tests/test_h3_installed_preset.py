@@ -48,7 +48,7 @@ def test_turbo_filenames_discover_mode_and_path_defaults_resolve_to_ids(installa
 
 def test_inventory_publishes_complete_native_defaults_and_keeps_base_defaults(installation, monkeypatch, tmp_path):
     path, _, inv = installation
-    monkeypatch.setattr(h3, "discover_components", lambda roots: inv["components"])
+    monkeypatch.setattr(h3.H3JobManager, "component_inventory", lambda self: (inv["components"], {}))
     monkeypatch.setattr(h3, "gpu_inventory", lambda: inv["gpus"])
     monkeypatch.setattr(h3, "runtime_error", lambda *args: "")
     manager = h3.H3JobManager(root=tmp_path / "jobs", preset_file=path)

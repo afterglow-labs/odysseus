@@ -704,14 +704,15 @@ def read_trimmed_audio(path, start, duration):
 
 
 def ffmpeg_binary():
-    executable = shutil.which("ffmpeg")
-    if executable:
-        return executable
+    # Continuation and interpolation encode H.264/AAC. The app's general
+    # FFmpeg can decode these formats while omitting the libx264 encoder.
+    # Use the same capability-checked selection as browser video previews.
+    from fastapi import HTTPException
+    from src.video_preview_proxy import _playback_ffmpeg
     try:
-        import imageio_ffmpeg
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except (ImportError, RuntimeError) as error:
-        raise ValueError("Seed Hunter media processing needs imageio-ffmpeg in the private Python environment") from error
+        return _playback_ffmpeg()
+    except HTTPException as error:
+        raise ValueError(str(error.detail)) from error
 
 
 def _ffmpeg(args):
