@@ -203,14 +203,14 @@ def test_download_monitor_independent_of_card_visibility(tmp_path, scenario):
                     await page.wait_for_function("document.querySelector('[data-task-id=\"cookbook-first\"]')._lastProgress")
                     await page.evaluate("document.querySelector('[data-task-id=\"cookbook-first\"]')._lastProgressTime=Date.now()-360000")
                     badge = page.locator('[data-task-id="cookbook-first"] .cookbook-task-status')
-                    await page.wait_for_function("document.querySelector('[data-task-id=\"cookbook-first\"] .cookbook-task-status').textContent.includes('no log updates')", timeout=4000)
+                    await page.wait_for_function("document.querySelector('[data-task-id=\"cookbook-first\"] .cookbook-task-status').textContent.includes(' · quiet ')", timeout=4000)
                     assert "cookbook-task-running" in await badge.get_attribute("class")
                     assert (await page.evaluate("monitor._loadTasks()[0].status")) == "running"
                     assert not launches and not kills, "Quiet logs cannot justify killing a live transfer or cached-file copy"
                     await page.screenshot(path=str(tmp_path / f"download-monitor-{scenario}-quiet-state.png"))
                     snapshots["output"] = "Downloading bytes: 6 MB / 20 MB"
                     await page.wait_for_function("document.querySelector('[data-task-id=\"cookbook-first\"]')._lastProgressTime>Date.now()-5000")
-                    assert "no log updates" not in await badge.inner_text()
+                    assert "quiet" not in await badge.inner_text()
                     snapshots["output"] = "DOWNLOAD_OK"
                     await page.wait_for_function("monitor._loadTasks()[0].status==='done'")
                     assert not launches, "Verified completion may close the finished shell but must not restart the task"

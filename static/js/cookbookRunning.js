@@ -3688,11 +3688,11 @@ async function _reconnectTask(el, task) {
             if (quietDownload) {
               // Silence is not evidence of a stalled process. Automatic kills
               // discarded active transfers; explicit failures own retry policy.
-              badge.textContent = `running · no log updates for ${Math.floor(quietFor / 60000)}m`;
+              badge.textContent = `running · quiet ${Math.floor(quietFor / 60000)}m`;
               badge.className = 'cookbook-task-status cookbook-task-running';
-              badge.title = 'The download may still be transferring or copying cached files. Use Restart in the task menu only if needed.';
+              badge.title = 'No recent log updates. The download may still be transferring or copying cached files. Use Restart in the task menu only if needed.';
             } else {
-              if (badge.textContent.includes('no log updates')) badge.textContent = 'running';
+              if (badge.textContent.includes(' · quiet ')) badge.textContent = 'running';
               badge.title = '';
             }
             if (snapshot.includes('DOWNLOAD_FAILED')) {
