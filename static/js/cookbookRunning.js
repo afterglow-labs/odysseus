@@ -310,6 +310,58 @@ function _lastLines(text, count = 160) {
   return clean.split('\n').slice(-count).join('\n');
 }
 
+async function _taskLogLines(el, task) {
+  const clean = value => _redactStoredText(_redactCrashReportText(String(value || '').replace(/\r\n?/g, '\n'))).trimEnd();
+  const saved = _loadTasks().find(t => t.sessionId === task.sessionId);
+  // A collapsed card may show only a short status tail. Retain the fullest
+  // saved snapshot as a fallback when the process/session has already gone.
+  let out = [saved?.output, task.output, el?.querySelector('.cookbook-output-pre')?.textContent]
+    .map(clean).sort((a, b) => b.split('\n').length - a.split('\n').length)[0] || '';
+  let captured = false;
+  if (task.sessionId && !String(task.sessionId).startsWith('queue-')) {
+    try {
+      const res = await fetch('/api/shell/exec', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: _tmuxCmd(task, `capture-pane -t ${task.sessionId} -p -S -500`), timeout: 15 }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const snapshot = clean(data.stdout);
+        if (data.exit_code === 0 && snapshot) { out = snapshot; captured = true; }
+      }
+    } catch { /* The saved log remains available if the host/session is gone. */ }
+  }
+  if (!out.trim()) return null;
+  // Blank terminal rows must not consume the requested log history.
+  return { lines: out.split('\n').slice(-50), captured };
+}
+
+async function _copyTaskLog(el, task) {
+  const pending = _taskLogLines(el, task);
+  let empty = false;
+  const text = pending.then(log => {
+    if (!log) { empty = true; throw new Error('No log content'); }
+    return log.lines.join('\n');
+  });
+  try {
+    // Start the clipboard operation during the click, before awaiting the
+    // network. Safari requires that user gesture even for a fetched log.
+    if (navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {
+      await navigator.clipboard.write([new ClipboardItem({
+        'text/plain': text.then(value => new Blob([value], { type: 'text/plain' })),
+      })]);
+    } else {
+      await _copyText(await text);
+    }
+    const { lines, captured } = await pending;
+    uiModule.showToast(`Copied ${lines.length} ${captured ? '' : 'saved '}log line${lines.length === 1 ? '' : 's'}`);
+  } catch {
+    if (empty) uiModule.showToast('No log content available yet');
+    else uiModule.showError('Could not copy the log to the clipboard');
+  }
+}
+
 function _codeFence(text) {
   return String(text || '').replace(/```/g, '` ` `');
 }
@@ -2946,16 +2998,7 @@ export function _renderRunningTab() {
           }});
         }
         // Copy the last 50 lines of the task's output/log.
-        items.push({ group: 'copy', label: 'Copy last 50 lines', action: 'copy-log', custom: () => {
-          const out = (el.querySelector('.cookbook-output-pre')?.textContent || task.output || '');
-          const last = out.split('\n').slice(-50).join('\n');
-          if (!last.trim()) {
-            uiModule.showToast('No log content available yet');
-            return;
-          }
-          _copyText(last);
-          uiModule.showToast('Copied last 50 lines');
-        }});
+        items.push({ group: 'copy', label: 'Copy last 50 lines', action: 'copy-log', custom: () => _copyTaskLog(el, task) });
         // Label matches behavior — the kill handler ALWAYS first kills
         // the live tmux session and (for serve tasks) deletes the
         // matching model-endpoint, THEN animates the task card out.
@@ -3433,18 +3476,12 @@ async function _reconnectTask(el, task) {
                 fixes: isDisk
                   ? [
                       { label: 'Retry download', action: () => _retryTask(el, task) },
-                      { label: 'Copy last 50 lines', action: () => {
-                        const last = String(lastOutput || '').split('\n').slice(-50).join('\n');
-                        _copyText(last || 'No download log available.');
-                      } },
+                      { label: 'Copy last 50 lines', action: () => _copyTaskLog(el, task) },
                     ]
                   : [
                       _reconnectFix,
                       { label: 'Retry download', action: () => _retryTask(el, task) },
-                      { label: 'Copy last 50 lines', action: () => {
-                        const last = String(lastOutput || '').split('\n').slice(-50).join('\n');
-                        _copyText(last || 'No download log available.');
-                      } },
+                      { label: 'Copy last 50 lines', action: () => _copyTaskLog(el, task) },
                     ],
               };
               _showDiagnosis(el, diag, lastOutput);

@@ -4772,7 +4772,9 @@ def setup_cookbook_routes() -> APIRouter:
             local_win_task = (not remote) and IS_WINDOWS
 
             progress_text = ""
-            full_snapshot = (task.get("output") or "")[-12000:] if task_type == "serve" else ""
+            # Retain download completion/failure markers when its local tmux
+            # session has already exited, just as we retain serve diagnostics.
+            full_snapshot = (task.get("output") or "")[-12000:]
 
             if local_win_task:
                 # File-based liveness + output for the detached-process model.
@@ -4844,6 +4846,7 @@ def setup_cookbook_routes() -> APIRouter:
             download_has_failed = task_type == "download" and "DOWNLOAD_FAILED" in full_snapshot
             download_has_incomplete_evidence = (
                 task_type == "download"
+                and not (download_has_ok or download_has_failed)
                 and (
                     ".incomplete" in full_snapshot
                     or bool(re.search(r'model-\d+-of-\d+\.[A-Za-z0-9_.-]+:\s+(?:[0-9]|[1-8][0-9])%', full_snapshot))
@@ -4871,7 +4874,9 @@ def setup_cookbook_routes() -> APIRouter:
                         status = "completed" if exit_code == 0 else "error"
                 elif has_exit and "unrecognized arguments" in lower:
                     status = "error"
-                elif has_error and task_type != "serve" and not ("application startup complete" in lower):
+                # Downloads can emit recoverable errors (chmod, retries) while
+                # continuing. Their runner markers/exit status decide failure.
+                elif has_error and task_type not in {"serve", "download"} and not ("application startup complete" in lower):
                     status = "error"
                 elif task_type == "download" and download_has_ok:
                     status = "completed"
@@ -4898,7 +4903,8 @@ def setup_cookbook_routes() -> APIRouter:
                         progress_text = "Download complete"
                 elif (
                     task_type == "download"
-                    and not download_has_incomplete_evidence
+                    # Validated destination files outrank old progress or
+                    # permission-warning mentions of an .incomplete path.
                     and _download_cache_complete(_payload.get("repo_id") or model, remote, str(_tport or ""), _payload.get("local_dir") or "", _download_destination)
                 ):
                     status = "completed"

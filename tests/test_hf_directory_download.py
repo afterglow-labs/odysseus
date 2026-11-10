@@ -64,6 +64,24 @@ def test_receipt_detects_deleted_or_truncated_files(tmp_path):
     assert not directory_download_complete("org/model", tmp_path, "*.gguf")
 
 
+def test_verified_selection_is_not_incomplete_because_of_abandoned_partial(tmp_path):
+    file = tmp_path / "weights.gguf"
+    file.write_bytes(b"complete model")
+    partial = tmp_path / ".cache/huggingface/download/old-attempt.incomplete"
+    partial.parent.mkdir(parents=True)
+    partial.write_bytes(b"old partial")
+    prepare_directory_download("org/model", tmp_path, "*.gguf", {file.name: file.stat().st_size})
+    assert finish_directory_download("org/model", tmp_path, "*.gguf") == 0
+    assert directory_download_complete("org/model", tmp_path, "*.gguf")
+    assert not directory_download_incomplete("org/model", tmp_path, "*.gguf")
+    # Missing bytes and a new attempt must still invalidate completion.
+    file.write_bytes(b"short")
+    assert directory_download_incomplete("org/model", tmp_path, "*.gguf")
+    prepare_directory_download("org/model", tmp_path, "*.gguf")
+    assert directory_download_incomplete("org/model", tmp_path, "*.gguf")
+    assert partial.exists(), "Status checks must not delete resumable files"
+
+
 def test_selected_empty_upstream_files_are_valid(tmp_path):
     prepare_directory_download("org/model", tmp_path, "", {"__init__.py": 0, "model.gguf": 5})
     (tmp_path / "__init__.py").touch()

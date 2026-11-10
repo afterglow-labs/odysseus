@@ -120,8 +120,13 @@ def directory_download_incomplete(repo_id, directory, pattern=""):
     directory = Path(os.path.expanduser(directory)).absolute()
     try:
         receipt = json.loads(_directory_receipt_path(directory, pattern).read_text(encoding="utf-8"))
-        if receipt.get("repository") == repo_id and receipt.get("status") == "pending":
-            return True
+        if receipt.get("repository") == repo_id:
+            if receipt.get("status") == "pending":
+                return True
+            if receipt.get("status") == "complete":
+                # HF may leave process-specific partials from older attempts.
+                # This selection's verified receipt owns its completion state.
+                return not directory_download_complete(repo_id, directory, pattern)
     except (OSError, ValueError, TypeError):
         pass
     download = directory / ".cache" / "huggingface" / "download"
