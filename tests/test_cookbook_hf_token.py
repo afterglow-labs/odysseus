@@ -2,6 +2,9 @@
 
 import json
 import os
+import shlex
+import subprocess
+import sys
 from unittest.mock import AsyncMock
 
 import pytest
@@ -119,10 +122,29 @@ async def test_download_runners_enable_visible_hf_progress(tmp_path, monkeypatch
     assert runner.index("DOWNLOAD_EMPTY:") < runner.index('DOWNLOAD_OK')
     if platform == "windows":
         assert '$env:HF_HUB_DISABLE_PROGRESS_BARS = "0"' in runner
-        assert '$env:TQDM_DISABLE = "0"' in runner
+        assert 'Remove-Item Env:TQDM_DISABLE -ErrorAction SilentlyContinue' in runner
+        assert '$env:TQDM_POSITION = "-1"' in runner
     else:
         assert "export HF_HUB_DISABLE_PROGRESS_BARS=0" in runner
-        assert "export TQDM_DISABLE=0" in runner
+        # Execute the runner's actual progress settings against installed Hub
+        # and tqdm with piped output, just like the download's tee pipeline.
+        exports = "\n".join(line for line in runner.splitlines() if line.startswith(
+            ("export HF_HUB_DISABLE_PROGRESS_BARS=", "export TQDM_", "unset TQDM_DISABLE")))
+        script = """
+from huggingface_hub.utils import tqdm
+from huggingface_hub.utils.tqdm import _create_progress_bar
+for bar in (tqdm(total=100, desc='Direct transfer'),
+            _create_progress_bar(cls=tqdm, log_level=30, total=100, desc='Downloading bytes')):
+    assert not bar.disable, 'Runner disabled real progress bars'
+    bar.update(100)
+    bar.close()
+"""
+        result = subprocess.run(["bash", "-c", exports + "\n" + shlex.quote(sys.executable)
+                                 + " -c " + shlex.quote(script)],
+                                env={**os.environ, "HF_HUB_DISABLE_PROGRESS_BARS": "1", "TQDM_DISABLE": "1"},
+                                text=True, capture_output=True, timeout=15)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "Downloading bytes" in result.stderr and "100%" in result.stderr
 
 
 @pytest.mark.asyncio

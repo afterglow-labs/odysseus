@@ -1216,7 +1216,9 @@ def setup_cookbook_routes() -> APIRouter:
         # Cookbook reads these bars from the runner output. Recent HF CLIs
         # otherwise suppress them when Odysseus inherits an agent environment.
         if not is_ollama_download:
-            lines.extend(["export HF_HUB_DISABLE_PROGRESS_BARS=0", "export TQDM_DISABLE=0"])
+            # tqdm interprets any nonempty TQDM_DISABLE value (even "0") as
+            # True. Hub also needs TQDM_POSITION=-1 to report through tee.
+            lines.extend(["export HF_HUB_DISABLE_PROGRESS_BARS=0", "unset TQDM_DISABLE", "export TQDM_POSITION=-1"])
             lines.append(f"export ODYSSEUS_HF_LOCAL_DIR={_dl_directory_shell}")
             lines.append(f"export ODYSSEUS_REQUIRED_DOWNLOAD_MOUNT={shlex.quote(required_download_mount)}")
         if req.hf_token:
@@ -1274,7 +1276,9 @@ def setup_cookbook_routes() -> APIRouter:
             remote_runner = f".{session_id}_run.ps1"
             ps_lines = []
             if not is_ollama_download:
-                ps_lines.extend(['$env:HF_HUB_DISABLE_PROGRESS_BARS = "0"', '$env:TQDM_DISABLE = "0"'])
+                ps_lines.extend(['$env:HF_HUB_DISABLE_PROGRESS_BARS = "0"',
+                                 'Remove-Item Env:TQDM_DISABLE -ErrorAction SilentlyContinue',
+                                 '$env:TQDM_POSITION = "-1"'])
                 ps_lines.append(f"$env:ODYSSEUS_HF_LOCAL_DIR = '{_ps_squote(_dl_directory or '')}'")
                 ps_lines.append("$env:ODYSSEUS_REQUIRED_DOWNLOAD_MOUNT = ''")
                 if _dl_directory and _dl_directory.startswith("~/"):
@@ -1362,7 +1366,7 @@ def setup_cookbook_routes() -> APIRouter:
             runner_lines = ["#!/bin/bash", f"export ODYSSEUS_COOKBOOK_SESSION={shlex.quote(session_id)}"]
             runner_lines.extend(_user_shell_path_bootstrap())
             if not is_ollama_download:
-                runner_lines.extend(["export HF_HUB_DISABLE_PROGRESS_BARS=0", "export TQDM_DISABLE=0"])
+                runner_lines.extend(["export HF_HUB_DISABLE_PROGRESS_BARS=0", "unset TQDM_DISABLE", "export TQDM_POSITION=-1"])
                 runner_lines.append(f"export ODYSSEUS_HF_LOCAL_DIR={_dl_directory_shell}")
                 runner_lines.append("export ODYSSEUS_REQUIRED_DOWNLOAD_MOUNT=''")
             runner_lines.append("# Auto-detect environment")

@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.mark.parametrize("scenario", [
     "collapsed", "hidden", "return-to-active", "terminal-snapshot", "terminal-exit", "terminal-stale-progress",
     "pending-launch", "preflight", "preflight-gone", "long-capture",
+    "quiet", "quiet-bytes", "quiet-after-restart", "empty-selection", "no-space", "missing-mount",
 ])
 def test_download_monitor_independent_of_card_visibility(tmp_path, scenario):
     playwright = pytest.importorskip("playwright.async_api")
@@ -33,17 +34,27 @@ def test_download_monitor_independent_of_card_visibility(tmp_path, scenario):
         snapshots["output"] = preflight
     elif scenario == "long-capture":
         snapshots["output"] = "\n".join(f"model-file-{i:03}: Loading detailed transfer information" for i in range(500))
+    elif scenario in ("quiet", "quiet-after-restart"):
+        snapshots["output"] = "[odysseus] Starting model transfer or cached-file copy; completion will be verified afterward."
+    elif scenario == "empty-selection":
+        snapshots["output"] = "DOWNLOAD_EMPTY: No matching files.\nDOWNLOAD_FAILED (exit 66 after 1 attempts)"
+    elif scenario == "no-space":
+        snapshots["output"] = "DOWNLOAD_NO_SPACE: Not enough space.\nDOWNLOAD_FAILED (exit 28 after 1 attempts)"
+    elif scenario == "missing-mount":
+        snapshots["output"] = "DOWNLOAD_MOUNT_UNAVAILABLE: Drive not mounted.\nDOWNLOAD_FAILED (exit 72 after 1 attempts)"
     shared_env = {"servers": [{"host": "", "name": "Local"}], "remoteHost": "", "localHfCacheDir": "/fixture/models"}
 
     async def run():
         launch_started, release_launch = asyncio.Event(), asyncio.Event()
         async with playwright.async_playwright() as p:
             browser = await p.chromium.launch(executable_path=chrome, headless=True, args=["--no-sandbox"])
-            page = await browser.new_page(viewport={"width": 390 if scenario == "collapsed" else 1280, "height": 900})
+            page = await browser.new_page(viewport={"width": 390 if scenario in ("collapsed", "quiet-after-restart") else 1280, "height": 900})
             page.on("pageerror", lambda error: errors.append(str(error)))
             if scenario == "preflight-gone":
                 # Reach the real five-capture-failure path without 15s of sleeps.
                 await page.add_init_script("const timeout=window.setTimeout; window.setTimeout=(f,ms,...args)=>timeout(f,ms===3000?1:ms,...args)")
+            elif scenario.startswith("quiet"):
+                await page.add_init_script("const timeout=window.setTimeout; window.setTimeout=(f,ms,...args)=>timeout(f,ms===3000?50:ms,...args)")
 
             async def route(handler):
                 request = handler.request
@@ -111,6 +122,8 @@ def test_download_monitor_independent_of_card_visibility(tmp_path, scenario):
                 first = {"id": "cookbook-first", "sessionId": "cookbook-first", "name": "First download", "type": "download", "status": "running", "output": "Downloading bytes: 0 B", "remoteHost": "", "payload": {"repo_id": "fixture/first"}}
                 if scenario == "preflight-gone":
                     first["output"] = preflight
+                if scenario == "quiet-after-restart":
+                    first["_autoRestarted"] = True
                 queue = [{"id": f"queue-{name}", "sessionId": f"queue-{name}", "name": f"{name} download", "type": "download", "status": "queued", "output": "", "remoteHost": "", "payload": {"repo_id": f"fixture/{name}"}}
                          for name in ("second", "third")]
                 tasks = [first, *queue] if scenario in ("collapsed", "hidden", "pending-launch", "preflight", "preflight-gone") else [first]
@@ -185,6 +198,26 @@ def test_download_monitor_independent_of_card_visibility(tmp_path, scenario):
                         assert (await page.evaluate("monitor._loadTasks()[0].status")) == "running"
                         assert not launches, "Preflight 100% and resolved paths cannot release the next queued download"
                     assert not kills, "Preflight progress cannot kill the still-downloading session"
+                elif scenario.startswith("quiet"):
+                    await page.evaluate("showTab('Running')")
+                    await page.wait_for_function("document.querySelector('[data-task-id=\"cookbook-first\"]')._lastProgress")
+                    await page.evaluate("document.querySelector('[data-task-id=\"cookbook-first\"]')._lastProgressTime=Date.now()-360000")
+                    badge = page.locator('[data-task-id="cookbook-first"] .cookbook-task-status')
+                    await page.wait_for_function("document.querySelector('[data-task-id=\"cookbook-first\"] .cookbook-task-status').textContent.includes('no log updates')", timeout=4000)
+                    assert "cookbook-task-running" in await badge.get_attribute("class")
+                    assert (await page.evaluate("monitor._loadTasks()[0].status")) == "running"
+                    assert not launches and not kills, "Quiet logs cannot justify killing a live transfer or cached-file copy"
+                    await page.screenshot(path=str(tmp_path / f"download-monitor-{scenario}-quiet-state.png"))
+                    snapshots["output"] = "Downloading bytes: 6 MB / 20 MB"
+                    await page.wait_for_function("document.querySelector('[data-task-id=\"cookbook-first\"]')._lastProgressTime>Date.now()-5000")
+                    assert "no log updates" not in await badge.inner_text()
+                    snapshots["output"] = "DOWNLOAD_OK"
+                    await page.wait_for_function("monitor._loadTasks()[0].status==='done'")
+                    assert not launches, "Verified completion may close the finished shell but must not restart the task"
+                elif scenario in ("empty-selection", "no-space", "missing-mount"):
+                    await page.evaluate("showTab('Running')")
+                    await page.wait_for_function("monitor._loadTasks()[0].status==='error'", timeout=4000)
+                    assert not launches and not kills, "Selection, space and mount errors require intervention, not automatic retries"
                 elif scenario == "long-capture":
                     await page.evaluate("showTab('Running')")
                     await page.wait_for_function("document.querySelector('.cookbook-output-pre').textContent.includes('model-file-499')")

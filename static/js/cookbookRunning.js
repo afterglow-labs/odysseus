@@ -504,8 +504,7 @@ const SERVE_FAVORITES_KEY = 'cookbook-serve-favorite-models';
 // Polling / timeout intervals
 const TASK_POLL_INTERVAL_MS = 3000;       // delay between reconnect-loop iterations
 const BG_MONITOR_INTERVAL_MS = 10000;     // background task status poll
-const STALE_PROGRESS_MS = 5 * 60 * 1000;  // download with no progress this long = stale
-const STARTUP_STALE_PROGRESS_MS = 45 * 1000; // 0%-forever startup stall: retry much sooner
+const QUIET_LOG_MS = 5 * 60 * 1000;       // show an informational quiet-log status
 
 // ── Phase detection (mirrors Python _parse_serve_phase in cookbook_routes.py) ──
 // Single source of truth for serve task status. KEEP IN SYNC with the Python version.
@@ -3609,14 +3608,8 @@ async function _reconnectTask(el, task) {
             const _dlAggMatches = [...snapshot.matchAll(/Downloading\s*\(incomplete[^)]*\):\s*(\d+)%/g)];
             const _dlAgg = _dlAggMatches.length ? parseInt(_dlAggMatches[_dlAggMatches.length - 1][1]) : null;
 
-            // Stale download detection.
-            // Use the DOWNLOADED-BYTE count ("1.81G" from "1.81G/2.49G") as the
-            // progress signal: it climbs continuously while transferring (even when
-            // the % plateaus during a big hf_transfer chunk) and FREEZES when stuck.
-            // The % alone plateaus (false stall), and a frozen frame still shows a
-            // stale speed/ETA — so keying off speed masked real stalls (that's why a
-            // 97%-stuck download went undetected). Bytes are the honest signal; fall
-            // back to %/aggregate only when no byte counter is present.
+            // Track changes in reported progress, not process liveness. Hub can
+            // transfer or copy cached files without emitting byte counters.
             const _byteMatches = [...snapshot.matchAll(/([\d.]+\s?[KMGT])B?\s*\/\s*[\d.]+\s?[KMGT]B?/gi)];
             const _bytes = _byteMatches.length ? _byteMatches[_byteMatches.length - 1][1].replace(/\s/g, '') : null;
             // When there's no byte counter (pip resolve / native build phase of a
@@ -3628,71 +3621,13 @@ async function _reconnectTask(el, task) {
             const _fetchPct = _fetchPctMatches.length ? parseInt(_fetchPctMatches[_fetchPctMatches.length - 1][1]) : null;
             const isPipDep = !!(task.payload && task.payload._dep);
             const terminalDownload = _processExitCode(snapshot) !== null || /DOWNLOAD_OK|DOWNLOAD_FAILED/.test(snapshot);
-            const _startupStalled = !_bytes && ((_dlAgg === 0) || (_fetchPct === 0)) && curProgress === '0';
-            const _STALE_TIMEOUT = _startupStalled ? STARTUP_STALE_PROGRESS_MS : STALE_PROGRESS_MS;
             if (!el._lastProgress) { el._lastProgress = curProgress; el._lastProgressTime = Date.now(); }
             if (curProgress !== el._lastProgress) {
               el._lastProgress = curProgress;
               el._lastProgressTime = Date.now();
-            } else if (!isPipDep && !terminalDownload && Date.now() - (el._lastProgressTime || 0) > _STALE_TIMEOUT && task._autoRestarted) {
-              const mins = Math.floor((Date.now() - (el._lastProgressTime || 0)) / 60000);
-              // Already auto-restarted once and stalled again — make the badge a
-              // one-click retry (resumes from the cached partial files) so the
-              // user doesn't have to dig into the ⋮ menu.
-              badge.textContent = `stalled ${mins}m ↻`;
-              badge.className = 'cookbook-task-status cookbook-task-error';
-              badge.title = 'Click to retry — resumes where it stopped';
-              badge.style.cursor = 'pointer';
-              if (!badge._retryBound) {
-                badge._retryBound = true;
-                badge.addEventListener('click', (e) => { e.stopPropagation(); _retryTask(el, task); });
-              }
-            } else if (!isPipDep && !terminalDownload && Date.now() - (el._lastProgressTime || 0) > _STALE_TIMEOUT && !task._autoRestarted) {
-              task._autoRestarted = true;
-              _updateTask(task.sessionId, { _autoRestarted: true });
-              badge.textContent = _startupStalled ? '0% stall — retrying' : 'stale — restarting';
-              badge.className = 'cookbook-task-status cookbook-task-error';
-              _showCookbookNotif(true);
-              try {
-                await fetch('/api/shell/exec', {
-                  method: 'POST', credentials: 'same-origin',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ command: _tmuxCmd(task, `kill-session -t ${task.sessionId}`) }),
-                });
-              } catch {}
-              try {
-                // Reuse original payload so the full repo_id (e.g. "Qwen/Qwen3.5-...")
-                // is preserved — rebuilding from task.repo/task.name drops the org prefix.
-                const dlPayload = task.payload
-                  ? { ...task.payload }
-                  : { repo_id: task.repo || task.name, remote_host: task.remoteHost || '' };
-                if (_envState.hfToken) dlPayload.hf_token = _envState.hfToken;
-                // Stalled with hf_transfer — restart on the reliable downloader.
-                dlPayload.disable_hf_transfer = true;
-                // Don't overwrite env_prefix — task.payload already has the correct
-                // "source <path>" form. The bare envPath would miss the `source` and
-                // the venv never activates (so hf CLI falls off PATH).
-                const res = await fetch('/api/model/download', {
-                  method: 'POST', credentials: 'same-origin',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify(dlPayload),
-                });
-                const data = await res.json();
-                if (data.ok && data.session_id) {
-                  _updateTask(task.sessionId, { sessionId: data.session_id, status: 'running', output: '' });
-                  task.sessionId = data.session_id;
-                  el._lastProgress = null;
-                  el._lastProgressTime = Date.now();
-                  badge.textContent = 'restarted';
-                  badge.className = 'cookbook-task-status cookbook-task-running';
-                  continue;
-                }
-              } catch {}
-              badge.textContent = 'stale — restart failed';
-              badge.className = 'cookbook-task-status cookbook-task-error';
-              _showCookbookNotif(true);
-              break;
             }
+            const quietFor = Date.now() - (el._lastProgressTime || 0);
+            const quietDownload = !isPipDep && !terminalDownload && quietFor > QUIET_LOG_MS;
 
             // When the snapshot includes a shard-of-N marker (e.g.
             // "model-00006-of-00082.safetensors"), TRUE overall progress is
@@ -3750,6 +3685,16 @@ async function _reconnectTask(el, task) {
               badge.textContent = 'finishing';
               badge.className = 'cookbook-task-status cookbook-task-running';
             }
+            if (quietDownload) {
+              // Silence is not evidence of a stalled process. Automatic kills
+              // discarded active transfers; explicit failures own retry policy.
+              badge.textContent = `running · no log updates for ${Math.floor(quietFor / 60000)}m`;
+              badge.className = 'cookbook-task-status cookbook-task-running';
+              badge.title = 'The download may still be transferring or copying cached files. Use Restart in the task menu only if needed.';
+            } else {
+              if (badge.textContent.includes('no log updates')) badge.textContent = 'running';
+              badge.title = '';
+            }
             if (snapshot.includes('DOWNLOAD_FAILED')) {
               // The wrapper prints DOWNLOAD_FAILED but exits 0, and per-file
               // "Download complete"/"100%" lines make it look successful — so
@@ -3760,7 +3705,8 @@ async function _reconnectTask(el, task) {
               const _accessDenied = /Access to model.*is restricted|gated repo|GatedRepoError|401 Unauthorized|403 Forbidden|not in the authorized list|awaiting a review|must (?:be authenticated|have access)/i.test(snapshot);
               const _dlKey = task.payload?.repo_id || task.name;
               const _dlN = _dlRetryCount.get(_dlKey) || 0;
-              if (!controller.signal.aborted && !_accessDenied && task.type === 'download' && task.payload && _dlN < _DL_MAX_AUTO_RETRY) {
+              const nonRetryable = _accessDenied || /DOWNLOAD_EMPTY:|DOWNLOAD_NO_SPACE:|DOWNLOAD_MOUNT_UNAVAILABLE:/.test(snapshot);
+              if (!controller.signal.aborted && !nonRetryable && task.type === 'download' && task.payload && _dlN < _DL_MAX_AUTO_RETRY) {
                 // Auto-retry: kill the dead session and re-launch (resumes from
                 // the cached .incomplete files) after a short delay.
                 _dlRetryCount.set(_dlKey, _dlN + 1);
