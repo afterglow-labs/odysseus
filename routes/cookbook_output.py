@@ -36,7 +36,7 @@ HF_DOWNLOAD_SPACE_PROBE = (
 
 
 def hf_download_attempt_lines(python_command, download_command, repo_id, pattern):
-    """One bash retry-loop attempt; known disk failures terminate the loop.
+    """One bash retry-loop attempt; invalid selections and disk failures stop.
 
     Keep the actual download exit status across tee. Its temporary transcript
     catches runtime ENOSPC too (unknown sizes, older Hub, concurrent writers).
@@ -59,7 +59,7 @@ def hf_download_attempt_lines(python_command, download_command, repo_id, pattern
         "    fi",
         '    rm -f "$_odysseus_download_log"',
         "  fi",
-        "  if [ $_ec -eq 28 ] || [ $_ec -eq 72 ]; then break; fi",
+        f"  if [ $_ec -eq 28 ] || [ $_ec -eq 72 ] || [ $_ec -eq {hf_download_space.EMPTY_SELECTION_EXIT} ]; then break; fi",
     ]
 
 _FETCHING_ZERO_FILES_RE = re.compile(r"Fetching\s+0\s+files", re.IGNORECASE)

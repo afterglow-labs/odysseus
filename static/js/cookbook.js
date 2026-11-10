@@ -2494,12 +2494,23 @@ function _wireTabEvents(body) {
     function _ggufIncludeForQuant(files, quant) {
       const matches = files.filter(f => _ggufQuantFromPath(f) === quant);
       if (!matches.length) return '';
-      const dirs = Array.from(new Set(matches.map(f => f.includes('/') ? f.split('/').slice(0, -1).join('/') : '')));
-      if (dirs.length === 1) {
-        const prefix = dirs[0] ? `${dirs[0]}/` : '';
-        return `${prefix}*${quant}*.gguf`;
+      if (matches.length === 1) return matches[0];
+      // Quant labels are uppercase for display; Hub globs are case-sensitive.
+      // Derive a shared glob from the actual paths, including split shards
+      // whose quant appears only in their directory name.
+      let prefix = matches[0];
+      let suffix = matches[0];
+      for (const file of matches.slice(1)) {
+        while (!file.startsWith(prefix)) prefix = prefix.slice(0, -1);
+        while (!file.endsWith(suffix)) suffix = suffix.slice(1);
       }
-      return `*${quant}*.gguf`;
+      const maxSuffix = Math.min(...matches.map(f => f.length)) - prefix.length;
+      suffix = suffix.slice(suffix.length - Math.min(suffix.length, maxSuffix));
+      // Never broaden a selection to other quants when their names do not
+      // share a sufficiently specific pattern.
+      if (files.some(f => f.startsWith(prefix) && f.endsWith(suffix)
+          && f.length >= prefix.length + suffix.length && !matches.includes(f))) return '';
+      return `${prefix}*${suffix}`;
     }
     function _hideGgufPicker(message = '') {
       if (dlGgufRow) dlGgufRow.style.display = 'none';
@@ -2552,9 +2563,10 @@ function _wireTabEvents(body) {
         dlGgufQuant.innerHTML = quants.map(q => {
           const include = _ggufIncludeForQuant(files, q);
           const count = byQuant.get(q).length;
-          return `<option value="${esc(include)}">${esc(q)} (${count})</option>`;
+          return `<option value="${esc(include)}"${include ? '' : ' disabled'}>${esc(q)} (${count})${include ? '' : ' — paste a specific file URL'}</option>`;
         }).join('');
-        const first = dlGgufQuant.options[0];
+        const first = Array.from(dlGgufQuant.options).find(option => !option.disabled);
+        if (first) dlGgufQuant.value = first.value;
         dlGgufNote.textContent = first ? first.value : '';
         return !!(first && first.value);
       } catch (err) {
@@ -2620,7 +2632,8 @@ function _wireTabEvents(body) {
         dlInput.focus();
         return;
       }
-      const looksGgufRepo = !ollamaName && !_fileSplit && !autoInclude && /\bgguf\b/i.test(repo);
+      const looksGgufRepo = !ollamaName && !_fileSplit && !autoInclude && (
+        /gguf/i.test(repo) || (dlGgufQuant?.dataset.repo === repo && dlGgufQuant.options.length > 0));
       if (looksGgufRepo && !pickerInclude) {
         const oldText = dlBtn.textContent;
         dlBtn.disabled = true;

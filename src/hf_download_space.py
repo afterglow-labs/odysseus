@@ -7,6 +7,7 @@ import shutil
 
 
 DISK_FULL_EXIT = 28
+EMPTY_SELECTION_EXIT = 66
 DOWNLOAD_RESERVE = 128 * 1024 * 1024
 
 
@@ -55,6 +56,15 @@ def check_download_space(repo_id, pattern, cache_dir, *, local_dir=None, preview
         allow_patterns=[pattern] if pattern else None,
         dry_run=True,
     )
+    if not preview:
+        selection = f" matching {pattern!r}" if pattern else ""
+        print(
+            f"DOWNLOAD_EMPTY: No files{selection} in {repo_id}. "
+            "Filename patterns are case-sensitive; choose an actual repository filename or quant. "
+            "Stopped before transfer; this selection will not be retried.",
+            flush=True,
+        )
+        return EMPTY_SELECTION_EXIT
     required = 0
     unknown = False
     cached_copies = 0

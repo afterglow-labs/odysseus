@@ -55,6 +55,23 @@ def test_completed_cached_files_do_not_require_more_space(monkeypatch, tmp_path)
     assert space.check_download_space("org/model", "", str(tmp_path)) == 0
 
 
+@pytest.mark.parametrize("pattern", ["*Q6_K*.gguf", ""])
+def test_empty_selection_fails_before_space_success_or_receipt(monkeypatch, tmp_path, capsys, pattern):
+    stub_preview(monkeypatch, [], 14_000_000_000_000)
+    destination = tmp_path / "not-created"
+    previews = []
+    assert space.check_download_space("org/model", pattern, str(destination),
+                                      preview_callback=previews.append) == 66
+    output = capsys.readouterr().out
+    assert "DOWNLOAD_EMPTY:" in output
+    assert "org/model" in output
+    assert "case-sensitive" in output
+    assert "File and space check complete" not in output
+    assert "0.00 GB needed" not in output
+    assert not previews
+    assert not destination.exists()
+
+
 def test_chosen_volume_not_process_working_directory(monkeypatch, tmp_path):
     stub_preview(monkeypatch, [{"will_download": True, "file_size": 15_000_000_000}],
                  13_000_000_000_000)
@@ -135,14 +152,14 @@ def test_real_hub_dry_run_is_quiet_but_subsequent_transfer_still_reports_progres
     assert seen == [True, False]
 
 
-def run_retry_fixture(tmp_path, *, required, free, download_script, old_hub=False):
+def run_retry_fixture(tmp_path, *, required, free, download_script, old_hub=False, empty=False):
     stub = tmp_path / "huggingface_hub.py"
     signature = "repo_id, cache_dir, allow_patterns" if old_hub else "repo_id, cache_dir, allow_patterns, dry_run"
     stub.write_text(
         "from types import SimpleNamespace\nimport shutil\n"
         f"shutil.disk_usage = lambda path: SimpleNamespace(free={free})\n"
         f"def snapshot_download(*, {signature}):\n"
-        f" return [SimpleNamespace(will_download=True, file_size={required})]\n"
+        + (" return []\n" if empty else f" return [SimpleNamespace(will_download=True, file_size={required})]\n")
     )
     count = tmp_path / "download-count"
     command = "bash -c " + shlex.quote(
@@ -168,6 +185,17 @@ def test_shell_preflight_blocks_transfer_and_retry(tmp_path):
     assert result.returncode == 28
     assert not attempts
     assert "attempts=1 code=28" in result.stdout
+
+
+def test_empty_selection_never_starts_or_retries_transfer(tmp_path):
+    result, attempts = run_retry_fixture(tmp_path, required=0, free=14_000_000_000_000,
+                                        download_script="echo 'Downloaded'; exit 0", empty=True)
+    assert result.returncode == 66
+    assert not attempts
+    assert "attempts=1 code=66" in result.stdout
+    assert "DOWNLOAD_EMPTY:" in result.stdout
+    assert "Starting model transfer" not in result.stdout
+    assert "Downloaded" not in result.stdout
 
 
 @pytest.mark.parametrize("error", ["No space left on device", "Not enough free disk space to download the file.",
