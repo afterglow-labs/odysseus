@@ -6,7 +6,7 @@ import re
 
 import anyio
 from fastapi import HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from src.video_server_files import list_server_video_roots, list_server_videos, open_server_video_preview
 
@@ -63,6 +63,16 @@ class _VideoPreviewResponse(StreamingResponse):
 
 
 def add_server_video_file_routes(router, owner_callback, manager=None):
+    @router.get('/server-files/image')
+    async def preview_server_image(request: Request, root: str, path: str, size: int,
+                                   mtime_ns: str, detail: bool = False):
+        owner_callback(request)
+        from src.video_server_image_preview import server_image_preview
+        data = await anyio.to_thread.run_sync(partial(server_image_preview, {
+            'root': root, 'path': path, 'size': size, 'mtime_ns': mtime_ns}, detail=detail))
+        return Response(data, media_type='image/jpeg', headers={
+            'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff'})
+
     if manager is not None:
         @router.get('/jobs/{job_id}/input-videos/{field}/{index}/reuse')
         async def reuse_original(request: Request, job_id: str, field: str, index: int, revision: int):

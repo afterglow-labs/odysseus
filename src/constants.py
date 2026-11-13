@@ -6,6 +6,15 @@ from src.runtime_paths import get_app_root, get_default_data_dir
 
 APP_VERSION = "1.0.3"
 
+# Server-file image previews are CPU-only and never transfer the original image.
+SERVER_IMAGE_THUMBNAIL_EDGE = 256
+SERVER_IMAGE_PREVIEW_EDGE = 1280
+SERVER_IMAGE_PREVIEW_MAX_BYTES = 64 * 1024 * 1024
+SERVER_IMAGE_PREVIEW_MAX_PIXELS = 64_000_000
+SERVER_IMAGE_PREVIEW_CACHE_BYTES = 16 * 1024 * 1024
+SERVER_IMAGE_PREVIEW_CACHE_TTL = 300
+SERVER_IMAGE_PREVIEW_CONCURRENCY = 2
+
 # Base paths
 BASE_DIR = os.path.join(get_app_root(), "")
 STATIC_DIR = os.path.join(BASE_DIR, "static")

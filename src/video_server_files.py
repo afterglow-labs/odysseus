@@ -336,6 +336,13 @@ def open_server_video_preview(selection, *, manager=None, owner=None):
                                  manager=manager, owner=owner)
 
 
+def open_server_image_preview(selection):
+    """Open a browser image using the same rooted file handles as submission."""
+    if not isinstance(selection, dict) or set(selection) != {'root', 'path', 'size', 'mtime_ns'}:
+        raise HTTPException(400, 'Invalid server image selection')
+    return _open_selection({**selection, 'index': 0}, media_roots(), IMAGE_EXTENSIONS)
+
+
 def _unique_object(pairs):
     result = {}
     for key, value in pairs:
