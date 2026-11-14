@@ -1,5 +1,6 @@
 """Actual browser controls attach each row's media without creating extra jobs."""
 import asyncio
+import io
 import json
 import mimetypes
 import re
@@ -10,6 +11,7 @@ import shutil
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -31,6 +33,8 @@ def test_per_row_audio_images_server_files_and_optional_trims(tmp_path, workflow
                      seed_hunter={'features': {'separate_final_length': True, 'seed_scout': True, 'force_audio': True, 'guides': True, 'latent_upscaler': True},
                                   'defaults': defaults, 'scout_defaults': defaults})
     errors, submissions, kinds = [], [], []
+    preview_bytes = io.BytesIO()
+    Image.new('RGB', (256, 192), '#2586a4').save(preview_bytes, 'JPEG')
 
     async def exercise():
         async with pw.async_playwright() as p:
@@ -64,6 +68,8 @@ def test_per_row_audio_images_server_files_and_optional_trims(tmp_path, workflow
                     await handler.fulfill(json={'root': drive, 'path': '', 'parent_path': None, 'entries': entries, 'total': len(entries), 'has_more': False})
                 elif path.endswith('/server-files/metadata'):
                     await handler.fulfill(json={'duration_seconds': 4, 'source_frames': 96})
+                elif path.endswith('/server-files/image'):
+                    await handler.fulfill(body=preview_bytes.getvalue(), content_type='image/jpeg')
                 elif path.endswith('/jobs') and request.method == 'GET':
                     await handler.fulfill(json={'jobs': [], 'queue': {'paused': False}, 'pagination': {'page': 1, 'total': 0, 'total_pages': 1}, 'counts': {}})
                 elif path.endswith('/jobs') and request.method == 'POST':
@@ -120,6 +126,12 @@ def test_per_row_audio_images_server_files_and_optional_trims(tmp_path, workflow
                     if kind=='audio':assert '.mka' in await page.locator('#'+input_prefix+field).get_attribute('accept')
                     await wrap.get_by_role('button', name='Server files', exact=True).click()
                     await use_server(kind)
+                    if kind == 'image':
+                        await wrap.get_by_role('button', name='Preview face.png', exact=True).click()
+                        preview = page.get_by_role('dialog', name='Image preview', exact=True)
+                        await preview.locator('img:not([hidden])').wait_for()
+                        await preview.get_by_role('button', name='Done', exact=True).click()
+                        assert await wrap.locator('.video-server-image-thumbnail img').evaluate('(img) => img.naturalWidth > 0')
                     await wrap.get_by_role('button', name=re.compile('^Remove ')).click()
 
                 batch = panel.locator('.video-batch-panel')
@@ -150,6 +162,10 @@ def test_per_row_audio_images_server_files_and_optional_trims(tmp_path, workflow
                 await rows.nth(0).locator('[data-batch-input-field=reference_images] input[type=file]').set_input_files({'name': 'own-face.png', 'mimeType': 'image/png', 'buffer': b'image-fixture'})
                 await rows.nth(1).get_by_role('button', name='Server image for clip2.mp4', exact=True).click()
                 await use_server('image', drive='f')
+                await rows.nth(1).get_by_role('button', name='Preview face.png', exact=True).click()
+                preview = page.get_by_role('dialog', name='Image preview', exact=True)
+                await preview.locator('img:not([hidden])').wait_for()
+                await preview.get_by_role('button', name='Done', exact=True).click()
                 await page.set_viewport_size({'width': 390, 'height': 844})
                 await rows.nth(1).scroll_into_view_if_needed()
                 await page.screenshot(path=str(tmp_path / 'batch-own-media-mobile.png'))

@@ -19,6 +19,7 @@ import { h3LoraStack, h3LoraIssue, createH3LoraEditor, insertH3LoraTrigger, H3_L
 import { referenceVideoRanges, restoreReferenceVideoRanges, createReferenceVideoRangeEditor, referenceVideoRangesField } from './referenceVideoRange.js';
 import { appendVideoInputs, videoFormIssue } from './videoInputs.js';
 import { showVideoServerFiles } from './videoServerFiles.js';
+import { createServerImageButton } from './serverImagePreview.js';
 import { showH3LoraLibrary } from './h3LoraLibrary.js';
 
 const API = '/api/video/h3';
@@ -382,6 +383,7 @@ export function showH3Video({ preferredModel = null, layout = 'classic', recipe 
         const name = el('span', '', `${prefix}${file.name} · ${(file.size / 1048576).toFixed(1)} MB${saved ? ' · Saved on server' : file.serverFile ? ` · ${file.serverFile.root.toUpperCase()}:/${file.serverFile.path}` : ''}`);
         const remove = button('Remove'); remove.setAttribute('aria-label', `Remove ${file.name}`);
         remove.onclick = () => { if (saved) state.retained.splice(index, 1); else state.files.splice(index - state.retained.length, 1); directorControls?.removeReference(key,index); editRevision++; render(); updateReady(); };
+        if (mediaKind === 'image' && file.serverFile) item.append(createServerImageButton(file.serverFile, 'h3'));
         item.append(name, remove);
         if (key === 'reference_videos' && !director) {
           item.classList.add('h3-reference-video-row');

@@ -199,9 +199,32 @@
 .video-server-files-actions { display:flex; align-items:center; gap:8px; }
 .video-server-files-actions>small { flex:1; padding-right:12px; }
 .video-server-files-actions button { flex-shrink:0; }
+.video-server-files-row.has-image-preview { display:flex; align-items:center; }
+.has-image-preview .video-server-files-entry { flex:1; min-width:0; }
+.video-server-image-open { flex:none; margin-right:10px; }
+.video-server-files-images .video-server-files-columns { padding-right:98px; }
+.video-server-image-thumbnail { position:relative; display:inline-flex; width:64px; height:64px; flex:none; align-items:center; justify-content:center; overflow:hidden; border:1px solid var(--border); border-radius:8px; background:var(--bg); }
+.video-server-image-thumbnail img { width:100%; height:100%; object-fit:contain; }
+.video-server-image-thumbnail [hidden] { display:none; }
+.video-server-image-thumbnail small { position:absolute; text-align:center; font-size:11px; padding:3px; }
+button.video-server-image-button { display:inline-flex; height:auto; flex:none; padding:0!important; border:0; background:transparent; line-height:0; vertical-align:middle; }
+.video-server-image-button:focus-visible { outline:2px solid var(--red); outline-offset:2px; }
+.video-batch-image-name { display:flex; align-items:center; gap:8px; }
+.video-server-image-dialog { width:min(980px,100%); height:min(800px,calc(100dvh - 40px)); min-height:0; }
+.video-server-image-dialog .h3-video-header { flex-shrink:0; }
+.video-server-image-dialog .h3-video-header>div { min-width:0; }
+.video-server-image-dialog .h3-video-header p { overflow-wrap:anywhere; }
+.video-server-image-body { display:flex; align-items:center; justify-content:center; flex:1; min-height:0; padding:16px; overflow:auto; background:var(--bg); }
+.video-server-image-body>img { width:100%; height:100%; object-fit:contain; }
+.video-server-image-body>img[hidden],.video-server-image-feedback[hidden] { display:none; }
+.video-server-image-feedback { text-align:center; padding:16px; }
 @media (max-width:600px) {
   .video-server-files-overlay { padding:8px; }
   .video-server-files-dialog { height:calc(100dvh - 16px); border-radius:9px; }
+  .video-server-image-dialog { height:calc(100dvh - 16px); }
+  .video-server-image-thumbnail { width:56px; height:56px; }
+  .video-server-image-open { margin-right:6px; }
+  .video-server-files-images .video-server-files-columns { padding-right:82px; }
   .video-server-files-controls { padding:12px 14px 0; }
   .video-server-files-nav { gap:6px; flex-wrap:wrap; }
   .video-server-files-nav .h3-video-field { min-width:100px; flex:1; }

@@ -10,6 +10,7 @@ import { createWorkflowPipeline } from './workflowPipeline.js';
 import { createVideoBatchQueue } from './videoBatch.js';
 import { appendVideoInputs } from './videoInputs.js';
 import { showVideoServerFiles } from './videoServerFiles.js';
+import { createServerImageButton } from './serverImagePreview.js';
 import { createVideoJobEditor, videoJobEditFormData } from './videoJobEdit.js';
 import { createVideoQueueControls, videoQueueField } from './videoQueue.js';
 import { createVideoJobReruns, BASE_RERUN_LABEL, BASE_RERUN_HELP } from './videoJobRerun.js';
@@ -95,6 +96,7 @@ export function showBfsVideo({ preferred = null, layout = 'classic', initialDraf
     const input = el('input'); input.id = 'bfs-' + key; input.type = 'file'; input.accept = accept;
     const hint = el('p', 'h3-video-muted', help), name = el('p', 'h3-video-muted bfs-video-file-name');
     const preview = el(mediaType, 'bfs-video-preview'); preview.hidden = true;
+    const serverPreview = el('div');
     if (mediaType === 'video') { preview.controls = true; preview.playsInline = true; preview.preload = 'metadata'; }
     else preview.alt = label;
     const remove = button('Remove file'); remove.hidden = true; remove.setAttribute('aria-label', `Remove ${label.toLowerCase()}`);
@@ -105,6 +107,7 @@ export function showBfsVideo({ preferred = null, layout = 'classic', initialDraf
       editRevision++;
       if (state.url) URL.revokeObjectURL(state.url);
       state.url = null; state.file = null; state.retained = null; preview.removeAttribute('src'); preview.hidden = true; remove.hidden = true; name.textContent = '';
+      serverPreview.replaceChildren();
       if (clearInput) input.value = '';
       updateReady();
     }
@@ -114,7 +117,7 @@ export function showBfsVideo({ preferred = null, layout = 'classic', initialDraf
       if (!selected.serverFile) {
         state.url = URL.createObjectURL(selected); preview.src = state.url;
         const transfer = new DataTransfer(); transfer.items.add(selected); input.files = transfer.files; preview.hidden = false;
-      }
+      } else if (mediaType === 'img') serverPreview.append(createServerImageButton(selected.serverFile, 'bfs'));
       remove.hidden = false; name.textContent = `${selected.name} · ${(selected.size / 1048576).toFixed(1)} MB${selected.serverFile ? ` · ${selected.serverFile.root.toUpperCase()}:/${selected.serverFile.path}` : ''}`;
       setError(''); updateReady();
     }
@@ -130,7 +133,7 @@ export function showBfsVideo({ preferred = null, layout = 'classic', initialDraf
       serverPicker = showVideoServerFiles({ family: 'bfs', kind:mediaType==='video'?'video':'image', onSelect: selected => { if (!closed && selected[0]) setFile(selected[0]); } }, serverFiles);
     };
     remove.onclick = () => clear(); wrap.append(labelNode, hint, input); if (serverFiles) wrap.append(serverFiles);
-    wrap.append(name, preview, remove); inputGrid.appendChild(wrap); files.set(key, state);
+    wrap.append(name, preview, serverPreview, remove); inputGrid.appendChild(wrap); files.set(key, state);
   }
   addUpload('identity_image', 'Identity image', 'image/jpeg,image/png,image/webp', 'img', 'The face or identity to apply to the video.');
   addUpload('source_video', 'Target video', 'video/*', 'video', 'The video whose movement and background you want to keep.');

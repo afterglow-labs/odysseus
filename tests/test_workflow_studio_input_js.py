@@ -25,6 +25,12 @@ for(const family of ['h3','bfs'])for(const root of ['e','f']){
  assert.equal(url.pathname,`/api/video/${family}/server-files/video`);
  assert.deepEqual(Object.fromEntries(url.searchParams),{...selection,size:'1024'});
  assert.equal(result.type,'video');
+ const imageSelection={...selection,path:'Images/日本語 + <boat> & photo.png'};
+ const image=preview([{name:'photo.png',serverFile:imageSelection}],family,origin);
+ const imageURL=new URL(image.url,origin);
+ assert.equal(image.type,'image');
+ assert.equal(imageURL.pathname,`/api/video/${family}/server-files/image`);
+ assert.deepEqual(Object.fromEntries(imageURL.searchParams),{...imageSelection,size:'1024',detail:'true'});
 }
 assert.equal(preview([{name:'retained.mp4',preview_url:'/api/video/h3/jobs/one/inputs/reference_videos/0'}],'h3',origin).url,origin+'/api/video/h3/jobs/one/inputs/reference_videos/0');
 for(const url of ['https://other.example/api/video/h3/jobs/one/input','https://user:password@odysseus.example/api/video/h3/input','/api/video/bfs/other','javascript:alert(1)','/private/file'])

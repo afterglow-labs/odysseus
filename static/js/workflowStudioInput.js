@@ -1,4 +1,5 @@
 import { serverVideoInput } from './videoInputs.js';
+import { serverImageURL } from './serverImagePreview.js';
 
 // Describe one source without opening it. The Studio owns media playback and
 // object URLs; server video requests start only after its Play button is used.
@@ -13,6 +14,7 @@ export function workflowStudioInputPreview(candidates = [], family = 'h3', origi
     if (input.serverFile) {
       try {
         const descriptor = serverVideoInput(input.serverFile).serverFile;
+        if (type === 'image') return { url: serverImageURL(descriptor, family, true), label, type };
         return { url: `${prefix}server-files/video?${new URLSearchParams(descriptor)}`, label, type: 'video' };
       } catch { continue; }
     }

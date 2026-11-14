@@ -1,6 +1,7 @@
 import { bindMenuDismiss } from './escMenuStack.js';
 import { topPortalZ } from './toolWindowZOrder.js';
 import { serverVideoInput } from './videoInputs.js';
+import { createServerImageThumbnail, showServerImagePreview } from './serverImagePreview.js';
 
 const make = (tag, className = '', text) => {
   const node = document.createElement(tag); node.className = className;
@@ -21,6 +22,7 @@ export function showVideoServerFiles({ family, kind = 'video', multiple = false,
   const plural=kind==='audio'?'audio files':`${kind}s`,singular=kind==='audio'?'audio file':kind;
   const overlay = make('div', 'cookbook-edit-overlay video-server-files-overlay'); overlay.style.zIndex = String(topPortalZ());
   const dialog = make('section', 'cookbook-edit-modal h3-video-dialog video-server-files-dialog');
+  if (kind === 'image') dialog.classList.add('video-server-files-images');
   dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true'); dialog.setAttribute('aria-label', 'Server files');
   const header = make('div', 'h3-video-header'), heading = make('div'), closeButton = action('Close');
   heading.append(make('h2', '', 'Server files'),make('p','h3-video-muted',`Choose ${plural} from your Odysseus computer.`)); header.append(heading, closeButton);
@@ -44,13 +46,14 @@ export function showVideoServerFiles({ family, kind = 'video', multiple = false,
   const actions = make('div','video-server-files-actions'), help = make('small','h3-video-muted','Selections stay selected when you change folders or drives.'), use = action(`Use ${singular}`); use.className = 'cookbook-btn';
   const clear = action('Clear selection'); actions.append(help,clear,use); footer.append(selectedTray,actions);
   dialog.append(header,controls,content,footer); overlay.append(dialog); document.body.appendChild(overlay);
-  let root = 'e', path = '', parent = null, entries = [], selected = new Map(), loading = false, closed = false, nextOffset = null, controller, debounce;
+  let root = 'e', path = '', parent = null, entries = [], selected = new Map(), loading = false, closed = false, nextOffset = null, controller, debounce, preview;
   const history = [];
   const close = bindMenuDismiss(overlay, () => {
-    closed = true; controller?.abort(); clearTimeout(debounce); window.removeEventListener('keydown', onKey, true);
+    closed = true; preview?.close(); controller?.abort(); clearTimeout(debounce); window.removeEventListener('keydown', onKey, true);
     overlay.remove(); if (anchor?.isConnected) anchor.focus();
   }, () => false);
   function onKey(event) {
+    if (document.querySelector('.video-server-image-overlay')) return;
     if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); }
     else if (event.key === 'Tab') {
       const controls = [...dialog.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),summary')].filter(node => !node.hidden && node.getClientRects().length);
@@ -59,6 +62,22 @@ export function showVideoServerFiles({ family, kind = 'video', multiple = false,
     }
   }
   window.addEventListener('keydown', onKey, true); closeButton.onclick = close;
+  function previewButton(selection, thumbnail = false) {
+    const open = action(thumbnail ? '' : 'Preview');
+    open.classList.add(thumbnail ? 'video-server-image-button' : 'video-server-image-open');
+    open.setAttribute('aria-label', `Preview ${selection.path.split('/').at(-1)}`);
+    if (thumbnail) open.append(createServerImageThumbnail(selection, family));
+    open.onclick = () => {
+      preview?.close();
+      const key = selectionKey(selection);
+      preview = showServerImagePreview({ selection, family, isSelected: () => selected.has(key), onToggleSelection: () => {
+        if (selected.has(key)) selected.delete(key);
+        else { if (!multiple) selected.clear(); selected.set(key, selection); }
+        renderSelection();
+      } }, open);
+    };
+    return open;
+  }
   function navigate(next, remember = true) {
     if (remember && (root !== next.root || path !== next.path)) history.push({root,path,search:search.value});
     root = next.root; path = next.path; drive.value = root; search.value = next.search || ''; load();
@@ -80,6 +99,7 @@ export function showVideoServerFiles({ family, kind = 'video', multiple = false,
     selectedList.replaceChildren();
     for (const [key,selection] of selected) {
       const row=make('li'), label=make('span'), remove=action('Remove');
+      if (kind === 'image') row.append(previewButton(selection, true));
       label.append(make('strong','',selection.path.split('/').at(-1)),make('small','h3-video-muted',`${selection.root.toUpperCase()}:/${selection.path} · ${fileSize(selection.size)}`));
       remove.setAttribute('aria-label',`Remove ${selection.path.split('/').at(-1)} from selection`); remove.onclick = () => { selected.delete(key); renderSelection(); }; row.append(label,remove); selectedList.append(row);
     }
@@ -104,8 +124,9 @@ export function showVideoServerFiles({ family, kind = 'video', multiple = false,
           if (box.checked) selected.set(selectionKey(entry.selection), entry.selection); else selected.delete(selectionKey(entry.selection));
           renderSelection();
         };
-        const name=make('span','video-server-files-name'); name.append(box,fileIcon(false),make('span','',entry.name));
+        const name=make('span','video-server-files-name'); name.append(box,kind === 'image' ? createServerImageThumbnail(entry.selection, family) : fileIcon(false),make('span','',entry.name));
         label.append(name,make('small','video-server-files-type',(entry.name.split('.').at(-1) || 'Video').toUpperCase()),make('small','video-server-files-size',fileSize(entry.size))); row.append(label);
+        if (kind === 'image') { row.classList.add('has-image-preview'); row.append(previewButton(entry.selection)); }
       }
       list.append(row);
     }

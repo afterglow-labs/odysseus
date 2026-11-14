@@ -2,6 +2,7 @@
 // File objects remain streamed uploads; no media bytes are buffered in JS.
 import { appendVideoInputs } from './videoInputs.js';
 import { showVideoServerFiles } from './videoServerFiles.js';
+import { createServerImageButton } from './serverImagePreview.js';
 import { referenceVideoRange, hasReferenceVideoRange, createReferenceVideoRangeEditor, validateReferenceVideoRanges } from './referenceVideoRange.js';
 const VIDEO = /\.(mp4|mov|m4v|webm|mkv|avi)$/i;
 const IMAGE = /\.(png|jpe?g|webp)$/i, AUDIO = /\.(wav|mp3|flac|m4a|aac|ogg|opus|mka)$/i;
@@ -321,6 +322,7 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
         section._signature=signature;section._list.replaceChildren();
         files.forEach((file,index)=>{
           const entry=node('li'),name=node('span','',file.name),remove=action('Remove');
+          if(inputKind(field)==='image' && file.serverFile) entry.append(createServerImageButton(file.serverFile,family));
           remove.setAttribute('aria-label',`Remove ${file.name} from ${item.file.name}`);remove.disabled=locked;
           remove.onclick=()=>queue.removeInput(item.id,field,index);entry.append(name,remove);section._list.append(entry);
         });
@@ -343,6 +345,10 @@ export function createVideoBatchQueue({ family, container, getSnapshot, onJob, o
       if (!row) {
         row = node('li', 'video-batch-row'); row.dataset.batchId = item.id;
         row._name = node('span', 'video-batch-name', item.file.name);
+        if(inputKind(videoField)==='image' && item.file.serverFile) {
+          row._name.classList.add('video-batch-image-name');
+          row._name.prepend(createServerImageButton(item.file.serverFile,family));
+        }
         row._state = node('span', 'video-batch-state');
         row._remove = action('Remove'); row._remove.setAttribute('aria-label', `Remove ${item.file.name} from batch`); row._remove.onclick = () => queue.remove(item.id);
         row.append(row._name, row._state, row._remove); rows.set(item.id, row); list.appendChild(row);
